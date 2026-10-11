@@ -11,6 +11,7 @@
   --term-h: calc(100dvh - var(--topbar-h) - var(--keybar-h) - env(safe-area-inset-top));
 }
 
+
 html,
 body {
   height: 100%;
@@ -658,6 +659,9 @@ body {
 .sheet-overlay {
   position: fixed;
   inset: 0;
+  top: var(--visible-top, 0px);
+  bottom: auto;
+  height: var(--visible-h, 100dvh);
   z-index: 60;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
@@ -674,10 +678,13 @@ body {
   /* dvh tracks the *visible* viewport (minus the mobile browser UI), so a long
      session list's bottom rows + the New button stay on-screen and reachable
      instead of extending below the fold. */
-  max-height: 85dvh;
+  max-height: min(85dvh, calc(var(--visible-h, 100dvh) - 12px));
+  min-height: 0;
+  flex: 0 1 auto;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch; /* iOS momentum scroll inside the fixed overlay */
   overscroll-behavior: contain; /* don't chain the scroll to the locked body */
+  touch-action: pan-y;
   background: #252526;
   border-top: 1px solid #3a3a3a;
   border-top-left-radius: 14px;
@@ -862,7 +869,7 @@ body {
    Switch to the mobile layout on narrow screens: hide the desktop top bar,
    show the compact mobile bar, and give the bar a taller (touch-sized) height.
    -------------------------------------------------------------------------- */
-@media (max-width: 640px) {
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
   :root {
     --topbar-h: 40px;
   }
@@ -993,5 +1000,56 @@ body {
     width: 100%;
     height: 0;
     margin: 0;
+  }
+}
+
+/* Short landscape screens should expose the actions without a long scroll. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .actions-sheet {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+    max-height: calc(var(--visible-h, 100dvh) - 12px);
+    padding: 5px 10px calc(6px + env(safe-area-inset-bottom));
+  }
+  .actions-sheet > .sheet-grip,
+  .actions-sheet > .sheet-title,
+  .actions-sheet > .sheet-font,
+  .actions-sheet > .sheet-seg {
+    grid-column: 1 / -1;
+  }
+  .actions-sheet .sheet-grip {
+    width: 32px;
+    height: 3px;
+    margin: 3px auto 5px;
+  }
+  .actions-sheet .sheet-title {
+    margin: 0 3px 5px;
+    font-size: 12px;
+  }
+  .actions-sheet .sheet-font,
+  .actions-sheet .sheet-seg {
+    gap: 6px;
+    padding: 3px 2px 5px;
+  }
+  .actions-sheet .sf-btn {
+    width: 38px;
+    height: 28px;
+    font-size: 13px;
+  }
+  .actions-sheet .sf-val,
+  .actions-sheet .ss-lbl {
+    font-size: 12px;
+  }
+  .actions-sheet .sheet-row {
+    gap: 7px;
+    padding: 8px 3px;
+    font-size: 12px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .actions-sheet .sheet-ico {
+    width: 18px;
+    font-size: 14px;
   }
 }

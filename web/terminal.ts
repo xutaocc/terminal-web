@@ -2413,7 +2413,8 @@ function setPaneDims(cols: number, rows: number): void {
 
 // Below this width the key bar wraps to several rows (see styles.css) instead
 // of being one horizontally-scrollable row, so its height is no longer fixed.
-const mobileMQ = window.matchMedia('(max-width: 640px)');
+// A phone stays in the touch layout when fullscreen landscape exceeds 640px.
+const mobileMQ = window.matchMedia('(max-width: 640px), (hover: none) and (pointer: coarse)');
 
 // Publish the key bar's real height into --keybar-h so the terminal sits right
 // above it: a fixed value on desktop (single row), the measured wrapped height
@@ -2486,6 +2487,9 @@ const KEYBOARD_MIN_VISIBLE_PX = 72;
 let framedCovered = 0;
 
 function updateKeyboardOffset(): void {
+  const viewportTop = Math.max(0, window.visualViewport?.offsetTop ?? 0);
+  root.style.setProperty('--visible-top', `${Math.round(viewportTop)}px`);
+  root.style.setProperty('--visible-h', `${Math.max(0, Math.round(visibleBottom() - viewportTop))}px`);
   const top = cssPx(termArea, 'top');
   const keybarH = cssPx(root, '--keybar-h');
   // Everything hidden below what can be seen, however we came to know about it:
@@ -2556,12 +2560,8 @@ function makeButton(
   b.textContent = label;
   b.title = title;
   b.setAttribute('aria-label', title);
-  // pointerdown + preventDefault keeps focus on the terminal so the iPad soft
-  // keyboard doesn't dismiss; the action runs here for a snappy feel.
-  b.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    onTap();
-  });
+  // Both toolbar variants finish the click before opening an overlay.
+  bindIntentionalClick(b, onTap);
   parent.append(b);
   return b;
 }
@@ -2617,10 +2617,7 @@ async function toggleFullscreen(): Promise<void> {
   }
 }
 
-addBtn.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  promptAddSession();
-});
+bindIntentionalClick(addBtn, promptAddSession);
 
 // Sessions list (opens the same bottom-sheet drawer the phone bar uses). On a
 // tablet the top #tabs strip turns into a long horizontal scroll that's awkward
@@ -2698,7 +2695,7 @@ dlBtn.innerHTML =
   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>' +
   '<polyline points="7 10 12 15 17 10"></polyline>' +
   '<line x1="12" y1="15" x2="12" y2="3"></line></svg>';
-dlBtn.addEventListener('click', () => promptDownload());
+bindIntentionalClick(dlBtn, () => promptDownload());
 controlsEl.append(dlBtn);
 
 makeButton(controlsEl, 'tb-btn tb-icon', '?', 'Help: copy / paste / files', openHelp);
@@ -2973,17 +2970,16 @@ const drawerNew = document.createElement('button');
 drawerNew.className = 'drawer-new';
 drawerNew.type = 'button';
 drawerNew.textContent = '+  New session';
-drawerNew.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
+bindIntentionalClick(drawerNew, () => {
   closeDrawer();
   promptAddSession();
-});
+}, drawer);
 drawer.append(drawerGrip, drawerTitle, drawerList, drawerNew);
 drawerOverlay.append(drawer);
 document.body.append(drawerOverlay);
-drawerOverlay.addEventListener('pointerdown', (e) => {
+bindIntentionalClick(drawerOverlay, (e) => {
   if (e.target === drawerOverlay) closeDrawer();
-});
+}, drawer);
 
 let drawerOpen = false;
 
@@ -3194,6 +3190,9 @@ bindIntentionalClick(sheetOverlay, (e) => {
 }, sheet);
 
 function openSheet(): void {
+  for (const session of sessions) session.stopTouchScroll();
+  if (drawerOpen) closeDrawer();
+  updateKeyboardOffset();
   updateFontVal();
   updateFullscreenButton();
   sheetOverlay.classList.remove('hidden');
