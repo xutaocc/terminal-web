@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#17191d"><title>文件管理 · 前端演示</title>
+<link rel="stylesheet" href="style.css?v=transfer-confirm-11">
+</head>
+<body>
+<div class="app">
+<header><button id="back" class="quiet">‹ <span>终端</span></button><div class="heading"><strong>文件管理</strong><small><i></i> main 会话</small></div><span class="badge">DEMO</span></header>
+<section class="location"><div class="location-label"><button id="directory-back" class="link" disabled>‹ 返回</button><span id="location-label">当前会话目录</span><button id="up" class="link">↑ 上一级</button><button id="go-root" class="link">/ 根目录</button><button id="locate" class="link">会话目录 ↗</button></div><div class="path"><nav id="breadcrumbs" aria-label="目录路径"></nav><button id="copy-path" class="quiet" aria-label="复制当前路径">⧉</button></div></section>
+<div class="workspace"><main>
+<div class="toolbar"><label class="toggle"><input id="hidden" type="checkbox" aria-label="显示隐藏文件和文件夹"><span class="switch"></span>显示隐藏项</label><div class="tools"><button id="collapse" title="收起或展开目录">收起</button><button id="sort">排序 ↕</button><button id="select">多选</button></div></div>
+<div class="list-heading"><span>名称 <small id="count"></small></span><span class="desktop">大小 / 修改时间</span></div>
+<div id="tree" class="tree" role="tree" aria-label="模拟目录树"></div>
+<div class="hint">点击选中 · 箭头展开 · 底部或 ⋯ 执行操作</div>
+</main><aside><div class="aside-title">文件详情 <span>ⓘ</span></div><div id="details"></div><div class="demo-note">纯前端演示<br>模拟文件与操作，不连接服务器</div></aside></div>
+<footer><div id="footer-label"><i></i> 会话目录已定位</div><div id="footer-actions"></div></footer>
+<section id="terminal-view" hidden><div class="terminal-top">main <span>● 已连接</span></div><div class="terminal-body"><p>tangsen@server:~/telwebssh$ <span class="cursor">▌</span></p><p class="muted">终端页面占位演示</p></div><div class="terminal-actions"><button id="sessions">切换会话</button><button id="open-files" class="primary">文件管理</button><button id="terminal-upload">上传文件</button></div></section>
+</div>
+<dialog id="sheet"><div class="sheet-handle"></div><div class="dialog-head"><div><strong id="sheet-title"></strong><small id="sheet-sub"></small></div><button class="close quiet" aria-label="关闭">✕</button></div><div id="sheet-body"></div></dialog>
+<dialog id="preview"><div class="dialog-head"><div><strong id="preview-title"></strong><small id="preview-mode">预览</small></div><button id="copy-content">复制内容</button><button id="edit">编辑</button><button class="close quiet" aria-label="关闭">✕</button></div><div id="preview-content"></div><div class="preview-bottom"><span id="editor-status">只读预览</span><span>不换行 · UTF-8</span></div></dialog>
+<input id="upload" type="file" multiple hidden><div id="toast" role="status" aria-live="polite"></div>
+<script src="demo.js?v=transfer-confirm-11"></script>
+</body></html>

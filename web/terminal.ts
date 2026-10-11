@@ -10,6 +10,10 @@ import { TerminalKeyboardLock } from './keyboard-lock.js';
 // ---------------------------------------------------------------------------
 // Constants & helpers
 // ---------------------------------------------------------------------------
+let fileBrowserOpen = false;
+let fileBrowserFrame: HTMLIFrameElement | null = null;
+let fileBrowserSession = '';
+
 const MIN_DELAY = 500;
 const MAX_DELAY = 5000;
 const MIN_FONT = 8;
@@ -1536,6 +1540,7 @@ class Session {
   }
 
   focus(): void {
+    if (fileBrowserOpen) return;
     if (this.keyboardLock) this.keyboardLock.focus();
     else this.term.focus();
   }
@@ -2524,6 +2529,7 @@ async function syncFromServer(): Promise<void> {
 // Layout: key bar height + iOS keyboard offset; fit the active session.
 // ---------------------------------------------------------------------------
 function fitActive(): void {
+  if (fileBrowserOpen) return;
   // Both halves of a split, not just the one with the keys: the keyboard coming
   // up takes rows from each of them.
   activeTab?.fit();
@@ -2632,6 +2638,7 @@ const KEYBOARD_MIN_VISIBLE_PX = 72;
 let framedCovered = 0;
 
 function updateKeyboardOffset(): void {
+  if (fileBrowserOpen) { sizeFileBrowser(); return; }
   const viewportTop = Math.max(0, window.visualViewport?.offsetTop ?? 0);
   root.style.setProperty('--visible-top', `${Math.round(viewportTop)}px`);
   root.style.setProperty('--visible-h', `${Math.max(0, Math.round(visibleBottom() - viewportTop))}px`);
@@ -2769,7 +2776,8 @@ bindIntentionalClick(addBtn, promptAddSession);
 // to swipe through once there are many tabs; this gives a one-tap vertical
 // picker instead. Hidden on phones (<=640px), which already have a ☰ in
 // #mobilebar; shown on tablet/desktop where the drawer CSS is global anyway.
-makeButton(controlsEl, 'tb-btn tb-icon', '☰', 'Sessions', () => openDrawer());
+makeButton(controlsEl, 'tb-btn tb-icon', '☰', '切换会话', () => openDrawer());
+makeButton(controlsEl, 'tb-btn tb-icon', '▰', '文件管理', () => openFileBrowser());
 const keysBtn = makeButton(controlsEl, 'tb-btn tb-icon', '⌨', 'Toggle on-screen keys', () => {
   setKeybarVisible(keybarEl.classList.contains('hidden'));
   activeSession?.focus();
@@ -3107,7 +3115,8 @@ const mKeysBtn = mBtn('⌨', 'Toggle on-screen keys', () => {
 });
 const mMoreBtn = mBtn('⋯', 'More actions', () => openSheet());
 
-mobilebar.append(mMenuBtn, mTitle, mAttachBtn, mKeysBtn, mMoreBtn);
+const mFilesBtn = mBtn('▰', '文件管理', () => openFileBrowser());
+mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeysBtn, mMoreBtn);
 document.body.append(mobilebar);
 
 // --- Sessions drawer (bottom sheet) ----------------------------------------
@@ -3326,6 +3335,7 @@ sheet.append(
   fontRow,
   splitRow,
   keyboardLockButton,
+  sheetRow('▰', '文件管理', () => { closeSheet(); openFileBrowser(); }),
   sheetRow('📁', '复制当前路径', () => {
     closeSheet();
     void copyCurrentPath();
@@ -3389,7 +3399,7 @@ function closeSheet(): void {
 // re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
   const s = activeTab;
-  document.title = s?.displayName || 'terminal-web';
+  document.title = fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web';
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
   mKeysBtn.classList.toggle('active', !keybarEl.classList.contains('hidden'));
@@ -3819,3 +3829,56 @@ const keybarDefault = (() => {
   return TOUCH_DEVICE;
 })();
 setKeybarVisible(keybarDefault);
+
+
+// Same-origin embedded file view isolates its CSS/keyboard handling while the
+// terminal sockets and tmux processes remain attached behind it.
+function openFileBrowser(): void {
+  const session = activeSession;
+  if (!session) return;
+  closeSheet(); closeDrawer(); hideSelectionBar();
+  for (const item of sessions) { item.stopTouchScroll(); item.mate?.stopTouchScroll(); }
+  (document.activeElement as HTMLElement | null)?.blur();
+  if (!fileBrowserFrame) {
+    fileBrowserFrame = document.createElement('iframe');
+    fileBrowserFrame.id = 'file-browser-frame';
+    fileBrowserFrame.title = '服务器文件管理';
+    document.body.append(fileBrowserFrame);
+  }
+  if (fileBrowserSession !== session.name) {
+    fileBrowserSession = session.name;
+    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams({ session: session.name, label: session.displayName })}`;
+  }
+  fileBrowserOpen = true;
+  document.body.classList.add('file-browser-open');
+  fileBrowserFrame.hidden = false;
+  sizeFileBrowser();
+  document.title = `文件管理 · ${session.displayName}`;
+}
+function sizeFileBrowser(): void {
+  if (!fileBrowserOpen || !fileBrowserFrame) return;
+  const viewport = window.visualViewport;
+  fileBrowserFrame.style.height = `${viewport?.height ?? window.innerHeight}px`;
+  fileBrowserFrame.style.top = `${viewport?.offsetTop ?? 0}px`;
+}
+function closeFileBrowser(): void {
+  fileBrowserOpen = false;
+  document.body.classList.remove('file-browser-open');
+  if (fileBrowserFrame) fileBrowserFrame.hidden = true;
+  refreshMobileUI();
+  requestAnimationFrame(() => { updateKeyboardOffset(); fitActive(); if (!TOUCH_DEVICE) activeSession?.focus(); });
+}
+// 同时校验来源域与 iframe 实例，只有当前文件视图可以触发终端会话切换。
+window.addEventListener('message', event => {
+  if (event.origin !== location.origin || event.source !== fileBrowserFrame?.contentWindow) return;
+  const data = event.data as { type?: string; name?: string; displayName?: string } | null;
+  if (data?.type === 'files-close') closeFileBrowser();
+  if (data?.type === 'files-auth-expired') location.reload();
+  if (data?.type === 'files-open-terminal' && typeof data.name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(data.name)) {
+    closeFileBrowser();
+    addSession(data.name, true, typeof data.displayName === 'string' ? data.displayName : data.name);
+  }
+});
+window.addEventListener('resize', sizeFileBrowser);
+window.visualViewport?.addEventListener('resize', sizeFileBrowser);
+window.visualViewport?.addEventListener('scroll', sizeFileBrowser);

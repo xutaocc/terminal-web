@@ -28,6 +28,8 @@ import type { ServerMessage } from "./types.js";
 import { isClientMessage } from "./types.js";
 import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
+import { handleFileApi } from "./file-api.js";
+
 const config = loadConfig();
 
 // The cross-device tab list lives on the tmux sessions themselves (a @twtab
@@ -230,6 +232,8 @@ function resolveStaticPath(pathname: string): string | null {
 
   if (pathname === "/" || pathname === "/index.html") {
     rel = "index.html";
+  } else if (pathname === "/file-browser.html") {
+    rel = "file-browser.html";
   } else if (pathname === "/styles.css") {
     rel = "styles.css";
   } else if (PWA_ASSETS.has(pathname)) {
@@ -264,7 +268,7 @@ function resolveStaticPath(pathname: string): string | null {
  * the document, behind the fixed terminal. ?debug=sel measured it at 0,0
  * 1210x22 where the rules would have put a small box above the key bar.
  */
-const STAMPED_ASSETS = ["dist/terminal.js", "dist/terminal.css", "styles.css"];
+const STAMPED_ASSETS = ["dist/terminal.js", "dist/terminal.css", "styles.css", "dist/file-browser.js", "dist/file-browser.css"];
 
 /**
  * A short token identifying the currently built client, from the size + mtime
@@ -316,7 +320,7 @@ async function serveIndexHtml(
     return;
   }
 
-  const title = `${escapeHtml(HOST_LABEL)} · terminal-web`;
+  const title = path.basename(filePath) === "file-browser.html" ? "文件管理 · Web 终端" : `${escapeHtml(HOST_LABEL)} · terminal-web`;
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${title}</title>`);
 
   const version = await assetVersion();
@@ -324,7 +328,7 @@ async function serveIndexHtml(
     // Driven off the same list the stamp is computed from, so an asset added to
     // one can't be missed by the other.
     for (const rel of STAMPED_ASSETS) {
-      const href = new RegExp(`(["'])(/${rel.replace(/\./g, "\\.")})\\1`, "g");
+      const href = new RegExp(`(["'])(/${rel.replace(/\./g, "\\.")})(?:\\?[^"']*)?\\1`, "g");
       html = html.replace(href, `$1$2?v=${version}$1`);
     }
   }
@@ -355,7 +359,7 @@ async function serveStatic(
     return;
   }
 
-  if (pathname === "/" || pathname === "/index.html") {
+  if (pathname === "/" || pathname === "/index.html" || pathname === "/file-browser.html") {
     await serveIndexHtml(req, res, filePath);
     return;
   }
@@ -1041,6 +1045,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
+      if (await handleFileApi(req, res, requestUrl, { maxUpload: config.uploadMaxBytes, tmuxConf: config.tmuxConfPath })) return;
 
       if (method === "POST" && requestUrl.pathname === "/upload") {
         await handleUpload(req, res, requestUrl.searchParams.get("name"));

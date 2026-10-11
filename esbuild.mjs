@@ -4,7 +4,7 @@ const watch = process.argv.includes('--watch');
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
-  entryPoints: ['web/terminal.ts'],
+  entryPoints: ['web/terminal.ts', 'web/file-browser.js'],
   bundle: true,
   format: 'esm',
   platform: 'browser',
