@@ -99,9 +99,13 @@ const VV_DEBUG = (params.get('debug') ?? '').includes('vv');
 // item kinds/types, file count) — for diagnosing why image paste-to-upload
 // behaves differently across browsers/OSes (e.g. Windows Chrome).
 const PASTE_DEBUG = (params.get('debug') ?? '').includes('paste');
-// WebGL renderer is on by default; ?webgl=0 (or ?nowebgl) falls back to the DOM
-// renderer — useful for flaky GPUs or headless capture.
-const WEBGL_ENABLED = params.get('webgl') !== '0' && !params.has('nowebgl');
+// Touch browsers can accept a WebGL context but render a blank terminal.
+// Use the standard renderer on those devices unless explicitly requested.
+// ?webgl=0 (or ?nowebgl) always disables WebGL; ?webgl=1 opts in.
+const WEBGL_ENABLED =
+  !params.has('nowebgl') &&
+  (params.get('webgl') === '1' ||
+    (params.get('webgl') !== '0' && navigator.maxTouchPoints === 0));
 // ?debug=sel traces touch selection — where a touch landed, whether the long
 // press fired, what word it found, what ended up selected — to the server log.
 // Selecting is several steps deep and every one of them is invisible when it
@@ -117,6 +121,7 @@ const SEL_DEBUG = (params.get('debug') ?? '').includes('sel');
 // for were really a stale stylesheet; the query is just the shakier question to
 // be asking.)
 const TOUCH_DEVICE = navigator.maxTouchPoints > 0;
+const ANDROID_DEVICE = /Android/i.test(navigator.userAgent);
 
 const encoder = new TextEncoder();
 
@@ -523,7 +528,7 @@ class Session {
     // belonging to a composition shuts both off. e.isComposing is per-event, so
     // it cannot latch on if a compositionend is ever missed.
     this.term.attachCustomKeyEventHandler((e) => {
-      if (e.type === 'keydown' && (e.isComposing || e.keyCode === 229)) {
+      if (!ANDROID_DEVICE && e.type === 'keydown' && (e.isComposing || e.keyCode === 229)) {
         return false; // composition keystroke — ours, not xterm's
       }
       if (isMac) return true; // ⌘ needs no remapping; the chords below are Ctrl
@@ -579,6 +584,9 @@ class Session {
     this.term.textarea?.addEventListener('focus', () => focusPane(this));
 
     this.wireInput();
+    this.term.onCursorMove(() => {
+      if (isActive(this)) updateKeyboardOffset();
+    });
     this.wireTouchScroll();
     this.wireHandles();
   }
@@ -599,6 +607,13 @@ class Session {
       left: rect.left + padX,
       top: rect.top + padY,
     };
+  }
+
+  /** Cursor bottom in the terminal area's unpanned coordinate space. */
+  cursorBottom(): number {
+    const buffer = this.term.buffer.active;
+    const row = buffer.baseY + buffer.cursorY - buffer.viewportY;
+    return this.el.offsetTop + 4 + (row + 1) * this.cellSize().h;
   }
 
   /**
@@ -789,7 +804,7 @@ class Session {
     // such a keydown we schedule the character, cancel it if a composition
     // starts, and otherwise forward it. English keys (real keyCode) and
     // committed CJK (compositionend → onData) are untouched, so nothing doubles.
-    if (ta) {
+    if (ta && !ANDROID_DEVICE) {
       // Keep xterm's hidden textarea empty after a paste. xterm reads the text
       // off the event's clipboardData and sends it, but never preventDefaults,
       // so the browser then inserts the same text into that textarea — where it
@@ -2448,7 +2463,12 @@ function updateKeyboardOffset(): void {
 
   const covered = restingTermH - available;
   const room = Math.max(0, restingTermH - KEYBOARD_MIN_VISIBLE_PX);
-  const offset = covered > KEYBOARD_MIN_PX ? Math.min(Math.round(covered), room) : 0;
+  // Moving by the whole keyboard height hides prompts near the top behind
+  // the toolbar. Pan only enough to keep the current cursor above the keys.
+  const cursorCovered = Math.max(0, (activeSession?.cursorBottom() ?? restingTermH) - available);
+  const offset = covered > KEYBOARD_MIN_PX
+    ? Math.min(Math.ceil(cursorCovered), Math.round(covered), room)
+    : 0;
   root.style.setProperty('--kb-offset', `${offset}px`);
 
   if (VV_DEBUG) {

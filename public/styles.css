@@ -864,13 +864,32 @@ body {
    -------------------------------------------------------------------------- */
 @media (max-width: 640px) {
   :root {
-    --topbar-h: 52px;
+    --topbar-h: 40px;
   }
   #topbar {
     display: none;
   }
   #mobilebar {
     display: flex;
+    gap: 4px;
+  }
+  .m-btn {
+    min-width: 30px;
+    height: 30px;
+    padding: 0 6px;
+    border-radius: 6px;
+    font-size: 16px;
+  }
+  .m-title {
+    height: 30px;
+    gap: 6px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .m-title .m-caret {
+    width: 16px;
+    font-size: 14px;
   }
 
   /* The on-screen key bar wraps to fit the screen instead of being one long
@@ -881,16 +900,17 @@ body {
     height: auto;
     flex-wrap: wrap;
     align-content: flex-start;
-    gap: 6px;
+    gap: 4px;
     overflow: visible;
-    padding-top: 6px;
-    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+    padding-top: 4px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom));
   }
   .kb-key {
     flex: 1 0 auto;
-    min-width: 40px;
-    padding: 11px 6px;
-    font-size: 15px;
+    min-width: 30px;
+    min-height: 28px;
+    padding: 7px 4px;
+    font-size: 12px;
   }
   /* full-width, zero-height item -> forces the arrows onto their own row */
   .kb-break {
