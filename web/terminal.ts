@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
+import { bindIntentionalClick } from './intentional-click.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -2581,18 +2582,39 @@ function changeFont(delta: number): void {
   activeSession?.focus();
 }
 
-function toggleFullscreen(): void {
+let fullscreenBusy = false;
+
+function isFullscreen(): boolean {
+  return Boolean(document.fullscreenElement ||
+    (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement);
+}
+
+async function toggleFullscreen(): Promise<void> {
+  if (fullscreenBusy) return;
   const d = document as Document & {
     webkitFullscreenElement?: Element;
-    webkitExitFullscreen?: () => void;
+    webkitExitFullscreen?: () => void | Promise<void>;
   };
-  const el = root as HTMLElement & { webkitRequestFullscreen?: () => void };
-  if (!document.fullscreenElement && !d.webkitFullscreenElement) {
-    (el.requestFullscreen ?? el.webkitRequestFullscreen)?.call(el);
-  } else {
-    (document.exitFullscreen ?? d.webkitExitFullscreen)?.call(document);
+  const el = root as HTMLElement & { webkitRequestFullscreen?: () => void | Promise<void> };
+  const exiting = isFullscreen();
+  const operation = exiting
+    ? (document.exitFullscreen ?? d.webkitExitFullscreen)
+    : (el.requestFullscreen ?? el.webkitRequestFullscreen);
+  if (!operation) {
+    flashStatus('此瀏覽器不支援全屏切換', 1800);
+    return;
   }
-  setTimeout(() => fitActive(), 100);
+  fullscreenBusy = true;
+  updateFullscreenButton();
+  try {
+    await operation.call(exiting ? document : el);
+  } catch {
+    flashStatus('全屏切換未成功，請重試', 1800);
+  } finally {
+    fullscreenBusy = false;
+    updateFullscreenButton();
+    requestAnimationFrame(fitActive);
+  }
 }
 
 addBtn.addEventListener('pointerdown', (e) => {
@@ -2898,10 +2920,7 @@ function mBtn(label: string, title: string, onTap: () => void): HTMLButtonElemen
   b.textContent = label;
   b.title = title;
   b.setAttribute('aria-label', title);
-  b.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    onTap();
-  });
+  bindIntentionalClick(b, onTap);
   return b;
 }
 
@@ -2917,10 +2936,7 @@ const mCaret = document.createElement('span');
 mCaret.className = 'm-caret';
 mCaret.textContent = '▾';
 mTitle.append(mTitleDot, mTitleLabel, mCaret);
-mTitle.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  openDrawer();
-});
+bindIntentionalClick(mTitle, openDrawer);
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
 // open a file picker from a preventDefaulted pointerdown.
@@ -2930,7 +2946,7 @@ mAttachBtn.type = 'button';
 mAttachBtn.textContent = '📎';
 mAttachBtn.title = 'Attach a file';
 mAttachBtn.setAttribute('aria-label', 'Attach a file');
-mAttachBtn.addEventListener('click', () => fileInput.click());
+bindIntentionalClick(mAttachBtn, () => fileInput.click());
 const mKeysBtn = mBtn('⌨', 'Toggle on-screen keys', () => {
   // No focus() here: on a phone, focusing the terminal pops the soft keyboard,
   // which defeats the point of toggling the on-screen keys.
@@ -3060,16 +3076,14 @@ fontPlus.textContent = 'A+';
 function updateFontVal(): void {
   fontVal.textContent = `Font ${currentFont}px`;
 }
-fontMinus.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
+bindIntentionalClick(fontMinus, () => {
   changeFont(-1);
   updateFontVal();
-});
-fontPlus.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
+}, sheet);
+bindIntentionalClick(fontPlus, () => {
   changeFont(1);
   updateFontVal();
-});
+}, sheet);
 fontRow.append(fontMinus, fontVal, fontPlus);
 
 // The same split-view control, at touch size, for the phone's actions sheet
@@ -3086,10 +3100,9 @@ for (const def of LAYOUT_BUTTONS) {
   b.type = 'button';
   b.textContent = def.label;
   b.title = def.title;
-  b.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
+  bindIntentionalClick(b, () => {
     activeTab?.setView(def.mode);
-  });
+  }, sheet);
   splitRow.append(b);
   sheetLayoutButtons.set(def.mode, b);
 }
@@ -3098,10 +3111,6 @@ function sheetRow(
   ico: string,
   label: string,
   onTap: () => void,
-  // Opening a file picker needs a real click: iOS blocks one started from a
-  // preventDefaulted pointer event, which is what every other row uses to keep
-  // the soft keyboard from dropping.
-  useClick = false,
 ): HTMLButtonElement {
   const b = document.createElement('button');
   b.className = 'sheet-row';
@@ -3112,16 +3121,30 @@ function sheetRow(
   const t = document.createElement('span');
   t.textContent = label;
   b.append(i, t);
-  if (useClick) {
-    b.addEventListener('click', () => onTap());
-  } else {
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      onTap();
-    });
-  }
+  bindIntentionalClick(b, onTap, sheet);
   return b;
 }
+
+const fullscreenButton = sheetRow('⤢', '進入全屏', () => {
+  closeSheet();
+  void toggleFullscreen();
+});
+
+function updateFullscreenButton(): void {
+  const label = isFullscreen() ? '退出全屏' : '進入全屏';
+  const text = fullscreenButton.querySelector('span:last-child');
+  if (text) text.textContent = label;
+  fullscreenButton.setAttribute('aria-label', label);
+  fullscreenButton.disabled = fullscreenBusy;
+}
+
+for (const event of ['fullscreenchange', 'webkitfullscreenchange']) {
+  document.addEventListener(event, () => {
+    updateFullscreenButton();
+    requestAnimationFrame(fitActive);
+  });
+}
+updateFullscreenButton();
 
 sheet.append(
   sheetGrip,
@@ -3145,7 +3168,6 @@ sheet.append(
       if (activeSession?.selectVisible()) copySelectionNow();
       else flashStatus('無法全選', 1400);
     },
-    true,
   ),
   sheetRow(
     '📎',
@@ -3154,16 +3176,12 @@ sheet.append(
       closeSheet();
       fileInput.click();
     },
-    true,
   ),
   sheetRow('⬇', 'Download a file', () => {
     closeSheet();
     promptDownload();
   }),
-  sheetRow('⤢', 'Toggle fullscreen', () => {
-    closeSheet();
-    toggleFullscreen();
-  }),
+  fullscreenButton,
   sheetRow('?', 'Help: copy / paste / files', () => {
     closeSheet();
     openHelp();
@@ -3171,12 +3189,13 @@ sheet.append(
 );
 sheetOverlay.append(sheet);
 document.body.append(sheetOverlay);
-sheetOverlay.addEventListener('pointerdown', (e) => {
+bindIntentionalClick(sheetOverlay, (e) => {
   if (e.target === sheetOverlay) closeSheet();
-});
+}, sheet);
 
 function openSheet(): void {
   updateFontVal();
+  updateFullscreenButton();
   sheetOverlay.classList.remove('hidden');
 }
 function closeSheet(): void {

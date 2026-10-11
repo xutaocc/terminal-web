@@ -892,6 +892,80 @@ body {
     font-size: 14px;
   }
 
+  /* Keep mobile menus in proportion with the compact terminal controls. */
+  .sheet {
+    padding: 6px 10px calc(10px + env(safe-area-inset-bottom));
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+  }
+  .sheet-grip {
+    width: 32px;
+    height: 3px;
+    margin: 4px auto 8px;
+  }
+  .sheet-title {
+    font-size: 12px;
+    margin: 0 3px 8px;
+  }
+  .drawer-list {
+    gap: 5px;
+  }
+  .drawer-row {
+    gap: 6px;
+    padding: 7px;
+    border-radius: 7px;
+  }
+  .drawer-body {
+    gap: 7px;
+    padding: 3px 2px;
+  }
+  .drawer-body .tab-dot {
+    width: 7px;
+    height: 7px;
+  }
+  .drawer-name {
+    font-size: 13px;
+  }
+  .drawer-act {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .drawer-new {
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+  .sheet-font {
+    gap: 7px;
+    padding: 4px 2px 7px;
+  }
+  .sheet-seg {
+    gap: 7px;
+    padding: 0 2px 7px;
+  }
+  .sf-btn {
+    width: 42px;
+    height: 32px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .sf-val,
+  .ss-lbl {
+    font-size: 12px;
+  }
+  .sheet-row {
+    gap: 10px;
+    padding: 10px 4px;
+    font-size: 13px;
+  }
+  .sheet-ico {
+    width: 20px;
+    font-size: 14px;
+  }
+
   /* The on-screen key bar wraps to fit the screen instead of being one long
      horizontally-scrollable row (which was awkward to scroll on a phone). Its
      real height is measured in JS into --keybar-h so the terminal sits right

@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
+import { isKeyboardInput } from './history-input.js';
 import {
   sanitizeSession,
   tmuxArgs,
@@ -527,15 +528,19 @@ async function handleScrollSession(
   });
   try {
     const state = await run(['display-message', '-p', '-t', target,
-      '#{pane_in_mode} #{mouse_any_flag}']);
-    const [inMode, appMouse] = state.split(' ');
-    if (inMode === '1' || appMouse !== '1') {
+      '#{pane_mode}|#{mouse_any_flag}|#{history_size}']);
+    const [mode, appMouse, history] = state.split('|');
+    const inMode = mode === 'copy-mode';
+    if (inMode || appMouse !== '1') {
       if (obj.action === 'bottom') {
-        if (inMode === '1') await run(['send-keys', '-t', target, '-X', 'cancel']);
-      } else if (obj.action === 'up' || inMode === '1') {
-        const args = inMode === '1' ? [] : ['copy-mode', '-t', target, ';'];
+        if (inMode) await run(['send-keys', '-t', target, '-X', 'cancel']);
+      } else if (inMode || (obj.action === 'up' && Number(history) > 0)) {
+        const args = inMode ? [] : ['copy-mode', '-t', target, ';'];
         await run([...args, 'send-keys', '-t', target, '-X',
-          obj.action === 'up' ? 'page-up' : 'page-down']);
+          obj.action === 'up' ? 'page-up' : 'page-down', ';',
+          'if-shell', '-F', '-t', target,
+          '#{&&:#{==:#{pane_mode},copy-mode},#{==:#{scroll_position},0}}',
+          `send-keys -t ${target} -X cancel`]);
       }
     } else {
       // A mouse-aware TUI owns its scrollback; let it interpret paging keys.
@@ -1443,6 +1448,32 @@ function attachSession(
     }
   });
 
+  // Keep keyboard and wheel bytes ordered while leaving tmux copy-mode.
+  // Coalesce keystrokes arriving during the command so pasted text stays intact.
+  const inputQueue: string[] = [];
+  let preparingInput = false;
+  const drainInput = (): void => {
+    if (preparingInput || closed) return;
+    const input = inputQueue.shift();
+    if (input === undefined) return;
+    if (!isKeyboardInput(input)) {
+      proc.write(input);
+      drainInput();
+      return;
+    }
+    preparingInput = true;
+    const target = `=${session}:`;
+    execFile('tmux', ['if-shell', '-F', '-t', target,
+      '#{==:#{pane_mode},copy-mode}', `send-keys -t ${target} -X cancel`],
+    { timeout: 3000 }, (error) => {
+      preparingInput = false;
+      if (closed) { inputQueue.length = 0; return; }
+      if (error) console.error('[ws] could not leave history mode:', error.message);
+      proc.write(input);
+      drainInput();
+    });
+  };
+
   ws.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
     if (closed) return;
     try {
@@ -1452,7 +1483,14 @@ function attachSession(
           ? Buffer.concat(data.map((d) => Buffer.from(d)))
           : Buffer.from(data as ArrayBuffer);
         const input = filterDaReplies(buf.toString("utf8"));
-        if (input) proc.write(input);
+        if (input) {
+          // Merge only adjacent keyboard chunks; mouse/keyboard order matters.
+          const last = inputQueue.length - 1;
+          if (last >= 0 && isKeyboardInput(input) && isKeyboardInput(inputQueue[last])) {
+            inputQueue[last] += input;
+          } else inputQueue.push(input);
+          drainInput();
+        }
         return;
       }
 
