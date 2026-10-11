@@ -95,6 +95,8 @@ for details.
 
 ## Prerequisites
 
+中文安装与使用文档：[Ubuntu、Windows WSL2 与 macOS 部署指南](docs/部署与使用指南.md)。原生 Windows 暂未适配。
+
 These are CLI prerequisites — they are **not** bundled or installed by this
 project:
 
