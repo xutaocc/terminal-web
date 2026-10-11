@@ -222,6 +222,106 @@ async function pasteRich(): Promise<void> {
   pasteFromClipboard();
 }
 
+function showCurrentPath(path: string, copied: boolean): void {
+  if (document.querySelector('.cwd-dialog')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'paste-overlay cwd-dialog';
+  const box = document.createElement('div');
+  box.className = 'paste-box';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', '当前工作路径');
+  const label = document.createElement('div');
+  label.className = 'paste-label';
+  label.setAttribute('aria-live', 'polite');
+  label.textContent = copied ? '已复制当前路径' : '自动复制未成功，请点击复制或长按路径手动复制';
+  const text = document.createElement('textarea');
+  text.className = 'paste-ta';
+  text.value = path;
+  text.readOnly = true;
+  text.rows = 4;
+  text.spellcheck = false;
+  text.setAttribute('aria-label', '完整工作路径');
+  const row = document.createElement('div');
+  row.className = 'paste-row';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'tb-btn';
+  close.textContent = '关闭';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'tb-btn';
+  copy.textContent = copied ? '再次复制' : '复制路径';
+  const dismiss = (): void => { overlay.remove(); };
+  bindIntentionalClick(close, dismiss);
+  bindIntentionalClick(copy, () => {
+    void copyText(path).then(ok => {
+      label.textContent = ok ? '已复制当前路径' : '复制失败，请长按路径手动复制';
+      if (ok) copy.textContent = '再次复制';
+    });
+  });
+  bindIntentionalClick(overlay, event => {
+    if (event.target === overlay) dismiss();
+  });
+  overlay.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    }
+  });
+  row.append(close, copy);
+  box.append(label, text, row);
+  overlay.append(box);
+  document.body.append(overlay);
+}
+
+let copyingCurrentPath = false;
+async function copyCurrentPath(): Promise<void> {
+  const session = activeSession;
+  if (!session) {
+    flashStatus('没有选中的终端会话', 1600);
+    return;
+  }
+  if (copyingCurrentPath || document.querySelector('.cwd-dialog')) return;
+  copyingCurrentPath = true;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4000);
+  const pathRequest = (async (): Promise<string> => {
+    const response = await fetch(`/api/sessions/cwd?session=${encodeURIComponent(session.name)}`, {
+      cache: 'no-store', signal: controller.signal,
+    });
+    if (!response.ok) throw new Error('working directory unavailable');
+    const data = await response.json() as { path?: unknown };
+    if (typeof data.path !== 'string' || !data.path.startsWith('/')) {
+      throw new Error('invalid working directory');
+    }
+    return data.path;
+  })();
+  // Start the secure-context write inside the click, before awaiting the server.
+  // WebKit accepts a ClipboardItem whose content arrives as a Promise.
+  let clipboardWrite: Promise<boolean> | null = null;
+  try {
+    if (window.isSecureContext && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+      const content = pathRequest.then(path => new Blob([path], { type: 'text/plain' }));
+      void content.catch(() => { /* fetch errors are reported below */ });
+      clipboardWrite = navigator.clipboard.write([new ClipboardItem({
+        'text/plain': content,
+      })]).then(() => true, () => false);
+    }
+  } catch { /* use the existing clipboard fallback after the path arrives */ }
+  try {
+    const path = await pathRequest;
+    const copied = clipboardWrite ? await clipboardWrite : await copyText(path);
+    showCurrentPath(path, copied);
+  } catch {
+    flashStatus('无法获取当前路径，请检查会话连接', 2200);
+  } finally {
+    window.clearTimeout(timer);
+    copyingCurrentPath = false;
+  }
+}
+
 // A small overlay with a real <textarea> the user pastes into, then we forward
 // the text to the active session. Works without the Clipboard API (HTTP/iPad).
 function openPasteBox(): void {
@@ -3226,6 +3326,10 @@ sheet.append(
   fontRow,
   splitRow,
   keyboardLockButton,
+  sheetRow('📁', '复制当前路径', () => {
+    closeSheet();
+    void copyCurrentPath();
+  }),
   sheetRow('⟳', 'Restart this session', () => {
     closeSheet();
     activeSession?.restart();

@@ -926,10 +926,25 @@ function sessionCwd(session: string | null): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       "tmux",
-      ["display-message", "-p", "-t", name, "-F", "#{pane_current_path}"],
-      (err, stdout) => resolve(err ? null : stdout.toString().trim() || null)
+      ["display-message", "-p", "-t", `=${name}:`, "-F", "#{pane_current_path}"],
+      { timeout: 3000 },
+      (err, stdout) => resolve(err ? null : stdout.toString().replace(/\n$/, '') || null)
     );
   });
+}
+
+/** Read the exact session's active pane without injecting commands into its CLI. */
+async function handleSessionCwd(res: http.ServerResponse, session: string | null): Promise<void> {
+  if (!session || !/^[A-Za-z0-9_-]{1,64}$/.test(session)) {
+    sendJsonHttp(res, 400, { error: 'invalid session' });
+    return;
+  }
+  const cwd = await sessionCwd(session);
+  if (!cwd || !path.isAbsolute(cwd)) {
+    sendJsonHttp(res, 409, { error: 'working directory unavailable' });
+    return;
+  }
+  sendJsonHttp(res, 200, { path: cwd });
 }
 
 async function handleDownload(
@@ -1034,6 +1049,12 @@ const server = http.createServer((req, res) => {
 
       if (method === "GET" && requestUrl.pathname === "/api/sessions") {
         await handleListSessions(res);
+        return;
+      }
+
+      if (method === 'GET' && requestUrl.pathname === '/api/sessions/cwd') {
+        res.setHeader('Cache-Control', 'no-store');
+        await handleSessionCwd(res, requestUrl.searchParams.get('session'));
         return;
       }
 
