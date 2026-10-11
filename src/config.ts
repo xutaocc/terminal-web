@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { loadAuthToken } from "./auth.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -29,8 +30,9 @@ export interface Config {
   uploadMaxFiles: number;
   /** Reject uploads larger than this many bytes. */
   uploadMaxBytes: number;
-  /** Shared token required to access the app (HTTP + WS). Empty = no auth. */
+  /** Shared token required to access the app (HTTP + WS). Generated and persisted when not configured. */
   authToken: string;
+  authTokenFile: string;
   /** Max concurrent ptys/terminals; new connections past this are refused to
    *  protect the host's small system-wide pty table (kern.tty.ptmx_max). */
   maxPtys: number;
@@ -111,6 +113,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? path.resolve(env.UPLOAD_DIR.trim())
       : path.join(os.homedir(), "terminal-web-uploads");
 
+  const authTokenFile = path.resolve(env.AUTH_TOKEN_FILE?.trim() || path.join(os.homedir(), ".config/terminal-web/auth-token"));
+
   return {
     port,
     host,
@@ -123,7 +127,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uploadRetentionHours: parseNonNegInt(env.UPLOAD_RETENTION_HOURS, 72),
     uploadMaxFiles: parseNonNegInt(env.UPLOAD_MAX_FILES, 100),
     uploadMaxBytes: parseNonNegInt(env.UPLOAD_MAX_MB, 1024) * 1024 * 1024,
-    authToken: (env.AUTH_TOKEN ?? "").trim(),
+    authToken: loadAuthToken(authTokenFile, env.AUTH_TOKEN),
+    authTokenFile,
     maxPtys: Math.max(1, parseNonNegInt(env.MAX_PTYS, 48)),
     tailscaleIp,
   };

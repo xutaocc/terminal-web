@@ -18,10 +18,9 @@ Built with [xterm.js](https://xtermjs.org/) on the front end and a small
 Node.js + TypeScript server using [`ws`](https://github.com/websockets/ws) and
 [`node-pty`](https://github.com/microsoft/node-pty) on the back end.
 
-It's designed to live on your **Tailnet**: the server binds to your Tailscale
-IP and, by default, has **no application-level auth** — anyone who can reach the
-address gets a full shell. To expose it more widely (e.g. behind a tunnel), set
-an `AUTH_TOKEN` to gate access with a shared token. See [Security](#security).
+All access requires a shared token, including LAN and Tailnet connections.
+The first start generates a persistent token; enter it once in the login page.
+Multiple devices can stay signed in together. See [Security](#security).
 
 **Features**
 
@@ -35,7 +34,7 @@ an `AUTH_TOKEN` to gate access with a shared token. See [Security](#security).
 - **Attach any file** (button / paste / drag) → upload → insert path, for **Claude
   Code** and other AI CLIs
 - Font size, fullscreen, IME (CJK) input, and a `?` help overlay
-- Runs over **Tailscale** or any **LAN/intranet** IP; optional **shared-token
+- Runs over **Tailscale** or any **LAN/intranet** IP; persistent **shared-token
   auth** (`AUTH_TOKEN`) to safely expose it beyond your Tailnet
 - Optional **background service** (launchd on macOS, systemd on Linux)
 
@@ -56,7 +55,7 @@ restart on crash)? `bash scripts/service.sh install` (launchd on macOS, systemd
 on Linux). See [Run](#run) and [Without Tailscale](#without-tailscale-lan--intranet)
 for details.
 
-> ⚠️ No login/auth — anyone who can reach the URL gets a full shell. Keep it on
+> Shared-token login is required. Keep it on
 > a network you trust. See [Security](#security).
 
 ---
@@ -187,10 +186,8 @@ HOST=0.0.0.0 PORT=8090 npm start
 — they just warn, then fall back to the `HOST` you set (or `0.0.0.0`). Open
 `http://<that-ip>:8090/` from any machine that can reach it.
 
-> **Security:** there is **no app-level auth** and traffic is plain HTTP —
-> anyone who can reach the bound `IP:port` gets a full shell. On a Tailnet that
-> is limited to your authorized devices; on a shared LAN it's everyone on that
-> segment. Only expose it on a network you trust (or put it behind a firewall).
+> **Security:** all access requires a shared token. Traffic is plain HTTP;
+> use HTTPS through a TLS proxy when encrypted transport is needed.
 
 ### Development
 
@@ -434,7 +431,8 @@ your shell instead, e.g. `HOST=100.x.y.z PORT=8090 npm start`.
 | `PORT`            | `8090`                                               | Port the HTTP/WebSocket server listens on.                                  |
 | `HOST`            | Tailscale IPv4 (`tailscale ip -4`), else `0.0.0.0`   | Address to bind. Set explicitly to pin a specific interface/IP.             |
 | `DEFAULT_SESSION` | `web`                                                | tmux session name used when the client doesn't pass `?session=NAME`.        |
-| `AUTH_TOKEN`      | _(empty = no auth)_                                  | Shared token required for requests arriving via Cloudflare; see [Security](#security). |
+| `AUTH_TOKEN` | _(auto-generated)_ | Optional shared-token override for all access. |
+| `AUTH_TOKEN_FILE` | `~/.config/terminal-web/auth-token` | Persistent generated token file. |
 | `UPLOAD_DIR`      | `~/terminal-web-uploads`                             | Where pasted/dropped/attached files are saved (see below).                  |
 | `UPLOAD_RETENTION_HOURS` | `72`                                          | Auto-delete uploads older than this (0 = never by age).                     |
 | `UPLOAD_MAX_FILES` | `100`                                               | Keep at most this many uploads, newest first (0 = unlimited).               |
@@ -467,33 +465,47 @@ each upload: files older than `UPLOAD_RETENTION_HOURS` (default 72h) are
 deleted, then only the newest `UPLOAD_MAX_FILES` (default 100) are kept. Only
 our own `clip-*` files are touched. Set either to `0` to disable that limit.
 
-> The upload endpoint has no auth beyond the tailnet, same as the terminal —
-> anyone on your tailnet can POST a file into `UPLOAD_DIR`.
+> Uploads require the same shared-token authentication as the terminal.
 
 ---
 
 ## Security
 
-By default **there is no application-level authentication** — anyone who can
-reach the bound address gets an interactive shell as the user running the server.
+All pages, APIs, uploads, downloads and WebSocket connections require the shared
+Token. Cloudflare headers do not change this policy.
 
-- Keep it **Tailnet-only**: leave `HOST` pointed at your Tailscale IP (the
-  default behavior) so the server is not exposed on your LAN or the public
-  internet. Avoid binding to `0.0.0.0` on untrusted networks.
-- Lock it down further with **Tailscale ACLs** so only specific devices/users
-  on your tailnet can reach the port.
-- **Exposing it beyond your Tailnet?** Set `AUTH_TOKEN` to a long random secret
-  (e.g. `openssl rand -hex 24`). Requests that arrive **through Cloudflare**
-  (detected via the `Cf-Ray` / `Cf-Connecting-Ip` headers it stamps) then require
-  the token — open it once with `?token=…` to set a cookie; the WebSocket is
-  gated too. Direct Tailnet/LAN access stays token-free. A static shared token is
-  **not** a substitute for real auth (no per-user identity or MFA); for stronger
-  control, front it with an identity-aware proxy (Cloudflare Access, Tailscale, …).
-- The server speaks **plain HTTP** (no TLS), which isn't a *secure context*, so
-  the browser's `navigator.clipboard` API is blocked. Copy/paste still works via
-  fallbacks — see [Copy, paste & clipboard](#copy-paste--clipboard). For the
-  native clipboard (and HTTPS), put it behind a TLS proxy such as
-  `tailscale serve`.
+On first start, the server generates a random 32-byte token and saves it to
+`~/.config/terminal-web/auth-token` with permissions `0600`. Restarts reuse it.
+An empty or unreadable token file causes startup to fail. `AUTH_TOKEN_FILE`
+overrides the path; a nonempty `AUTH_TOKEN` overrides the generated token.
+
+Every startup prints the current Token and token-bearing links for all non-loopback
+IPv4 interfaces. Links for addresses outside the configured listening host are
+marked as not listening; set `HOST=0.0.0.0` to listen on all IPv4 interfaces.
+With systemd, this output is available through `journalctl --user -u terminal-web`.
+
+Read the generated token locally:
+
+```bash
+cat ~/.config/terminal-web/auth-token
+```
+
+Enter it in the login page (submitted by POST), or open `/?token=YOUR_TOKEN`
+once. The latter redirects to a clean URL. Credentials use HttpOnly,
+SameSite=Lax cookies, with Secure enabled behind HTTPS. Browser retention is
+400 days; the server does not expire logins. Clearing browser data requires
+signing in again. Multiple devices can use the same token simultaneously.
+
+“退出登录” clears cookies and disconnects terminals in this browser, including
+other tabs. Other devices remain connected, and tmux programs keep running.
+HTTP mutations and WebSocket upgrades check browser request origins.
+
+To replace a leaked generated token, stop the service, delete the token file,
+and restart. This requires all devices to sign in again. If using `AUTH_TOKEN`,
+change that value instead. No automatic rotation or per-user permissions exist.
+
+The server speaks plain HTTP; use a TLS proxy for encrypted transport.
+Keep network access restricted to trusted devices where practical.
 
 Treat exposing this as equivalent to handing out SSH access.
 

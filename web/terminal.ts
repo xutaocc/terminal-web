@@ -358,6 +358,25 @@ controlsEl.id = 'controls';
 
 topbar.append(tabsEl, controlsEl);
 
+async function logoutBrowser(): Promise<void> {
+  try {
+    const response = await fetch('/auth/logout', { method: 'POST' });
+    if (!response.ok && response.status !== 401) throw new Error('logout failed');
+    // Only an event marker goes in localStorage, never the token.
+    try { localStorage.setItem('tw.logout', String(Date.now())); } catch { /* unavailable */ }
+    window.location.replace('/');
+  } catch { flashStatus('退出失败，请重试', 2000); }
+}
+window.addEventListener('storage', event => {
+  if (event.key === 'tw.logout') window.location.replace('/');
+});
+const logoutButton = document.createElement('button');
+logoutButton.type = 'button';
+logoutButton.textContent = '退出登录';
+logoutButton.title = '只退出当前浏览器，保留运行中的终端任务';
+bindIntentionalClick(logoutButton, () => { void logoutBrowser(); });
+controlsEl.append(logoutButton);
+
 let currentFont = (() => {
   try {
     const n = parseInt(localStorage.getItem('tw.fontSize') ?? '', 10);
@@ -1548,7 +1567,8 @@ class Session {
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
+      if (event.code === 4001) { void logoutBrowser(); return; }
       this.stopTouchScroll();
       this.stopPing();
       if (this.ws === socket) this.ws = null;
@@ -3178,6 +3198,7 @@ sheet.append(
     promptDownload();
   }),
   fullscreenButton,
+  sheetRow('↪', '退出登录', () => { closeSheet(); void logoutBrowser(); }),
   sheetRow('?', 'Help: copy / paste / files', () => {
     closeSheet();
     openHelp();

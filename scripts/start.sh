@@ -32,7 +32,7 @@ fi
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "WARNING: 'tailscale' not found on PATH. Falling back to a non-Tailnet host." >&2
   echo "         Without Tailscale the server is reachable to anyone who can reach" >&2
-  echo "         the bound address, and there is NO app-level auth." >&2
+  echo "         the bound address, and shared-token authentication is required." >&2
 fi
 
 # --- Build the client bundle if missing --------------------------------------

@@ -26,7 +26,7 @@ import {
 } from "./tmux.js";
 import type { ServerMessage } from "./types.js";
 import { isClientMessage } from "./types.js";
-import { gateHttp, isAuthed } from "./auth.js";
+import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
 const config = loadConfig();
 
@@ -1008,9 +1008,21 @@ const server = http.createServer((req, res) => {
       const requestUrl = new URL(req.url, "http://localhost");
       const method = req.method ?? "GET";
 
-      // Token gate (no-op when AUTH_TOKEN is unset). Handles the login page and
+      // Mandatory token gate. Handles the login page and
       // the ?token=… sign-in for every route.
-      if (gateHttp(req, res, requestUrl, config.authToken)) return;
+      if (method !== "GET" && method !== "HEAD" && !validOrigin(req)) {
+        res.writeHead(403).end("Forbidden origin");
+        return;
+      }
+      if (method === "POST" && requestUrl.pathname === "/auth/logout") {
+        const id = isAuthed(req, config.authToken) ? browserId(req) : undefined;
+        if (id) for (const ws of wss.clients) {
+          if (socketBrowsers.get(ws) === id) ws.close(4001, "Logged out");
+        }
+        logout(req, res);
+        return;
+      }
+      if (await gateHttp(req, res, requestUrl, config.authToken)) return;
 
       if (method === "POST" && requestUrl.pathname === "/upload") {
         await handleUpload(req, res, requestUrl.searchParams.get("name"));
@@ -1202,6 +1214,7 @@ function noteAbnormalPtyExit(): void {
 }
 
 const wss = new WebSocketServer({ noServer: true });
+const socketBrowsers = new WeakMap<WebSocket, string>();
 
 function sendJson(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
@@ -1601,7 +1614,12 @@ server.on("upgrade", (req, socket, head) => {
 
   // The terminal stream is the sensitive part: reject the upgrade unless the
   // request carries the auth cookie (the browser sends it automatically once
-  // signed in). No-op when AUTH_TOKEN is unset.
+  // signed in). This applies to direct LAN access too.
+  if (!validOrigin(req)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   if (!isAuthed(req, config.authToken)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
@@ -1609,6 +1627,8 @@ server.on("upgrade", (req, socket, head) => {
   }
 
   wss.handleUpgrade(req, socket, head, (ws) => {
+    const id = browserId(req);
+    if (id) socketBrowsers.set(ws, id);
     wss.emit("connection", ws, req);
   });
 });
@@ -1849,18 +1869,35 @@ snapshotTimer.unref();
 
 function logStartup(): void {
   const port = config.port;
-  const displayHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+  const tokenQuery = `?token=${encodeURIComponent(config.authToken)}`;
+  const accessUrl = (host: string): string =>
+    `http://${host.includes(":") ? `[${host}]` : host}:${port}/${tokenQuery}`;
+  const allInterfaces = config.host === "0.0.0.0" || config.host === "::";
 
   console.log("");
   console.log("  terminal-web is running.");
-  console.log(`  Local:     http://${displayHost}:${port}/`);
+  console.log(`  Listening: ${config.host}:${port}`);
+  console.log(`  Token: ${config.authToken}`);
+  console.log("  快速访问链接：");
+  if (allInterfaces || config.host === "127.0.0.1" || config.host === "localhost") {
+    console.log(`  Local: ${accessUrl("127.0.0.1")}`);
+  }
 
-  if (config.tailscaleIp) {
-    console.log(`  Tailscale: http://${config.tailscaleIp}:${port}/   <-- share this`);
-  } else {
-    console.log(
-      "  Tailscale: (not detected — install/start tailscale or set HOST to your tailnet IP)"
-    );
+  const addresses = new Set<string>();
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) addresses.add(entry.address);
+    }
+  }
+  for (const address of addresses) {
+    const note = allInterfaces || config.host === address ? "" : "  （当前未监听此地址）";
+    console.log(`  LAN: ${accessUrl(address)}${note}`);
+  }
+  if (!allInterfaces && !addresses.has(config.host) && config.host !== "127.0.0.1" && config.host !== "localhost") {
+    console.log(`  Host: ${accessUrl(config.host)}`);
+  }
+  if (!allInterfaces && addresses.size > 1) {
+    console.log("  如需通过所有局域网地址访问，请设置 HOST=0.0.0.0。");
   }
 
   if (!ensureTmuxAvailable()) {
@@ -1868,6 +1905,7 @@ function logStartup(): void {
       "  WARNING: tmux was not found on PATH. Sessions will fail to start. Install tmux (e.g. `brew install tmux`)."
     );
   }
+  console.log(`  Authentication: required for all access. Token file: ${config.authTokenFile}`);
   console.log(`  Default session: "${config.defaultSession}"  (override with ?session=NAME)`);
   console.log(`  Max concurrent terminals: ${config.maxPtys}  (set MAX_PTYS to change)`);
   console.log("");

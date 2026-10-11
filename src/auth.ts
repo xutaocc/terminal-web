@@ -1,16 +1,7 @@
-/**
- * Optional shared-token auth, for when the server is exposed beyond a trusted
- * network (e.g. via a public tunnel). When `AUTH_TOKEN` is set, every HTTP
- * request and WebSocket upgrade must carry a valid `tw_auth` cookie; otherwise
- * the visitor gets a small login page. Supplying `?token=…` once sets the
- * cookie (so the URL can be bookmarked) and redirects to a clean URL.
- *
- * This is a single shared secret, not per-user identity — keep the token long
- * and random. When `AUTH_TOKEN` is empty, auth is disabled and the server
- * behaves exactly as before (intended for trusted/tailnet-only deployments).
- */
 import http from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const COOKIE = "tw_auth";
 
@@ -21,7 +12,9 @@ function parseCookies(header: string | undefined): Record<string, string> {
     const i = part.indexOf("=");
     if (i < 0) continue;
     const k = part.slice(0, i).trim();
-    if (k) out[k] = decodeURIComponent(part.slice(i + 1).trim());
+    if (k) {
+      try { out[k] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* invalid cookie */ }
+    }
   }
   return out;
 }
@@ -33,21 +26,34 @@ function safeEqual(a: string, b: string): boolean {
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
 
-/**
- * True if the request arrived through Cloudflare. The token gate applies ONLY
- * to these requests, so direct/tailnet access (e.g. http://<tailscale-ip>:8090)
- * stays open with no token. Cloudflare's edge always stamps cf-ray /
- * cf-connecting-ip; a forged header from a direct client only makes auth stricter
- * (it would then demand the token), never weaker — and a real tunnel request can
- * never lack them.
- */
-function viaCloudflare(req: http.IncomingMessage): boolean {
-  return Boolean(req.headers["cf-ray"] ?? req.headers["cf-connecting-ip"]);
+/** Load one persistent shared secret; never silently disable authentication. */
+export function loadAuthToken(file: string, configured?: string): string {
+  if (configured?.trim()) return configured.trim();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(file)) {
+    try { fs.writeFileSync(file, randomBytes(32).toString("hex") + "\n", { flag: "wx", mode: 0o600 }); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
+  }
+  fs.chmodSync(file, 0o600);
+  const token = fs.readFileSync(file, "utf8").trim();
+  if (!token) throw new Error("Token file is empty; refusing to start.");
+  return token;
 }
 
-/** Whether this request must present the token: enabled AND via Cloudflare. */
-function authRequired(req: http.IncomingMessage, token: string): boolean {
-  return Boolean(token) && viaCloudflare(req);
+export function browserId(req: http.IncomingMessage): string | undefined {
+  const id = parseCookies(req.headers.cookie).tw_browser;
+  return id && /^[a-f0-9]{32}$/.test(id) ? id : undefined;
+}
+
+/** Browser requests must originate from this host, including WebSocket handshakes. */
+export function validOrigin(req: http.IncomingMessage): boolean {
+  if (req.headers["sec-fetch-site"] === "cross-site") return false;
+  const origin = req.headers.origin;
+  if (!origin) return true; // non-browser clients still need the token cookie
+  try {
+    const expected = `${reqIsHttps(req) ? "https" : "http"}://${req.headers.host}`;
+    return new URL(origin).origin === new URL(expected).origin;
+  } catch { return false; }
 }
 
 function hasValidCookie(req: http.IncomingMessage, token: string): boolean {
@@ -55,9 +61,9 @@ function hasValidCookie(req: http.IncomingMessage, token: string): boolean {
   return typeof got === "string" && safeEqual(got, token);
 }
 
-/** True if the request needs no token, or carries the valid auth cookie. */
+/** Every request requires the shared secret. */
 export function isAuthed(req: http.IncomingMessage, token: string): boolean {
-  return !authRequired(req, token) || hasValidCookie(req, token);
+  return Boolean(token) && hasValidCookie(req, token);
 }
 
 function reqIsHttps(req: http.IncomingMessage): boolean {
@@ -75,7 +81,7 @@ function authCookie(token: string, secure: boolean): string {
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=31536000",
+    "Max-Age=34560000",
   ];
   if (secure) attrs.push("Secure");
   return attrs.join("; ");
@@ -86,10 +92,10 @@ function loginPage(error: string): string {
     ? `<p class="err">${error.replace(/[<>&]/g, "")}</p>`
     : "";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8" />
+<html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>terminal-web — sign in</title>
+<title>Web Terminal — sign in</title>
 <style>
   :root { color-scheme: dark; }
   html,body { height:100%; margin:0; background:#1e1e1e; color:#d4d4d4;
@@ -106,21 +112,15 @@ function loginPage(error: string): string {
   .err { color:#f14c4c; font-size:13px; margin:10px 0 0; }
 </style></head>
 <body><div class="wrap">
-  <form id="f" autocomplete="off">
-    <h1>terminal-web</h1>
-    <input id="t" type="password" placeholder="Access token" autofocus
+  <form id="f" method="post" action="/auth/login" autocomplete="off">
+    <h1>Web Terminal</h1>
+    <input id="t" type="password" name="token" placeholder="请输入访问 Token" autofocus
       autocapitalize="off" autocomplete="current-password" spellcheck="false" />
-    <button type="submit">Enter</button>
+    <button type="submit">登录</button>
     ${err}
   </form>
 </div>
-<script>
-  document.getElementById('f').addEventListener('submit', function (e) {
-    e.preventDefault();
-    var v = document.getElementById('t').value.trim();
-    if (v) location.href = '/?token=' + encodeURIComponent(v);
-  });
-</script>
+
 </body></html>`;
 }
 
@@ -129,28 +129,44 @@ function loginPage(error: string): string {
  * the response (redirect after login, or served the login page) and the caller
  * should stop; false when the request is authed and should proceed normally.
  */
-export function gateHttp(
+export async function gateHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   url: URL,
   token: string,
-): boolean {
-  if (!authRequired(req, token)) return false; // disabled, or direct/tailnet
-
-  const supplied = url.searchParams.get("token");
+): Promise<boolean> {
+  res.setHeader("Cache-Control", "no-store");
+  // no-referrer makes browser form POSTs send Origin: null. Keep same-origin
+  // forms verifiable while withholding referrers from other sites.
+  res.setHeader("Referrer-Policy", "same-origin");
+  let supplied = req.method === "GET" ? url.searchParams.get("token") : null;
+  if (req.method === "POST" && url.pathname === "/auth/login") {
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk.toString();
+      if (Buffer.byteLength(body) > 4096) {
+        res.writeHead(413).end();
+        return true;
+      }
+    }
+    supplied = new URLSearchParams(body).get("token") ?? "";
+  }
   if (supplied !== null) {
-    if (safeEqual(supplied, token)) {
+    if (token && safeEqual(supplied, token)) {
+      // Never forward a token-bearing URL as a referrer after login.
+      res.setHeader("Referrer-Policy", "no-referrer");
       url.searchParams.delete("token");
       const qs = url.searchParams.toString();
       res.writeHead(302, {
-        "Set-Cookie": authCookie(token, reqIsHttps(req)),
-        Location: url.pathname + (qs ? `?${qs}` : ""),
+        "Set-Cookie": [authCookie(token, reqIsHttps(req)),
+          `tw_browser=${browserId(req) || randomBytes(16).toString("hex")}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000${reqIsHttps(req) ? "; Secure" : ""}`],
+        Location: (url.pathname === "/auth/login" || url.pathname.startsWith("//")) ? "/" : url.pathname + (qs ? `?${qs}` : ""),
       });
       res.end();
       return true;
     }
     res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(loginPage("Wrong token."));
+    res.end(loginPage("Token 不正确。"));
     return true;
   }
 
@@ -159,4 +175,12 @@ export function gateHttp(
   res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
   res.end(loginPage(""));
   return true;
+}
+
+/** Clear this browser only; the shared secret and other devices remain valid. */
+export function logout(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const secure = reqIsHttps(req) ? "; Secure" : "";
+  res.writeHead(204, { "Cache-Control": "no-store", "Set-Cookie":
+    ["tw_auth", "tw_browser"].map(name => `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`) });
+  res.end();
 }

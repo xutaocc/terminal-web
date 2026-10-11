@@ -2,6 +2,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import WebSocket from 'ws';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+const authToken = process.env.AUTH_TOKEN || readFileSync(process.env.AUTH_TOKEN_FILE || path.join(os.homedir(), '.config/terminal-web/auth-token'), 'utf8').trim();
+const authHeaders = { Cookie: `tw_auth=${encodeURIComponent(authToken)}` };
 
 const name = `history_verify_${process.pid}`;
 const target = `=${name}:`;
@@ -16,7 +21,7 @@ async function until(check) {
   }
   throw new Error('timed out waiting for terminal state');
 }
-const ws = new WebSocket(`ws://192.168.88.119:8090/ws?session=${name}&cols=80&rows=24`);
+const ws = new WebSocket(`ws://192.168.88.119:8090/ws?session=${name}&cols=80&rows=24`, { headers: authHeaders });
 let output = '';
 ws.on('message', data => { output += data.toString(); });
 await new Promise((resolve, reject) => {
@@ -30,7 +35,7 @@ try {
   wheel(64); await delay(200);
   assert.equal(mode(), '', 'no-history swipe must not enter copy-mode');
   const response = await fetch('http://192.168.88.119:8090/api/sessions/scroll', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, action: 'up' }),
   });
   assert.equal(response.status, 200);
