@@ -2822,7 +2822,7 @@ document.body.append(selBar);
 interface KeyDef {
   label?: string;
   seq?: string;
-  mod?: 'ctrl' | 'alt';
+  mod?: 'ctrl' | 'shift';
   action?: 'copy' | 'paste' | 'select' | 'up' | 'down' | 'bottom' | 'keyboard';
   /** Force a line break here (mobile only): the keys after it wrap to a new row. */
   rowBreak?: boolean;
@@ -2831,7 +2831,7 @@ const KEYS: KeyDef[] = [
   { label: 'Esc', seq: '\x1b' },
   { label: 'Tab', seq: '\t' },
   { label: 'Ctrl', mod: 'ctrl' },
-  { label: 'Alt', mod: 'alt' },
+  { label: 'Shift', mod: 'shift' },
   { label: '^C', seq: '\x03' },
   { label: 'Enter', seq: '\r' },
   // Touch text-selection toggle: while armed, drag on the terminal to select and
@@ -2851,28 +2851,34 @@ const KEYS: KeyDef[] = [
 ];
 
 let ctrlArmed = false;
-let altArmed = false;
-const modButtons: Partial<Record<'ctrl' | 'alt', HTMLElement>> = {};
+let shiftArmed = false;
+const modButtons: Partial<Record<'ctrl' | 'shift', HTMLElement>> = {};
 let selectBtn: HTMLElement | null = null;
 
 function refreshModVisuals(): void {
   modButtons.ctrl?.classList.toggle('armed', ctrlArmed);
-  modButtons.alt?.classList.toggle('armed', altArmed);
+  modButtons.shift?.classList.toggle('armed', shiftArmed);
 }
 
 function applyMods(seq: string): string {
-  if (!ctrlArmed && !altArmed) return seq;
+  if (!ctrlArmed && !shiftArmed) return seq;
   if (/^\x1b\[[ABCD]$/.test(seq)) {
-    const mod = 1 + (altArmed ? 2 : 0) + (ctrlArmed ? 4 : 0);
+    const mod = 1 + (shiftArmed ? 1 : 0) + (ctrlArmed ? 4 : 0);
     return `\x1b[1;${mod}${seq[seq.length - 1]}`;
   }
+  if (shiftArmed && seq === '\t') {
+    return ctrlArmed ? '\x1b[9;6u' : '\x1b[Z';
+  }
+  if (shiftArmed && seq === '\r') {
+    // Encode Shift+Enter distinctly; its meaning is decided by the CLI.
+    return `\x1b[13;${ctrlArmed ? 6 : 2}u`;
+  }
   if (seq.length === 1) {
-    let ch = seq;
+    let ch = shiftArmed ? seq.toUpperCase() : seq;
     if (ctrlArmed) {
       const code = ch.toUpperCase().charCodeAt(0);
       if (code >= 64 && code <= 95) ch = String.fromCharCode(code & 0x1f);
     }
-    if (altArmed) ch = '\x1b' + ch;
     return ch;
   }
   return seq;
@@ -2936,14 +2942,14 @@ for (const def of KEYS) {
     }
     if (def.mod) {
       if (def.mod === 'ctrl') ctrlArmed = !ctrlArmed;
-      else altArmed = !altArmed;
+      else shiftArmed = !shiftArmed;
       refreshModVisuals();
       return;
     }
     if (def.seq !== undefined) activeSession?.sendSeq(applyMods(def.seq));
-    if (ctrlArmed || altArmed) {
+    if (ctrlArmed || shiftArmed) {
       ctrlArmed = false;
-      altArmed = false;
+      shiftArmed = false;
       refreshModVisuals();
     }
     if (refocus) activeSession?.focus();
