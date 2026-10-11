@@ -3275,10 +3275,11 @@ function closeSheet(): void {
   sheetOverlay.classList.add('hidden');
 }
 
-// Keep the mobile bar's title + connection dot current, and re-render the open
-// drawer when the session list / active tab / connection state changes.
+// Keep the browser title and mobile bar in sync with the active tab, and
+// re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
   const s = activeTab;
+  document.title = s?.displayName || 'terminal-web';
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
   mKeysBtn.classList.toggle('active', !keybarEl.classList.contains('hidden'));
