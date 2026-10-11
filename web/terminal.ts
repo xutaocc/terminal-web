@@ -689,7 +689,7 @@ class Session {
     }
     this.positionHandles(sCol, sRow, eCol, eRow);
     // Whatever made or changed this selection — a drag, a handle, a long press,
-    // 全選 — if it was a finger then its actions belong on screen. Leaving that
+    // 全选 — if it was a finger then its actions belong on screen. Leaving that
     // to each caller is how a path ends up with a selection and no way to copy
     // it, which is exactly what happened.
     if (this.lastInputWasTouch && this.term.hasSelection()) showSelectionBar();
@@ -2601,7 +2601,7 @@ async function toggleFullscreen(): Promise<void> {
     ? (document.exitFullscreen ?? d.webkitExitFullscreen)
     : (el.requestFullscreen ?? el.webkitRequestFullscreen);
   if (!operation) {
-    flashStatus('此瀏覽器不支援全屏切換', 1800);
+    flashStatus('此浏览器不支持全屏切换', 1800);
     return;
   }
   fullscreenBusy = true;
@@ -2609,7 +2609,7 @@ async function toggleFullscreen(): Promise<void> {
   try {
     await operation.call(exiting ? document : el);
   } catch {
-    flashStatus('全屏切換未成功，請重試', 1800);
+    flashStatus('全屏切换失败，请重试', 1800);
   } finally {
     fullscreenBusy = false;
     updateFullscreenButton();
@@ -2748,10 +2748,10 @@ function setTouchSelectMode(on: boolean): void {
 function copySelectionNow(): void {
   const sel = activeSession?.term.getSelection() ?? '';
   if (!sel) {
-    flashStatus('沒有選到東西', 1400);
+    flashStatus('未选择任何内容', 1400);
     return;
   }
-  void copyText(sel).then((ok) => flashStatus(ok ? `已複製 ${sel.length} 字` : '複製失敗', 1600));
+  void copyText(sel).then((ok) => flashStatus(ok ? `已复制 ${sel.length} 个字符` : '复制失败', 1600));
   setTouchSelectMode(false);
 }
 
@@ -2766,9 +2766,9 @@ function selBarButton(label: string, cls: string, onTap: () => void): void {
   selBar.append(b);
 }
 
-selBarButton('複製', 'primary', () => copySelectionNow());
-selBarButton('全選', '', () => {
-  if (!activeSession?.selectVisible()) flashStatus('無法全選', 1400);
+selBarButton('复制', 'primary', () => copySelectionNow());
+selBarButton('全选', '', () => {
+  if (!activeSession?.selectVisible()) flashStatus('无法全选', 1400);
 });
 selBarButton('取消', '', () => {
   activeSession?.clearSelectionRange();
@@ -2794,7 +2794,7 @@ const KEYS: KeyDef[] = [
   { label: 'Enter', seq: '\r' },
   // Touch text-selection toggle: while armed, drag on the terminal to select and
   // lift to copy (a tablet's stand-in for desktop Option-drag selection).
-  { label: '選取', action: 'select' },
+  { label: '选择', action: 'select' },
   // On a phone the arrows get their own second row; everything else stays on the first.
   { rowBreak: true },
   // Ctrl+End: jump to the bottom in Claude Code's fullscreen view (CSI 1;5F).
@@ -2869,7 +2869,7 @@ for (const def of KEYS) {
       // (and lifting copies it) instead of scrolling; tap again to go back to
       // scrolling. Never refocus — that would pop the soft keyboard.
       setTouchSelectMode(!touchSelectMode);
-      flashStatus(touchSelectMode ? '選取模式:拖曳選字,放開後再按複製' : '選取關閉', 1800);
+      flashStatus(touchSelectMode ? '选择模式：拖动选择文字，松手后点击复制' : '已关闭选择模式', 1800);
       return;
     }
     if (def.action === 'copy') {
@@ -3125,13 +3125,13 @@ function sheetRow(
   return b;
 }
 
-const fullscreenButton = sheetRow('⤢', '進入全屏', () => {
+const fullscreenButton = sheetRow('⤢', '进入全屏', () => {
   closeSheet();
   void toggleFullscreen();
 });
 
 function updateFullscreenButton(): void {
-  const label = isFullscreen() ? '退出全屏' : '進入全屏';
+  const label = isFullscreen() ? '退出全屏' : '进入全屏';
   const text = fullscreenButton.querySelector('span:last-child');
   if (text) text.textContent = label;
   fullscreenButton.setAttribute('aria-label', label);
@@ -3166,7 +3166,7 @@ sheet.append(
     () => {
       closeSheet();
       if (activeSession?.selectVisible()) copySelectionNow();
-      else flashStatus('無法全選', 1400);
+      else flashStatus('无法全选', 1400);
     },
   ),
   sheetRow(
