@@ -599,6 +599,9 @@ class Session {
         'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
       fontSize: currentFont,
       scrollback: 100000,
+      // Local scrollback speed; tmux mouse reports are accelerated separately.
+      // One-finger touch scrolling uses TouchScrollMotion independently.
+      scrollSensitivity: 3,
       allowProposedApi: true,
       // Hold Option (macOS) / Shift (others) and drag to select text even while
       // tmux mouse mode is on, so it can be copied.
@@ -726,6 +729,7 @@ class Session {
       if (isActive(this)) updateKeyboardOffset();
     });
     this.wireTouchScroll();
+    this.wireMouseWheel();
     this.wireHandles();
   }
 
@@ -1083,6 +1087,12 @@ class Session {
 
     this.term.onData((data: string) => {
       this.debug('onData', data);
+      // xterm emits just one mouse report per wheel event, regardless of
+      // scrollSensitivity. Repeat only the report produced by a desktop wheel.
+      if (this.mouseWheelMultiplier > 1 && /^\x1b\[<\d+;\d+;\d+M$/.test(data)) {
+        this.send(data.repeat(this.mouseWheelMultiplier));
+        return;
+      }
       const now = performance.now();
       // Never let the pre-edit string through. Windows Bopomofo keeps ONE
       // composition open while you type — the log shows compositionupdate
@@ -1162,6 +1172,19 @@ class Session {
     if (!text) return;
     const t = text.replace(/\r?\n/g, '\r');
     this.sendSeq(this.term.modes.bracketedPasteMode ? `\x1b[200~${t}\x1b[201~` : t);
+  }
+
+  private mouseWheelMultiplier = 1;
+
+  private wireMouseWheel(): void {
+    if (TOUCH_DEVICE) return;
+    this.term.attachCustomWheelEventHandler(() => {
+      this.mouseWheelMultiplier = this.term.modes.mouseTrackingMode === 'none' ? 1 : 3;
+      // Mouse reports are emitted synchronously inside xterm's wheel handler.
+      // Reset before the next input so clicks, keys and paste are never sped up.
+      queueMicrotask(() => { this.mouseWheelMultiplier = 1; });
+      return true;
+    });
   }
 
   // One-finger touch scrolling. tmux runs in the alternate screen (no
