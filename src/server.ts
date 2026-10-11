@@ -500,6 +500,54 @@ async function handleListSessions(res: http.ServerResponse): Promise<void> {
   sendJsonHttp(res, 200, { tabs: [...byName.values()] });
 }
 
+/** Page tmux history, or forward paging keys to a mouse-aware application. */
+async function handleScrollSession(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse((await readBody(req, 4096)).toString('utf8'));
+  } catch {
+    sendJsonHttp(res, 400, { error: 'invalid body' });
+    return;
+  }
+  const obj = body as { name?: unknown; action?: unknown } | null;
+  if (typeof obj?.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(obj.name) ||
+      !['up', 'down', 'bottom'].includes(String(obj.action))) {
+    sendJsonHttp(res, 400, { error: 'invalid scroll action' });
+    return;
+  }
+  const target = `=${obj.name}:`;
+  const run = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
+    execFile('tmux', args, { timeout: 3000 }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout.trim());
+    });
+  });
+  try {
+    const state = await run(['display-message', '-p', '-t', target,
+      '#{pane_in_mode} #{mouse_any_flag}']);
+    const [inMode, appMouse] = state.split(' ');
+    if (inMode === '1' || appMouse !== '1') {
+      if (obj.action === 'bottom') {
+        if (inMode === '1') await run(['send-keys', '-t', target, '-X', 'cancel']);
+      } else if (obj.action === 'up' || inMode === '1') {
+        const args = inMode === '1' ? [] : ['copy-mode', '-t', target, ';'];
+        await run([...args, 'send-keys', '-t', target, '-X',
+          obj.action === 'up' ? 'page-up' : 'page-down']);
+      }
+    } else {
+      // A mouse-aware TUI owns its scrollback; let it interpret paging keys.
+      await run(['send-keys', '-t', target,
+        obj.action === 'up' ? 'PPage' : obj.action === 'down' ? 'NPage' : 'C-End']);
+    }
+    sendJsonHttp(res, 200, { ok: true });
+  } catch {
+    sendJsonHttp(res, 409, { error: 'session unavailable' });
+  }
+}
+
 /** Persist a tab's display-name change ({ name, displayName }). */
 async function handleRenameSession(
   req: http.IncomingMessage,
@@ -966,6 +1014,11 @@ const server = http.createServer((req, res) => {
 
       if (method === "GET" && requestUrl.pathname === "/api/sessions") {
         await handleListSessions(res);
+        return;
+      }
+
+      if (method === 'POST' && requestUrl.pathname === '/api/sessions/scroll') {
+        await handleScrollSession(req, res);
         return;
       }
 

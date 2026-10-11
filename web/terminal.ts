@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { TouchScrollMotion } from './touch-scroll.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -784,6 +785,11 @@ class Session {
 
   private wireInput(): void {
     const ta = this.term.textarea;
+    if (ta) {
+      for (const event of ['keydown', 'input', 'compositionstart']) {
+        ta.addEventListener(event, () => this.stopTouchScroll());
+      }
+    }
     if (IME_DEBUG && ta) {
       for (const ev of ['compositionstart', 'compositionupdate', 'compositionend']) {
         ta.addEventListener(ev, (e) => this.debug(ev, (e as CompositionEvent).data));
@@ -980,6 +986,7 @@ class Session {
   }
 
   private send(data: string): void {
+    this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(encoder.encode(data));
     }
@@ -993,6 +1000,7 @@ class Session {
    * silently dropped by send() and leave the path un-pasted.
    */
   sendSeq(seq: string): void {
+    this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.send(seq);
       return;
@@ -1026,7 +1034,9 @@ class Session {
   // events sent to tmux — dragging down scrolls back through history, dragging
   // up returns toward the live prompt, just like a real wheel.
   private wireTouchScroll(): void {
-    const STEP = 22; // px of drag per wheel "tick"
+    const motion = new TouchScrollMotion();
+    let animation: number | null = null;
+    let lastFlush = 0;
     let startX = 0;
     let startY = 0;
     let lastY = 0;
@@ -1034,6 +1044,28 @@ class Session {
     let row = 1;
     let tracking = false;
     let scrolling = false;
+    this.stopTouchScroll = () => {
+      motion.cancel();
+      if (animation !== null) cancelAnimationFrame(animation);
+      animation = null;
+    };
+    const animate = (now: number): void => {
+      animation = null;
+      if (!isActive(this) || this.disposed || document.hidden ||
+          !this.ws || this.ws.readyState !== WebSocket.OPEN || this.ws.bufferedAmount > 8192) {
+        this.stopTouchScroll();
+        return;
+      }
+      if (now - lastFlush >= 32) {
+        lastFlush = now;
+        const ticks = motion.frame(now);
+        if (ticks) this.sendWheel(ticks, col, row);
+      }
+      if (motion.active) animation = requestAnimationFrame(animate);
+    };
+    const schedule = (): void => {
+      if (animation === null) animation = requestAnimationFrame(animate);
+    };
 
     // Touch-select state (only used while touchSelectMode is on). Anchor is the
     // 0-based cell where the drag started, in absolute buffer coords (so it
@@ -1067,6 +1099,8 @@ class Session {
     this.el.addEventListener(
       'touchstart',
       (e: TouchEvent) => {
+        this.stopTouchScroll();
+        motion.start(performance.now());
         // A touch that lands on a selection handle is that handle's to deal
         // with; the terminal must not also start scrolling or a long-press.
         if ((e.target as HTMLElement | null)?.classList?.contains('sel-handle')) {
@@ -1168,19 +1202,9 @@ class Session {
         }
         e.preventDefault();
         e.stopPropagation();
-        let dy = t.clientY - lastY;
-        let ticks = 0;
-        while (Math.abs(dy) >= STEP) {
-          if (dy > 0) {
-            ticks += 1; // finger down → scroll back (wheel up)
-            dy -= STEP;
-          } else {
-            ticks -= 1; // finger up → toward the live prompt (wheel down)
-            dy += STEP;
-          }
-        }
-        lastY = t.clientY - dy; // carry the sub-step remainder
-        if (ticks !== 0) this.sendWheel(ticks, col, row);
+        motion.move(t.clientY - lastY, performance.now());
+        lastY = t.clientY;
+        schedule();
       },
       { capture: true, passive: false },
     );
@@ -1190,11 +1214,17 @@ class Session {
     // moved selection lands on the clipboard automatically; a tap with no drag
     // left the selection cleared, so nothing is copied. Select mode stays armed
     // until toggled off again.
-    const end = (): void => {
+    const end = (e: TouchEvent): void => {
       // A drag that actually selected something leaves the selection up along
       // with its actions, so it can be redone before anything is copied.
       if (selecting && selMoved && this.term.hasSelection()) showSelectionBar();
       cancelPress();
+      if (scrolling && e.type === 'touchend') {
+        motion.release(performance.now());
+        schedule();
+      } else {
+        this.stopTouchScroll();
+      }
       tracking = false;
       scrolling = false;
       selecting = false;
@@ -1218,7 +1248,26 @@ class Session {
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).
   private sendWheel(ticks: number, col: number, row: number): void {
     const seq = `\x1b[<${ticks > 0 ? 64 : 65};${col};${row}M`;
-    for (let i = Math.abs(ticks); i > 0; i -= 1) this.send(seq);
+    // One binary frame per animation step, not one frame per wheel tick.
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(encoder.encode(seq.repeat(Math.abs(ticks))));
+    }
+  }
+
+  stopTouchScroll: () => void = () => {};
+
+  async scrollHistory(action: 'up' | 'down' | 'bottom'): Promise<void> {
+    this.stopTouchScroll();
+    try {
+      const response = await fetch('/api/sessions/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.name, action }),
+      });
+      if (!response.ok) throw new Error('scroll failed');
+    } catch {
+      flashStatus('翻页失败，请检查连接', 1500);
+    }
   }
 
   private sendResize(): void {
@@ -1341,6 +1390,7 @@ class Session {
   setShown(shown: boolean): void {
     this.el.classList.toggle('hidden', !shown);
     if (!shown) {
+      this.stopTouchScroll();
       this.clearSelectionRange(); // a selection belongs to what is on screen
       return;
     }
@@ -1498,6 +1548,7 @@ class Session {
     };
 
     socket.onclose = () => {
+      this.stopTouchScroll();
       this.stopPing();
       if (this.ws === socket) this.ws = null;
       this.setConnected(false);
@@ -1514,6 +1565,7 @@ class Session {
   }
 
   dispose(): void {
+    this.stopTouchScroll();
     this.disposed = true;
     this.mate?.dispose(); // the pair goes together, or the second one is orphaned
     this.mate = null;
@@ -2707,7 +2759,7 @@ interface KeyDef {
   label?: string;
   seq?: string;
   mod?: 'ctrl' | 'alt';
-  action?: 'copy' | 'paste' | 'select';
+  action?: 'copy' | 'paste' | 'select' | 'up' | 'down' | 'bottom';
   /** Force a line break here (mobile only): the keys after it wrap to a new row. */
   rowBreak?: boolean;
 }
@@ -2724,7 +2776,9 @@ const KEYS: KeyDef[] = [
   // On a phone the arrows get their own second row; everything else stays on the first.
   { rowBreak: true },
   // Ctrl+End: jump to the bottom in Claude Code's fullscreen view (CSI 1;5F).
-  { label: '^End', seq: '\x1b[1;5F' },
+  { label: '上页', action: 'up' },
+  { label: '下页', action: 'down' },
+  { label: '底部', action: 'bottom' },
   // Ctrl+X then Ctrl+S — emacs's save — as one tap: two chords in a row is a lot
   // of Ctrl-arming on a phone.
   { label: '^X^S', seq: '\x18\x13' },
@@ -2778,6 +2832,11 @@ for (const def of KEYS) {
   if (def.action === 'select') selectBtn = b;
   b.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    activeSession?.stopTouchScroll();
+    if (def.action === 'up' || def.action === 'down' || def.action === 'bottom') {
+      void activeSession?.scrollHistory(def.action);
+      return;
+    }
     // On touch, never refocus the terminal: focusing its textarea pops up the
     // soft keyboard. The keys send their bytes straight over the WebSocket, so
     // focus isn't needed — preventDefault already keeps whatever focus state
@@ -3532,6 +3591,9 @@ void init();
 // Keep the tab list in sync with the server: when the page regains focus /
 // visibility, and on a light interval while visible.
 document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    for (const session of sessions) session.stopTouchScroll();
+  }
   if (document.visibilityState === 'visible') void syncFromServer();
 });
 window.addEventListener('focus', () => void syncFromServer());
