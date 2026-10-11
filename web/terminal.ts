@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { bindIntentionalClick } from './intentional-click.js';
+import { TerminalKeyboardLock } from './keyboard-lock.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -124,6 +125,11 @@ const SEL_DEBUG = (params.get('debug') ?? '').includes('sel');
 // be asking.)
 const TOUCH_DEVICE = navigator.maxTouchPoints > 0;
 const ANDROID_DEVICE = /Android/i.test(navigator.userAgent);
+let keyboardLocked = (() => {
+  try { return localStorage.getItem('tw.keyboardLocked') === '1'; }
+  catch { return false; }
+})();
+let keyboardLockChanged = false;
 
 const encoder = new TextEncoder();
 
@@ -435,6 +441,7 @@ class Session {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  private keyboardLock: TerminalKeyboardLock | null = null;
   // Until when a connect may create this session if it is not there. The
   // server refuses to bring back a closed tab for a connect that does not ask
   // (see closedTabs in server.ts) — only a tab made on purpose asks, and only
@@ -501,6 +508,12 @@ class Session {
     this.el.className = 'term-pane hidden';
     termArea.append(this.el);
     this.term.open(this.el);
+    if (this.term.textarea) {
+      this.keyboardLock = new TerminalKeyboardLock(
+        this.term.textarea, TOUCH_DEVICE, () => this.term.focus(),
+      );
+      this.keyboardLock.setLocked(keyboardLocked);
+    }
 
     if (WEBGL_ENABLED) {
       try {
@@ -935,7 +948,7 @@ class Session {
         if (this.reattachAfterCompose) {
           this.reattachAfterCompose = false;
           this.resync();
-          if (isActive(this)) this.term.focus();
+          if (isActive(this)) this.focus();
         }
       });
       // The direct-insert half of the IME path. The custom key handler stops
@@ -1423,7 +1436,18 @@ class Session {
   }
 
   focus(): void {
-    this.term.focus();
+    if (this.keyboardLock) this.keyboardLock.focus();
+    else this.term.focus();
+  }
+
+  setKeyboardLocked(locked: boolean): void {
+    this.keyboardLock?.setLocked(locked);
+  }
+
+  openKeyboard(): void {
+    this.stopTouchScroll();
+    if (this.keyboardLock) this.keyboardLock.open();
+    else this.term.focus();
   }
 
   restart(): void {
@@ -1530,7 +1554,7 @@ class Session {
         this.reattachAfterCompose = true;
       } else {
         this.resync();
-        if (isActive(this)) this.term.focus();
+        if (isActive(this)) this.focus();
       }
     };
 
@@ -2226,6 +2250,7 @@ interface UiPrefs {
   activeTab?: string;
   fontSize?: number;
   keybar?: boolean;
+  keyboardLocked?: boolean;
 }
 
 async function fetchServerPrefs(timeoutMs = 2500): Promise<UiPrefs | null> {
@@ -2798,7 +2823,7 @@ interface KeyDef {
   label?: string;
   seq?: string;
   mod?: 'ctrl' | 'alt';
-  action?: 'copy' | 'paste' | 'select' | 'up' | 'down' | 'bottom';
+  action?: 'copy' | 'paste' | 'select' | 'up' | 'down' | 'bottom' | 'keyboard';
   /** Force a line break here (mobile only): the keys after it wrap to a new row. */
   rowBreak?: boolean;
 }
@@ -2818,9 +2843,7 @@ const KEYS: KeyDef[] = [
   { label: '上页', action: 'up' },
   { label: '下页', action: 'down' },
   { label: '底部', action: 'bottom' },
-  // Ctrl+X then Ctrl+S — emacs's save — as one tap: two chords in a row is a lot
-  // of Ctrl-arming on a phone.
-  { label: '^X^S', seq: '\x18\x13' },
+  { label: '键盘', action: 'keyboard' },
   { label: '←', seq: '\x1b[D' },
   { label: '↑', seq: '\x1b[A' },
   { label: '↓', seq: '\x1b[B' },
@@ -2869,6 +2892,13 @@ for (const def of KEYS) {
   b.title = def.label ?? '';
   if (def.mod) modButtons[def.mod] = b;
   if (def.action === 'select') selectBtn = b;
+  if (def.action === 'keyboard') {
+    b.title = '弹出输入法';
+    b.setAttribute('aria-label', '弹出输入法');
+    bindIntentionalClick(b, () => activeSession?.openKeyboard(), keybarEl);
+    keybarEl.append(b);
+    continue;
+  }
   b.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     activeSession?.stopTouchScroll();
@@ -3141,6 +3171,28 @@ function sheetRow(
   return b;
 }
 
+const keyboardLockButton = sheetRow('☐', '键盘锁定', () => {
+  keyboardLockChanged = true;
+  setKeyboardLocked(!keyboardLocked);
+});
+keyboardLockButton.setAttribute('role', 'checkbox');
+keyboardLockButton.title = '开启后，手机仅通过“键盘”按钮弹出终端输入法';
+
+function setKeyboardLocked(locked: boolean): void {
+  keyboardLocked = locked;
+  keyboardLockButton.setAttribute('aria-checked', String(locked));
+  const icon = keyboardLockButton.querySelector('.sheet-ico');
+  if (icon) icon.textContent = locked ? '☑' : '☐';
+  for (const session of sessions) {
+    session.setKeyboardLocked(locked);
+    session.mate?.setKeyboardLocked(locked);
+  }
+  try { localStorage.setItem('tw.keyboardLocked', locked ? '1' : '0'); }
+  catch { /* server prefs still save the setting */ }
+  savePrefs({ keyboardLocked: locked });
+}
+setKeyboardLocked(keyboardLocked);
+
 const fullscreenButton = sheetRow('⤢', '进入全屏', () => {
   closeSheet();
   void toggleFullscreen();
@@ -3167,6 +3219,7 @@ sheet.append(
   sheetTitle,
   fontRow,
   splitRow,
+  keyboardLockButton,
   sheetRow('⟳', 'Restart this session', () => {
     closeSheet();
     activeSession?.restart();
@@ -3594,6 +3647,9 @@ async function init(): Promise<void> {
   if (typeof prefs.keybar === 'boolean' && prefs.keybar !== isKeybarVisible()) {
     setKeybarVisible(prefs.keybar);
   }
+  if (!keyboardLockChanged && typeof prefs.keyboardLocked === 'boolean') {
+    setKeyboardLocked(prefs.keyboardLocked);
+  }
 
   // Build every tab (creation order is tab order). None of them attaches here:
   // activating one is what opens its socket, on the frame after its pane has
@@ -3623,6 +3679,7 @@ async function init(): Promise<void> {
 
   // Everything restored: from here on, changes are the user's and get saved.
   prefsReady = true;
+  if (keyboardLockChanged) savePrefs({ keyboardLocked });
 }
 
 void init();

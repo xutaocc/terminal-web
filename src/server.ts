@@ -704,6 +704,8 @@ interface UiPrefs {
   fontSize?: number;
   /** Whether the on-screen key bar is shown. */
   keybar?: boolean;
+  /** Explicit keyboard activation on touch devices; defaults to false. */
+  keyboardLocked?: boolean;
 }
 
 /** device class ("touch" | "desktop") -> that class's prefs. */
@@ -782,6 +784,7 @@ async function handleSetPrefs(
     next.fontSize = Math.min(28, Math.max(8, Math.round(obj.fontSize)));
   }
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
+  if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
   all[scope] = next;
   prefsCache = all;
   prefsWrite = prefsWrite
