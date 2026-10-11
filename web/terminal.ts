@@ -748,10 +748,10 @@ class Session {
   }
 
   /** Cursor bottom in the terminal area's unpanned coordinate space. */
-  cursorBottom(): number {
+  cursorBottom(contextRows = 0): number {
     const buffer = this.term.buffer.active;
     const row = buffer.baseY + buffer.cursorY - buffer.viewportY;
-    return this.el.offsetTop + 4 + (row + 1) * this.cellSize().h;
+    return this.el.offsetTop + 4 + (row + 1 + contextRows) * this.cellSize().h;
   }
 
   /**
@@ -2673,8 +2673,11 @@ function updateKeyboardOffset(): void {
   const covered = restingTermH - available;
   const room = Math.max(0, restingTermH - KEYBOARD_MIN_VISIBLE_PX);
   // Moving by the whole keyboard height hides prompts near the top behind
-  // the toolbar. Pan only enough to keep the current cursor above the keys.
-  const cursorCovered = Math.max(0, (activeSession?.cursorBottom() ?? restingTermH) - available);
+  // the toolbar. Keep three rows below the cursor visible too: terminal apps
+  // put status and shortcut lines below their input field. Cap at the pane's
+  // bottom so a cursor on the last row does not create an empty gap.
+  const inputBottom = Math.min(restingTermH, activeSession?.cursorBottom(3) ?? restingTermH);
+  const cursorCovered = Math.max(0, inputBottom - available);
   const offset = covered > KEYBOARD_MIN_PX
     ? Math.min(Math.ceil(cursorCovered), Math.round(covered), room)
     : 0;
