@@ -138,13 +138,41 @@ body {
 }
 .paste-overlay.session-note-overlay {
   z-index: 10001;
+  /* Dialogs follow the visible viewport, independently of terminal panning. */
+  top: var(--visible-top, 0px);
+  bottom: auto;
+  height: var(--visible-h, 100dvh);
   padding: 12px;
-  bottom: var(--kb-offset);
+  overflow: hidden;
 }
 .paste-box.session-note-box {
   width: min(560px, 100%);
-  max-height: calc(100dvh - var(--kb-offset) - 24px);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.session-note-box > .paste-label {
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+}
+.session-note-body {
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.session-note-box > .paste-row {
+  flex-shrink: 0;
+}
+.session-note-overlay .session-note-input {
+  min-height: 80px;
+  height: clamp(80px, calc(var(--visible-h, 100dvh) - 230px), 260px);
+  resize: none;
+}
+.session-note-overlay .paste-row .tb-btn {
+  min-height: 40px;
+  padding: 6px 16px;
 }
 .session-note-popover {
   position: fixed;

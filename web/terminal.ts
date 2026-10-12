@@ -2064,7 +2064,10 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   save.textContent = '保存';
   save.disabled = true;
   row.append(cancel, save);
-  box.append(title, hint, input, counter, status, row);
+  const body = document.createElement('div');
+  body.className = 'session-note-body';
+  body.append(hint, input, counter, status);
+  box.append(title, body, row);
   overlay.append(box);
   document.body.append(overlay);
   const requests = new AbortController();
