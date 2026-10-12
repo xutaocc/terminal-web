@@ -22,6 +22,7 @@ const child = `${base}_new`;
 const sockets = [];
 const startService = () => spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/server.ts'], {
   env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token,
+    QUICK_COMMANDS_FILE: path.join(folder, 'commands.json'),
     LANG: 'C', LC_ALL: 'C' }, stdio: 'ignore',
 });
 let service = startService();
@@ -93,10 +94,20 @@ try {
   assert.equal((await api(`/api/sessions/note?session=${child.slice(0, -1)}`)).status, 404);
   assert.equal((await api(route, undefined, false)).status, 401);
   assert.equal((await api('/api/sessions/note', { name: child, text: 'unauthorized' }, false)).status, 401);
+  const commandData = await (await api('/api/quick-commands')).json();
+  assert.deepEqual(commandData.commands, []);
+  const commandSave = await api('/api/quick-commands', { revision: commandData.revision,
+    commands: [{ id: 'status', label: '查看状态', text: 'git status' }] });
+  assert.equal(commandSave.status, 200);
+  const savedCommands = await commandSave.json();
+  assert.equal((await api('/api/quick-commands', { revision: commandData.revision, commands: [] })).status, 409);
+  assert.equal((await api('/api/quick-commands', { revision: savedCommands.revision, commands: [null] })).status, 400);
+  assert.equal((await api('/api/quick-commands', undefined, false)).status, 401);
   await stopService();
   service = startService();
   await until(async () => (await api(route)).status === 200);
   assert.deepEqual(await (await api(route)).json(), record, 'notes survive Web server restart');
+  assert.deepEqual(await (await api('/api/quick-commands')).json(), savedCommands, 'commands survive service restart');
   assert.equal((await api('/api/sessions/note', { name: child, text: '' })).status, 200);
   assert.equal((await (await api(route)).json()).text, '', 'notes can be cleared');
   console.log('PASS: directory inheritance, existing-session preservation, notes round-trip, validation, authentication, restart persistence and clearing');

@@ -10,6 +10,7 @@ import { newSessionName, newSessionId } from './session-name.js';
 import { NoteHover } from './note-hover.js';
 import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
+import { showQuickCommands } from './quick-commands.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -3174,6 +3175,16 @@ dlBtn.innerHTML =
 bindIntentionalClick(dlBtn, () => promptDownload());
 controlsEl.append(dlBtn);
 
+function openQuickCommandPanel(): void {
+  showQuickCommands(text => {
+    const target = activeSession;
+    if (!target?.connected) return false;
+    target.pasteText(text);
+    if (!TOUCH_DEVICE) target.focus();
+    return true;
+  });
+}
+makeButton(controlsEl, 'tb-btn', '命令', '快捷命令', openQuickCommandPanel);
 makeButton(controlsEl, 'tb-btn tb-icon', '?', 'Help: copy / paste / files', openHelp);
 // Everything that isn't reached often — font size, attach, fullscreen, help —
 // sits behind this, in the same actions sheet the phone bar opens. The bar
@@ -3254,7 +3265,7 @@ interface KeyDef {
   label?: string;
   seq?: string;
   mod?: 'ctrl' | 'shift';
-  action?: 'copy' | 'paste' | 'select' | 'up' | 'down' | 'bottom' | 'keyboard';
+  action?: 'copy' | 'paste' | 'select' | 'commands' | 'up' | 'down' | 'bottom' | 'keyboard';
   /** Force a line break here (mobile only): the keys after it wrap to a new row. */
   rowBreak?: boolean;
 }
@@ -3265,9 +3276,7 @@ const KEYS: KeyDef[] = [
   { label: 'Shift', mod: 'shift' },
   { label: '^C', seq: '\x03' },
   { label: 'Enter', seq: '\r' },
-  // Touch text-selection toggle: while armed, drag on the terminal to select and
-  // lift to copy (a tablet's stand-in for desktop Option-drag selection).
-  { label: '选择', action: 'select' },
+  { label: '命令', action: 'commands' },
   // On a phone the arrows get their own second row; everything else stays on the first.
   { rowBreak: true },
   // Ctrl+End: jump to the bottom in Claude Code's fullscreen view (CSI 1;5F).
@@ -3328,6 +3337,13 @@ for (const def of KEYS) {
   b.textContent = def.label ?? '';
   b.title = def.label ?? '';
   if (def.mod) modButtons[def.mod] = b;
+  if (def.action === 'commands') {
+    b.title = '快捷命令';
+    b.setAttribute('aria-label', '快捷命令');
+    bindIntentionalClick(b, openQuickCommandPanel, keybarEl);
+    keybarEl.append(b);
+    continue;
+  }
   if (def.action === 'select') selectBtn = b;
   if (def.action === 'keyboard') {
     b.title = '弹出输入法';
@@ -3656,7 +3672,13 @@ for (const event of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 updateFullscreenButton();
 
+selectBtn = sheetRow('选择', '拖动选择文字', () => {
+  closeSheet();
+  setTouchSelectMode(!touchSelectMode);
+  flashStatus(touchSelectMode ? '选择模式：拖动选择文字，松手后点击复制' : '已关闭选择模式', 1800);
+});
 sheet.append(
+  selectBtn,
   sheetGrip,
   sheetTitle,
   fontRow,

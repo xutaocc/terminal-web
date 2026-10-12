@@ -31,8 +31,11 @@ import { isClientMessage } from "./types.js";
 import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
 import { handleFileApi } from "./file-api.js";
+import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 
 const config = loadConfig();
+const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
+  path.join(os.homedir(), '.terminal-web', 'quick-commands.json'));
 
 // The cross-device tab list lives on the tmux sessions themselves (a @twtab
 // user option), so it can't drift from reality — see tmux.ts. This set just
@@ -507,6 +510,20 @@ async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResp
     sendJsonHttp(res, 409, { error: 'Could not save session note' }); return;
   }
   sendJsonHttp(res, 200, note);
+}
+
+async function handleQuickCommands(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method === 'GET') { sendJsonHttp(res, 200, await quickCommands.get()); return; }
+  let body: { revision?: unknown; commands?: unknown };
+  try { body = JSON.parse((await readBody(req, 1024 * 1024)).toString('utf8')); }
+  catch { sendJsonHttp(res, 400, { error: 'Invalid commands' }); return; }
+  if (typeof body?.revision !== 'string' || !validQuickCommands(body.commands)) {
+    sendJsonHttp(res, 400, { error: 'Invalid commands' }); return;
+  }
+  const saved = await quickCommands.save(body.revision, body.commands);
+  if (!saved) { sendJsonHttp(res, 409, { error: 'Commands changed on another device' }); return; }
+  sendJsonHttp(res, 200, saved);
 }
 
 async function handleListSessions(res: http.ServerResponse): Promise<void> {
@@ -1096,6 +1113,10 @@ const server = http.createServer((req, res) => {
 
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/sessions/note') {
         await handleSessionNote(req, res, requestUrl);
+        return;
+      }
+      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/quick-commands') {
+        await handleQuickCommands(req, res);
         return;
       }
       if (method === "POST" && requestUrl.pathname === "/api/sessions/rename") {
