@@ -1,7 +1,7 @@
 :root {
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
-  --topbar-h: 38px;
+  --topbar-h: var(--desktop-topbar-h, 38px);
   --keybar-h: 0px; /* set to the real height by JS when the key bar is shown */
   --kb-offset: 0px; /* how far the keyboard covers the terminal — see below */
   --kb-gap: 0px; /* how far the layout viewport extends below what is visible */
@@ -37,11 +37,11 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  height: calc(var(--topbar-h) + env(safe-area-inset-top));
+  min-height: calc(38px + env(safe-area-inset-top));
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  padding: env(safe-area-inset-top) 8px 0;
+  padding: calc(4px + env(safe-area-inset-top)) 8px 4px;
   padding-left: max(8px, env(safe-area-inset-left));
   padding-right: max(8px, env(safe-area-inset-right));
   background: #252526;
@@ -54,20 +54,16 @@ body {
   -webkit-user-select: none;
 }
 
-/* tabs (left, horizontally scrollable) + the "+" button */
+/* Desktop tabs wrap into additional rows; the "+" button remains visible. */
 #tabs {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  white-space: nowrap;
+  overflow: visible;
   -webkit-overflow-scrolling: touch;
-}
-#tabs::-webkit-scrollbar {
-  height: 0;
 }
 
 .tab {

@@ -457,7 +457,7 @@ const termArea = document.getElementById('terminal') as HTMLElement;
 const keybarEl = document.getElementById('keybar') as HTMLElement;
 const statusEl = document.getElementById('status');
 
-// Top bar layout: [ tabs (scrollable) ... + ] [ controls ]
+// Top bar layout: [ wrapping tabs ] [ + ] [ controls ]
 const tabsEl = document.createElement('div');
 tabsEl.id = 'tabs';
 const addBtn = document.createElement('button');
@@ -465,12 +465,11 @@ addBtn.className = 'tab-add';
 addBtn.type = 'button';
 addBtn.textContent = '+';
 addBtn.title = 'New session';
-tabsEl.append(addBtn);
 
 const controlsEl = document.createElement('div');
 controlsEl.id = 'controls';
 
-topbar.append(tabsEl, controlsEl);
+topbar.append(tabsEl, addBtn, controlsEl);
 
 async function logoutBrowser(): Promise<void> {
   try {
@@ -1936,7 +1935,7 @@ function finishTabDrag(): void {
 
 function applyTabOrder(ordered: Session[]): void {
   sessions.splice(0, sessions.length, ...ordered);
-  for (const tab of sessions) if (tab.tabEl) tabsEl.insertBefore(tab.tabEl, addBtn);
+  for (const tab of sessions) if (tab.tabEl) tabsEl.append(tab.tabEl);
   saveTabs();
   refreshMobileUI();
 }
@@ -1945,11 +1944,20 @@ tabsEl.addEventListener('dragover', e => {
   if (!draggedTab) return;
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-  const rect = tabsEl.getBoundingClientRect();
-  if (e.clientX < rect.left + 36) tabsEl.scrollLeft -= 20;
-  else if (e.clientX > rect.right - 36) tabsEl.scrollLeft += 20;
 });
 tabsEl.addEventListener('drop', e => {
+  if (!draggedTab) return;
+  e.preventDefault();
+  const last = sessions[sessions.length - 1];
+  if (last) applyTabOrder(moveTab(sessions, draggedTab, last, true));
+  finishTabDrag();
+});
+addBtn.addEventListener('dragover', e => {
+  if (!draggedTab) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+});
+addBtn.addEventListener('drop', e => {
   if (!draggedTab) return;
   e.preventDefault();
   const last = sessions[sessions.length - 1];
@@ -2235,7 +2243,7 @@ function buildTab(s: Session): void {
   s.tabEl = tab;
   s.tabLabel = label;
   s.tabDot = dot;
-  tabsEl.insertBefore(tab, addBtn); // keep the "+" button last
+  tabsEl.append(tab); // The fixed "+" button sits outside the scrollable strip.
   updateTabDot(s);
   refreshMobileUI();
 }
@@ -3738,6 +3746,19 @@ mobileMQ.addEventListener('change', () => {
 });
 let areaObserver: ResizeObserver | null = null;
 if (typeof ResizeObserver !== 'undefined') {
+  const topbarObserver = new ResizeObserver(() => {
+    if (mobileMQ.matches) return;
+    const safeTop = Math.max(0, parseFloat(getComputedStyle(topbar).paddingTop) - 4);
+    const height = Math.ceil(topbar.getBoundingClientRect().height - safeTop);
+    if (height <= 0 || cssPx(root, '--desktop-topbar-h') === height) return;
+    root.style.setProperty('--desktop-topbar-h', `${height}px`);
+    // Desktop textareas stay focused while tabs grow; reset the keyboard-height
+    // baseline so the terminal shrinks to the space below the new rows.
+    restingTermH = null;
+    updateKeyboardOffset();
+    fitActive();
+  });
+  topbarObserver.observe(topbar);
   areaObserver = new ResizeObserver(() => fitActive());
   areaObserver.observe(termArea);
 }
