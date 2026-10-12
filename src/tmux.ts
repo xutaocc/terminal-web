@@ -1,4 +1,20 @@
 import { execFile, execFileSync } from "node:child_process";
+import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+/** Invalid, missing or inaccessible startup directories fall back to the user's home. */
+export async function resolveSessionDirectory(value: string): Promise<string> {
+  const directory = value === '~' ? os.homedir() : value.startsWith('~/') ?
+    path.join(os.homedir(), value.slice(2)) : value;
+  if (!path.isAbsolute(directory) || directory.length > 4096 || directory.includes('\0')) return os.homedir();
+  try {
+    if (!(await fs.stat(directory)).isDirectory()) return os.homedir();
+    await fs.access(directory, constants.X_OK);
+    return directory;
+  } catch { return os.homedir(); }
+}
 
 /**
  * Sanitize a requested tmux session name.
@@ -36,19 +52,23 @@ export function tmuxArgs(session: string, confPath: string, startDir?: string): 
  * Start a new session in its base session's current pane directory. Used by
  * splits and new tabs. Existing sessions keep their own directory on attach.
  */
-export function mateStartDir(mate: string, base: string): Promise<string | null> {
+export function mateStartDir(mate: string, base: string, displayedDirectory?: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("tmux", ["has-session", "-t", `=${mate}`], (err) => {
+    execFile("tmux", ["has-session", "-t", `=${mate}`], async (err) => {
       if (!err) {
         resolve(null); // already there: attaching must not move it
+        return;
+      }
+      if (displayedDirectory !== undefined) {
+        resolve(await resolveSessionDirectory(displayedDirectory));
         return;
       }
       execFile(
         "tmux",
         ["-u", "display-message", "-p", "-t", `=${base}:`, "#{pane_current_path}"],
-        (err2, stdout) => {
+        async (err2, stdout) => {
           const dir = err2 ? "" : stdout.replace(/\r?\n$/, '');
-          resolve(dir.startsWith("/") ? dir : null);
+          resolve(await resolveSessionDirectory(dir));
         }
       );
     });

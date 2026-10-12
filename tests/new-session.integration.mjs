@@ -19,6 +19,8 @@ const directory = path.join(folder, '中文 project trailing ');
 mkdirSync(directory);
 const base = `new_session_verify_${process.pid}`;
 const child = `${base}_new`;
+const snapshotChild = `${base}_snapshot`;
+const fallbackChild = `${base}_fallback`;
 const sockets = [];
 const startService = () => spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/server.ts'], {
   env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token,
@@ -46,8 +48,10 @@ async function until(check) {
   }
   throw new Error('Timed out waiting for service/session');
 }
-async function connect(name, from) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session=${name}&cols=80&rows=24&create=1&from=${from}`, {
+async function connect(name, from, directory) {
+  const url = `ws://127.0.0.1:${port}/ws?session=${name}&cols=80&rows=24&create=1&from=${from}` +
+    (directory !== undefined ? `&dir=${encodeURIComponent(directory)}` : '');
+  const ws = new WebSocket(url, {
     headers: { Cookie: `tw_auth=${token}` },
   });
   sockets.push(ws);
@@ -77,6 +81,20 @@ try {
   await connect(child, base);
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(cwd(child), directory, 'existing sessions keep their directory on attach');
+  await connect(snapshotChild, base, directory);
+  await until(() => cwd(snapshotChild) === directory);
+  assert.equal(cwd(base), folder);
+  assert.equal(cwd(snapshotChild), directory, 'new sessions use the path displayed before the base changed directories');
+  await connect(snapshotChild, base, folder);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(cwd(snapshotChild), directory, 'a preview path must not relocate an existing session');
+  await connect(fallbackChild, base, path.join(folder, 'missing-directory'));
+  await until(() => cwd(fallbackChild) === realpathSync(os.homedir()));
+  assert.equal(cwd(fallbackChild), realpathSync(os.homedir()), 'invalid editable directory falls back to home');
+  tmux('kill-session', '-t', `=${fallbackChild}`);
+  await connect(fallbackChild, base, '');
+  await until(() => cwd(fallbackChild) === realpathSync(os.homedir()));
+  assert.equal(cwd(fallbackChild), realpathSync(os.homedir()), 'empty editable directory uses home instead of the base directory');
   const route = `/api/sessions/note?session=${child}`;
   const empty = await api(route);
   assert.equal(empty.headers.get('cache-control'), 'no-store');
@@ -114,7 +132,7 @@ try {
 } finally {
   for (const ws of sockets) ws.close();
   await stopService();
-  for (const name of [base, child]) {
+  for (const name of [base, child, snapshotChild, fallbackChild]) {
     try { tmux('kill-session', '-t', `=${name}`); } catch { /* already gone */ }
   }
   rmSync(folder, { recursive: true, force: true });

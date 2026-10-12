@@ -718,6 +718,32 @@ body {
   outline: none;
   border-color: #0a84ff;
 }
+.paste-overlay.prompt-overlay {
+  z-index: 70; /* Prompts must appear above the session drawer (60). */
+}
+.paste-overlay.prompt-overlay.has-directory {
+  top: var(--visible-top, 0px);
+  bottom: auto;
+  height: var(--visible-h, 100dvh);
+  padding: 12px;
+}
+.has-directory .prompt-box {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: calc(var(--visible-h, 100dvh) - 24px);
+  overflow: hidden;
+}
+.has-directory .prompt-content { min-height: 0; overflow-y: auto; }
+.has-directory .paste-row { flex-shrink: 0; margin-top: 12px; }
+.prompt-directory-label { margin-top: 12px; color: #aaa; font: 12px/1.5 system-ui, sans-serif; }
+.prompt-directory-path {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical;
+  margin: 6px 0 0; padding: 10px; border: 1px solid #444; border-radius: 6px;
+  background: #1e1e1e; color: #ddd; font: 16px/1.5 var(--mono);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24dvh; overflow-y: auto;
+  user-select: text; -webkit-user-select: text;
+}
 
 /* Help overlay */
 .help-box {
@@ -914,6 +940,15 @@ body {
   border-color: #3b8eea;
   color: #fff;
 }
+.drawer-hint {
+  margin: 0 0 10px;
+  font: 12px/1.5 system-ui, sans-serif;
+  color: #aaa;
+}
+.drawer-enter svg {
+  width: 14px;
+  height: 14px;
+}
 .drawer-body {
   flex: 1 1 auto;
   min-width: 0;
@@ -938,8 +973,12 @@ body {
   min-width: 0;
   font-size: 16px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 .drawer-act {
   appearance: none;
@@ -947,6 +986,7 @@ body {
   flex: 0 0 auto;
   width: 38px;
   height: 38px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1105,26 +1145,26 @@ body {
     gap: 5px;
   }
   .drawer-row {
-    gap: 6px;
-    padding: 7px;
+    gap: 4px;
+    padding: 6px;
     border-radius: 7px;
   }
   .drawer-body {
-    gap: 7px;
-    padding: 3px 2px;
+    gap: 5px;
+    padding: 2px 0;
   }
   .drawer-body .tab-dot {
     width: 7px;
     height: 7px;
   }
   .drawer-name {
-    font-size: 13px;
+    font-size: 12px;
   }
   .drawer-act {
-    width: 30px;
-    height: 30px;
+    width: 26px;
+    height: 26px;
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 12px;
   }
   .drawer-new {
     margin-top: 8px;

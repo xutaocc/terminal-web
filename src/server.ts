@@ -1317,6 +1317,7 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
   let requested: string | null = null;
   let create = false;
   let createFrom: string | undefined;
+  let createDirectory: string | undefined;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
   try {
@@ -1325,6 +1326,10 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     create = u.searchParams.get("create") === "1";
     const from = u.searchParams.get("from");
     if (create && from && /^[A-Za-z0-9_-]{1,64}$/.test(from)) createFrom = from;
+    const directory = u.searchParams.get('dir');
+    if (create && u.searchParams.has('dir')) {
+      createDirectory = directory ?? '';
+    }
     cols = parseDim(u.searchParams.get("cols"), DEFAULT_COLS, MAX_COLS);
     rows = parseDim(u.searchParams.get("rows"), DEFAULT_ROWS, MAX_ROWS);
   } catch {
@@ -1375,20 +1380,20 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     });
     return;
   }
-  startAttach(ws, session, cols, rows, createFrom);
+  startAttach(ws, session, cols, rows, createFrom, createDirectory);
 });
 
 /**
  * New tabs and splits start in their base session's current directory.
  * Reattaching an existing session never changes its working directory.
  */
-function startAttach(ws: LiveSocket, session: string, cols: number, rows: number, createFrom?: string): void {
+function startAttach(ws: LiveSocket, session: string, cols: number, rows: number, createFrom?: string, directory?: string): void {
   const base = createFrom ?? (session.endsWith(MATE_SUFFIX) ? session.slice(0, -MATE_SUFFIX.length) : null);
-  if (!base) {
+  if (!base && directory === undefined) {
     attachSession(ws, session, cols, rows);
     return;
   }
-  void mateStartDir(session, base).then((dir) => {
+  void mateStartDir(session, base ?? session, directory).then((dir) => {
     if (ws.readyState !== WebSocket.OPEN) return;
     attachSession(ws, session, cols, rows, dir ?? undefined);
   });

@@ -557,6 +557,7 @@ class Session {
   // pass for one.
   private createUntil = 0;
   private createFrom: string | null = null;
+  private createDirectory: string | null = null;
 
   // IME double-input guard (order-independent, content-scoped).
   private lastData = '';
@@ -1523,9 +1524,10 @@ class Session {
   }
 
   /** This session is being made on purpose: its first attach may create it. */
-  intendCreate(baseSession?: string): void {
+  intendCreate(baseSession?: string, directory?: string): void {
     this.createUntil = performance.now() + 60_000;
     this.createFrom = baseSession ?? null;
+    this.createDirectory = directory ?? null;
   }
 
   /** Show one of this tab's terminals, or both. */
@@ -1650,7 +1652,8 @@ class Session {
       `${wsProto}://${window.location.host}/ws?session=${encodeURIComponent(this.name)}` +
       `&cols=${this.term.cols}&rows=${this.term.rows}` +
       (performance.now() < this.createUntil ? '&create=1' +
-        (this.createFrom ? `&from=${encodeURIComponent(this.createFrom)}` : '') : '');
+        (this.createFrom ? `&from=${encodeURIComponent(this.createFrom)}` : '') +
+        (this.createDirectory !== null ? `&dir=${encodeURIComponent(this.createDirectory)}` : '') : '');
     const socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
     this.ws = socket;
@@ -1659,6 +1662,7 @@ class Session {
       this.reconnectDelay = MIN_DELAY;
       this.createUntil = 0; // it exists now; a later reconnect is only a reconnect
       this.createFrom = null;
+      this.createDirectory = null;
       if (IME_DEBUG) {
         this.debugSend(
           'env',
@@ -2401,6 +2405,8 @@ function domPrompt(opts: {
   label: string;
   value?: string;
   okText?: string;
+  directory?: (signal: AbortSignal) => Promise<string>;
+  onDirectoryChange?: (directory: string) => void;
 }): Promise<string | null> {
   return new Promise((resolve) => {
     if (document.querySelector('.prompt-overlay')) {
@@ -2432,7 +2438,10 @@ function domPrompt(opts: {
     ok.type = 'button';
     ok.textContent = opts.okText ?? 'OK';
     row.append(cancel, ok);
-    box.append(label, input, row);
+    const content = document.createElement('div');
+    content.className = 'prompt-content';
+    content.append(label, input);
+    box.append(content, row);
     overlay.append(box);
     document.body.append(overlay);
     window.setTimeout(() => {
@@ -2441,9 +2450,57 @@ function domPrompt(opts: {
     }, 0);
 
     let done = false;
+    let directoryRequest: AbortController | null = null;
+    if (opts.directory) {
+      overlay.classList.add('has-directory');
+      const directoryLabel = document.createElement('div');
+      directoryLabel.className = 'prompt-directory-label';
+      directoryLabel.textContent = '启动目录（可修改，留空或无效时使用用户主目录）';
+      const directory = document.createElement('textarea');
+      directory.className = 'prompt-directory-path';
+      directory.rows = 3;
+      directory.setAttribute('aria-label', '新会话启动目录');
+      directory.placeholder = '填写绝对路径；留空使用用户主目录';
+      directory.spellcheck = false;
+      directory.autocapitalize = 'off';
+      let edited = false;
+      directory.addEventListener('input', () => {
+        edited = true;
+        opts.onDirectoryChange?.(directory.value);
+      });
+      directory.addEventListener('keydown', e => {
+        if (e.key === 'Enter') e.preventDefault();
+      });
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'tb-btn'; retry.textContent = '重新读取目录';
+      retry.hidden = true;
+      content.append(directoryLabel, directory, retry);
+      const loadDirectory = async (): Promise<void> => {
+        directoryRequest?.abort();
+        const request = new AbortController();
+        directoryRequest = request;
+        const timer = window.setTimeout(() => request.abort(), 5000);
+        retry.hidden = true; directory.placeholder = '正在读取当前会话目录…';
+        try {
+          const path = await opts.directory!(request.signal);
+          if (done || directoryRequest !== request) return;
+          if (!edited) {
+            directory.value = path;
+            opts.onDirectoryChange?.(path);
+          }
+          directory.placeholder = '填写绝对路径；留空使用用户主目录';
+        } catch {
+          if (done || directoryRequest !== request) return;
+          directory.placeholder = '读取失败，可手动填写；留空使用用户主目录'; retry.hidden = false;
+        } finally { clearTimeout(timer); }
+      };
+      retry.addEventListener('click', () => { edited = false; void loadDirectory(); });
+      void loadDirectory();
+    }
     const finish = (result: string | null): void => {
       if (done) return;
       done = true;
+      directoryRequest?.abort();
       overlay.remove();
       activeSession?.focus();
       resolve(result);
@@ -2456,7 +2513,7 @@ function domPrompt(opts: {
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        finish(input.value);
+        if (!ok.disabled) finish(input.value);
       } else if (e.key === 'Escape') {
         e.preventDefault();
         finish(null);
@@ -2465,21 +2522,32 @@ function domPrompt(opts: {
   });
 }
 
-async function promptAddSession(): Promise<void> {
-  const base = activeSession;
+async function promptAddSession(base: Session | null = activeSession): Promise<void> {
   const suggestion = newSessionName(
     base?.displayName ?? defaultSessionName, sessions.map(s => s.displayName),
   );
+  let directory = '';
   const raw = await domPrompt({
     label: '新建会话名称：',
     value: suggestion,
     okText: '创建',
+    directory: async signal => {
+      if (!base) return '';
+      const response = await fetch(`/api/sessions/cwd?session=${encodeURIComponent(base.name)}`, {
+        cache: 'no-store', signal,
+      });
+      if (!response.ok) throw new Error('directory unavailable');
+      const data = await response.json() as { path?: unknown };
+      if (typeof data.path !== 'string' || !data.path.startsWith('/')) throw new Error('invalid directory');
+      return data.path;
+    },
+    onDirectoryChange: value => { directory = value; },
   });
   if (raw === null) return; // cancelled
   const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
   const name = await newSessionId(displayName, sessions.map(s => s.name));
   const session = addSession(name, false, displayName);
-  session.intendCreate(base?.name);
+  session.intendCreate(base?.name, directory);
   activateSession(session);
 }
 
@@ -2497,6 +2565,7 @@ function setDisplayName(s: Session, displayName: string): void {
 // Rename a tab (display only). The label can be any text; the underlying tmux
 // session keeps its original name, so × still kills the right session.
 async function promptRenameSession(s: Session): Promise<void> {
+  if (drawerOpen) closeDrawer();
   const raw = await domPrompt({
     label: '重命名标签：',
     value: s.displayName,
@@ -3093,7 +3162,7 @@ async function toggleFullscreen(): Promise<void> {
   }
 }
 
-bindIntentionalClick(addBtn, promptAddSession);
+bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
 // Sessions list (opens the same bottom-sheet drawer the phone bar uses). On a
 // tablet the top #tabs strip turns into a long horizontal scroll that's awkward
@@ -3470,18 +3539,22 @@ const drawerGrip = document.createElement('div');
 drawerGrip.className = 'sheet-grip';
 const drawerTitle = document.createElement('div');
 drawerTitle.className = 'sheet-title';
-drawerTitle.textContent = 'Sessions';
+drawerTitle.textContent = '会话';
+const drawerHint = document.createElement('div');
+drawerHint.className = 'drawer-hint';
+drawerHint.textContent = '点击名称选中基准会话；点击“进入”切换终端。';
 const drawerList = document.createElement('div');
 drawerList.className = 'drawer-list';
 const drawerNew = document.createElement('button');
 drawerNew.className = 'drawer-new';
 drawerNew.type = 'button';
-drawerNew.textContent = '+  New session';
+drawerNew.textContent = '+  基于选中会话新建';
 bindIntentionalClick(drawerNew, () => {
+  const base = drawerSelected && sessions.includes(drawerSelected) ? drawerSelected : activeTab;
   closeDrawer();
-  promptAddSession();
+  void promptAddSession(base);
 }, drawer);
-drawer.append(drawerGrip, drawerTitle, drawerList, drawerNew);
+drawer.append(drawerGrip, drawerTitle, drawerHint, drawerList, drawerNew);
 drawerOverlay.append(drawer);
 document.body.append(drawerOverlay);
 bindIntentionalClick(drawerOverlay, (e) => {
@@ -3489,15 +3562,31 @@ bindIntentionalClick(drawerOverlay, (e) => {
 }, drawer);
 
 let drawerOpen = false;
+let drawerSelected: Session | null = null;
+
+function selectDrawerSession(session: Session): void {
+  drawerSelected = session;
+  for (const row of Array.from(drawerList.children)) {
+    const selected = (row as HTMLElement).dataset.session === session.name;
+    row.classList.toggle('active', selected);
+    row.querySelector('.drawer-body')?.setAttribute('aria-pressed', String(selected));
+  }
+}
 
 function renderDrawer(): void {
+  if (!drawerSelected || !sessions.includes(drawerSelected)) drawerSelected = activeTab ?? sessions[0] ?? null;
   drawerList.textContent = '';
   for (const s of sessions) {
     const row = document.createElement('div');
-    row.className = 'drawer-row' + (s === activeTab ? ' active' : '');
+    row.className = 'drawer-row' + (s === drawerSelected ? ' active' : '');
+    row.dataset.session = s.name;
 
     const body = document.createElement('div');
     body.className = 'drawer-body';
+    body.setAttribute('role', 'button');
+    body.tabIndex = 0;
+    body.setAttribute('aria-pressed', String(s === drawerSelected));
+    body.setAttribute('aria-label', `选中会话：${s.displayName}`);
     const dot = document.createElement('span');
     dot.className = 'tab-dot' + (s.connected ? ' connected' : '');
     const name = document.createElement('span');
@@ -3508,6 +3597,20 @@ function renderDrawer(): void {
     // session it started on (it used to, on pointerdown).
     bindTabContext(body, (x, y) => showTabMenu(s, x, y), drawer);
     onTap(body, () => {
+      selectDrawerSession(s);
+    }, drawer);
+    body.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDrawerSession(s); }
+    });
+
+    const enter = document.createElement('button');
+    enter.className = 'drawer-act drawer-enter';
+    enter.type = 'button';
+    enter.title = '进入会话';
+    enter.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h5v16h-5"/><path d="M3 12h11m-4-4 4 4-4 4"/></svg>';
+    enter.setAttribute('aria-label', `进入会话：${s.displayName}`);
+    onTap(enter, () => {
+      selectDrawerSession(s);
       activateSession(s);
       closeDrawer();
     }, drawer);
@@ -3518,8 +3621,7 @@ function renderDrawer(): void {
     rename.textContent = '✎';
     rename.title = 'Rename tab';
     onTap(rename, () => {
-      promptRenameSession(s);
-      renderDrawer();
+      void promptRenameSession(s);
     }, drawer);
 
     const close = document.createElement('button');
@@ -3532,12 +3634,13 @@ function renderDrawer(): void {
       confirmCloseSession(s);
     }, drawer);
 
-    row.append(body, rename, close);
+    row.append(enter, body, rename, close);
     drawerList.append(row);
   }
 }
 
 function openDrawer(): void {
+  drawerSelected = activeTab;
   renderDrawer();
   drawerOverlay.classList.remove('hidden');
   drawerOpen = true;
