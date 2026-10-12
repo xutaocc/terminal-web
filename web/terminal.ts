@@ -8,6 +8,7 @@ import { bindIntentionalClick } from './intentional-click.js';
 import { bindTabContext } from './tab-context.js';
 import { newSessionName, newSessionId } from './session-name.js';
 import { NoteHover } from './note-hover.js';
+import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 
 // ---------------------------------------------------------------------------
@@ -1924,6 +1925,37 @@ function onTap(el: HTMLElement, fn: (e: PointerEvent) => void, scroller?: HTMLEl
 }
 
 let dismissTabMenu: (() => void) | null = null;
+let draggedTab: Session | null = null;
+let suppressTabTapUntil = 0;
+
+function finishTabDrag(): void {
+  for (const tab of sessions) tab.tabEl?.classList.remove('tab-dragging', 'tab-drop-before', 'tab-drop-after');
+  draggedTab = null;
+  suppressTabTapUntil = performance.now() + 250;
+}
+
+function applyTabOrder(ordered: Session[]): void {
+  sessions.splice(0, sessions.length, ...ordered);
+  for (const tab of sessions) if (tab.tabEl) tabsEl.insertBefore(tab.tabEl, addBtn);
+  saveTabs();
+  refreshMobileUI();
+}
+
+tabsEl.addEventListener('dragover', e => {
+  if (!draggedTab) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  const rect = tabsEl.getBoundingClientRect();
+  if (e.clientX < rect.left + 36) tabsEl.scrollLeft -= 20;
+  else if (e.clientX > rect.right - 36) tabsEl.scrollLeft += 20;
+});
+tabsEl.addEventListener('drop', e => {
+  if (!draggedTab) return;
+  e.preventDefault();
+  const last = sessions[sessions.length - 1];
+  if (last) applyTabOrder(moveTab(sessions, draggedTab, last, true));
+  finishTabDrag();
+});
 
 function showTabMenu(s: Session, x: number, y: number): void {
   dismissTabMenu?.();
@@ -2126,8 +2158,41 @@ function buildTab(s: Session): void {
   // a tab.) touch-action:manipulation on .tab keeps the strip pannable and drops
   // the double-tap-to-zoom.
   let lastTap = 0;
+  tab.draggable = !TOUCH_DEVICE;
+  tab.addEventListener('pointerdown', e => {
+    tab.draggable = e.pointerType === 'mouse' && e.button === 0 && e.target !== close;
+  });
+  tab.addEventListener('dragstart', e => {
+    if (!tab.draggable || !e.dataTransfer) { e.preventDefault(); return; }
+    draggedTab = s;
+    lastTap = 0;
+    noteHover.leave();
+    dismissTabMenu?.();
+    tab.classList.add('tab-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-terminal-tab', s.name);
+  });
+  tab.addEventListener('dragover', e => {
+    if (!draggedTab) return;
+    e.preventDefault();
+    for (const other of sessions) other.tabEl?.classList.remove('tab-drop-before', 'tab-drop-after');
+    if (draggedTab !== s) {
+      const after = e.clientX >= tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+      tab.classList.add(after ? 'tab-drop-after' : 'tab-drop-before');
+    }
+  });
+  tab.addEventListener('dragleave', () => tab.classList.remove('tab-drop-before', 'tab-drop-after'));
+  tab.addEventListener('drop', e => {
+    if (!draggedTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const after = e.clientX >= tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+    applyTabOrder(moveTab(sessions, draggedTab, s, after));
+    finishTabDrag();
+  });
+  tab.addEventListener('dragend', finishTabDrag);
   const noteHover = new NoteHover(() => {
-    if (!tab.isConnected || dismissTabMenu || document.querySelector('.paste-overlay') ||
+    if (draggedTab || !tab.isConnected || dismissTabMenu || document.querySelector('.paste-overlay') ||
         document.querySelector('.session-note-editor')) return false;
     void showSessionNote(s, tab, noteHover);
     return true;
@@ -2144,6 +2209,7 @@ function buildTab(s: Session): void {
     showTabMenu(s, x, y);
   }, tabsEl);
   onTap(tab, (e) => {
+    if (draggedTab || performance.now() < suppressTabTapUntil) return;
     if (e.target === close) return; // the × has its own handler
     const now = performance.now();
     if (now - lastTap < 350) {
@@ -2156,6 +2222,7 @@ function buildTab(s: Session): void {
   }, tabsEl);
   onTap(close, (e) => {
     e.stopPropagation();
+    if (draggedTab || performance.now() < suppressTabTapUntil) return;
     confirmCloseSession(s);
   }, tabsEl);
 
@@ -3990,6 +4057,7 @@ async function init(): Promise<void> {
   if (urlSession && !initialTabs.some((t) => t.name === urlSession)) {
     initialTabs = [{ name: urlSession, displayName: urlSession }, ...initialTabs];
   }
+  if (!TOUCH_DEVICE) initialTabs = restoreTabOrder(initialTabs, cached.tabs.map(tab => tab.name));
   defaultSessionName = urlSession ?? initialTabs[0]?.name ?? 'web';
 
   // The stored prefs land before any tab is built, so a pane is created at the

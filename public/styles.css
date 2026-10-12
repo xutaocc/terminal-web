@@ -89,6 +89,15 @@ body {
   border-color: #3b8eea;
   color: #fff;
 }
+.tab.tab-dragging {
+  opacity: 0.45;
+}
+.tab.tab-drop-before {
+  box-shadow: -3px 0 0 #3b8eea;
+}
+.tab.tab-drop-after {
+  box-shadow: 3px 0 0 #3b8eea;
+}
 .tab, .drawer-body {
   -webkit-touch-callout: none;
 }
