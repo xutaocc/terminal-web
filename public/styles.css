@@ -154,6 +154,7 @@ body {
   position: fixed;
   z-index: 10000;
   width: min(520px, calc(100vw - 16px));
+  padding-top: 6px; /* Keep the tab-to-popup gap inside the hover target. */
 }
 .session-note-popover .session-note-box {
   width: 100%;

@@ -2070,11 +2070,17 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     if (!anchor && !TOUCH_DEVICE) activeSession?.focus();
   };
   if (anchor) {
+    overlay.addEventListener('pointerleave', close);
+    document.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'mouse') return;
+      const target = e.target as Node;
+      if (!overlay.contains(target) && !anchor.contains(target)) close();
+    }, { signal: requests.signal });
     const position = (): void => {
       if (!anchor.isConnected) { close(); return; }
       const rect = anchor.getBoundingClientRect();
       const width = overlay.getBoundingClientRect().width;
-      const top = Math.min(rect.bottom + 6, window.innerHeight - 180);
+      const top = Math.min(rect.bottom, window.innerHeight - 180);
       overlay.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
       overlay.style.top = `${Math.max(8, top)}px`;
       box.style.maxHeight = `${Math.max(120, window.innerHeight - Math.max(8, top) - 8)}px`;
