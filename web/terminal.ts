@@ -3634,7 +3634,7 @@ function renderDrawer(): void {
       confirmCloseSession(s);
     }, drawer);
 
-    row.append(enter, body, rename, close);
+    row.append(body, enter, rename, close);
     drawerList.append(row);
   }
 }
