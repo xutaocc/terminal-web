@@ -33,9 +33,8 @@ export function tmuxArgs(session: string, confPath: string, startDir?: string): 
 }
 
 /**
- * Where a new second half of a split should start: the directory the first
- * half's active pane is in right now. Null when that cannot be told — the first
- * half is gone, or the second half already exists (it keeps its own).
+ * Start a new session in its base session's current pane directory. Used by
+ * splits and new tabs. Existing sessions keep their own directory on attach.
  */
 export function mateStartDir(mate: string, base: string): Promise<string | null> {
   return new Promise((resolve) => {
@@ -48,7 +47,7 @@ export function mateStartDir(mate: string, base: string): Promise<string | null>
         "tmux",
         ["display-message", "-p", "-t", `=${base}:`, "#{pane_current_path}"],
         (err2, stdout) => {
-          const dir = err2 ? "" : stdout.trim();
+          const dir = err2 ? "" : stdout.replace(/\r?\n$/, '');
           resolve(dir.startsWith("/") ? dir : null);
         }
       );
@@ -122,6 +121,33 @@ export function requireTmux(): void {
 // ---------------------------------------------------------------------------
 const TAB_TAG = "@twtab";
 const TAB_LABEL = "@twlabel";
+const TAB_NOTE = '@twnote';
+
+export interface SessionNote {
+  text: string;
+  updatedAt: string | null;
+}
+
+/** Notes follow the session and survive Web server restarts. Encode multiline text. */
+export async function getSessionNote(name: string): Promise<SessionNote | null> {
+  const target = await runTmux(['display-message', '-p', '-t', `=${name}:`, '#{session_id}']);
+  if (!target?.trim()) return null;
+  const value = await runTmux(['show-options', '-qv', '-t', target.trim(), TAB_NOTE]);
+  if (value === null) return null;
+  if (!value.trim()) return { text: '', updatedAt: null };
+  try {
+    const note = JSON.parse(Buffer.from(value.trim(), 'base64').toString('utf8'));
+    if (typeof note.text === 'string' && typeof note.updatedAt === 'string') return note;
+  } catch { /* invalid metadata must not break the terminal */ }
+  return { text: '', updatedAt: null };
+}
+
+export async function setSessionNote(name: string, note: SessionNote): Promise<boolean> {
+  const target = await runTmux(['display-message', '-p', '-t', `=${name}:`, '#{session_id}']);
+  if (!target?.trim()) return false;
+  const encoded = Buffer.from(JSON.stringify(note), 'utf8').toString('base64');
+  return await runTmux(['set-option', '-t', target.trim(), TAB_NOTE, encoded]) !== null;
+}
 
 export interface WebTab {
   /** tmux session name — the immutable id used to attach/kill the session. */

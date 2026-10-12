@@ -23,6 +23,8 @@ import {
   mateStartDir,
   findClientTty,
   refreshClient,
+  getSessionNote,
+  setSessionNote,
 } from "./tmux.js";
 import type { ServerMessage } from "./types.js";
 import { isClientMessage } from "./types.js";
@@ -483,6 +485,30 @@ async function readBody(
  * tmux can't be queried, reply with `tabs: null` so the client keeps its
  * current tabs instead of wrongly clearing them.
  */
+async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  res.setHeader('Cache-Control', 'no-store');
+  let body: { name?: unknown; text?: unknown } = {};
+  if (req.method === 'POST') {
+    try { body = JSON.parse((await readBody(req, 32768)).toString('utf8')); }
+    catch { sendJsonHttp(res, 400, { error: 'Invalid note' }); return; }
+  }
+  const name = req.method === 'GET' ? url.searchParams.get('session') : body?.name;
+  if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+    sendJsonHttp(res, 400, { error: 'Invalid session' }); return;
+  }
+  if (req.method === 'POST' && (typeof body.text !== 'string' || body.text.length > 4000)) {
+    sendJsonHttp(res, 400, { error: 'Note must contain at most 4000 characters' }); return;
+  }
+  const current = await getSessionNote(name);
+  if (!current) { sendJsonHttp(res, 404, { error: 'Session not found' }); return; }
+  if (req.method === 'GET') { sendJsonHttp(res, 200, current); return; }
+  const note = { text: body.text as string, updatedAt: new Date().toISOString() };
+  if (!await setSessionNote(name, note)) {
+    sendJsonHttp(res, 409, { error: 'Could not save session note' }); return;
+  }
+  sendJsonHttp(res, 200, note);
+}
+
 async function handleListSessions(res: http.ServerResponse): Promise<void> {
   const tagged = await listWebTabs();
   if (tagged === null) {
@@ -1068,6 +1094,10 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/sessions/note') {
+        await handleSessionNote(req, res, requestUrl);
+        return;
+      }
       if (method === "POST" && requestUrl.pathname === "/api/sessions/rename") {
         await handleRenameSession(req, res);
         return;
@@ -1265,12 +1295,15 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
   // for a beat, for every client attached to that session.
   let requested: string | null = null;
   let create = false;
+  let createFrom: string | undefined;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
   try {
     const u = new URL(req.url ?? "/ws", "http://localhost");
     requested = u.searchParams.get("session");
     create = u.searchParams.get("create") === "1";
+    const from = u.searchParams.get("from");
+    if (create && from && /^[A-Za-z0-9_-]{1,64}$/.test(from)) createFrom = from;
     cols = parseDim(u.searchParams.get("cols"), DEFAULT_COLS, MAX_COLS);
     rows = parseDim(u.searchParams.get("rows"), DEFAULT_ROWS, MAX_ROWS);
   } catch {
@@ -1321,20 +1354,20 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     });
     return;
   }
-  startAttach(ws, session, cols, rows);
+  startAttach(ws, session, cols, rows, createFrom);
 });
 
 /**
- * Attach, starting a brand-new second half of a split where the first half is
- * working: opening the split is for doing something next to what is on screen,
- * and a shell in the home directory meant a `cd` back there every time.
+ * New tabs and splits start in their base session's current directory.
+ * Reattaching an existing session never changes its working directory.
  */
-function startAttach(ws: LiveSocket, session: string, cols: number, rows: number): void {
-  if (!session.endsWith(MATE_SUFFIX)) {
+function startAttach(ws: LiveSocket, session: string, cols: number, rows: number, createFrom?: string): void {
+  const base = createFrom ?? (session.endsWith(MATE_SUFFIX) ? session.slice(0, -MATE_SUFFIX.length) : null);
+  if (!base) {
     attachSession(ws, session, cols, rows);
     return;
   }
-  void mateStartDir(session, session.slice(0, -MATE_SUFFIX.length)).then((dir) => {
+  void mateStartDir(session, base).then((dir) => {
     if (ws.readyState !== WebSocket.OPEN) return;
     attachSession(ws, session, cols, rows, dir ?? undefined);
   });

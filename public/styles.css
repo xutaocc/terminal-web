@@ -89,6 +89,94 @@ body {
   border-color: #3b8eea;
   color: #fff;
 }
+.tab, .drawer-body {
+  -webkit-touch-callout: none;
+}
+.tab-context-menu {
+  position: fixed;
+  z-index: 10000;
+  width: min(220px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid #505050;
+  border-radius: 10px;
+  background: #292929;
+  box-shadow: 0 8px 28px #0008;
+  font: 14px system-ui, sans-serif;
+}
+.tab-context-title {
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #aaa;
+  font-size: 12px;
+}
+.tab-context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #eee;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.tab-context-menu button:hover,
+.tab-context-menu button:focus-visible {
+  outline: 2px solid #3b8eea;
+  outline-offset: -2px;
+  background: #383838;
+}
+.paste-overlay.session-note-overlay {
+  z-index: 10001;
+  padding: 12px;
+  bottom: var(--kb-offset);
+}
+.paste-box.session-note-box {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - var(--kb-offset) - 24px);
+  overflow-y: auto;
+}
+.session-note-popover {
+  position: fixed;
+  z-index: 10000;
+  width: min(440px, calc(100vw - 16px));
+}
+.session-note-popover .session-note-box {
+  width: 100%;
+}
+.session-note-popover .session-note-input {
+  height: 180px;
+  font-size: 14px;
+}
+.session-note-hint, .session-note-status {
+  color: #aaa;
+  font: 12px/1.5 system-ui, sans-serif;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.session-note-input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 160px;
+  height: min(260px, 32dvh);
+  padding: 12px;
+  border: 1px solid #555;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #eee;
+  font: 16px/1.6 system-ui, sans-serif;
+  resize: vertical;
+}
+.session-note-input:focus {
+  outline: 2px solid #3b8eea;
+  outline-offset: -1px;
+}
 .tab .tab-dot {
   width: 7px;
   height: 7px;

@@ -5,6 +5,9 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { bindIntentionalClick } from './intentional-click.js';
+import { bindTabContext } from './tab-context.js';
+import { newSessionName } from './session-name.js';
+import { NoteHover } from './note-hover.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 
 // ---------------------------------------------------------------------------
@@ -403,7 +406,7 @@ function openHelp(): void {
     '<li><b>Attach a file</b> (for Claude Code etc.) — tap the 📎 button, or paste / drag any file (image, PDF, text…): it uploads and inserts the file path. Then press Enter.</li>' +
     '<li><b>Download a file</b> — tap the ⬇ button (or <b>⋯ → Download</b> on a phone) and enter a name/relative path from the terminal\'s current folder (e.g. <code>report.zip</code>), or a full path (<code>~/output/report.zip</code>). It downloads to this device.</li>' +
     '<li><b>Scroll</b> — mouse wheel or two-finger swipe scrolls the history.</li>' +
-    '<li><b>Tabs</b> — <b>+</b> new session, <b>×</b> closes the tab and kills its session, <b>⟳</b> restarts the session fresh. Double-click (or double-tap) a tab to rename it — the label changes but its tmux session stays the same.</li>' +
+    '<li><b>Tabs</b> — <b>+</b> new session, <b>×</b> closes the tab and kills its session, <b>⟳</b> restarts the session fresh. Right-click or long-press a tab for Rename; double-click (or double-tap) also works — the label changes but its tmux session stays the same.</li>' +
     '</ul>' +
     '<div class="paste-row"><button class="tb-btn" type="button" data-help-close>Got it</button></div>';
   overlay.append(box);
@@ -552,6 +555,7 @@ class Session {
   // for its first attach, so a page that sleeps for a day and wakes up cannot
   // pass for one.
   private createUntil = 0;
+  private createFrom: string | null = null;
 
   // IME double-input guard (order-independent, content-scoped).
   private lastData = '';
@@ -1518,8 +1522,9 @@ class Session {
   }
 
   /** This session is being made on purpose: its first attach may create it. */
-  intendCreate(): void {
+  intendCreate(baseSession?: string): void {
     this.createUntil = performance.now() + 60_000;
+    this.createFrom = baseSession ?? null;
   }
 
   /** Show one of this tab's terminals, or both. */
@@ -1643,7 +1648,8 @@ class Session {
     const url =
       `${wsProto}://${window.location.host}/ws?session=${encodeURIComponent(this.name)}` +
       `&cols=${this.term.cols}&rows=${this.term.rows}` +
-      (performance.now() < this.createUntil ? '&create=1' : '');
+      (performance.now() < this.createUntil ? '&create=1' +
+        (this.createFrom ? `&from=${encodeURIComponent(this.createFrom)}` : '') : '');
     const socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
     this.ws = socket;
@@ -1651,6 +1657,7 @@ class Session {
     socket.onopen = () => {
       this.reconnectDelay = MIN_DELAY;
       this.createUntil = 0; // it exists now; a later reconnect is only a reconnect
+      this.createFrom = null;
       if (IME_DEBUG) {
         this.debugSend(
           'env',
@@ -1880,6 +1887,7 @@ const TAP_SLOP_PX = 10;
 function onTap(el: HTMLElement, fn: (e: PointerEvent) => void, scroller?: HTMLElement): void {
   let start: { id: number; x: number; y: number; left: number; top: number } | null = null;
   el.addEventListener('pointerdown', (e) => {
+    if (!e.isPrimary || e.button !== 0) { start = null; return; }
     start = {
       id: e.pointerId,
       x: e.clientX,
@@ -1915,6 +1923,204 @@ function onTap(el: HTMLElement, fn: (e: PointerEvent) => void, scroller?: HTMLEl
   );
 }
 
+let dismissTabMenu: (() => void) | null = null;
+let dismissNotePopover: (() => boolean) | null = null;
+
+function showTabMenu(s: Session, x: number, y: number): void {
+  dismissNotePopover?.();
+  dismissTabMenu?.();
+  const menu = document.createElement('div');
+  menu.className = 'tab-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', '标签操作');
+  const title = document.createElement('div');
+  title.className = 'tab-context-title';
+  title.textContent = s.displayName;
+  const rename = document.createElement('button');
+  rename.type = 'button';
+  rename.textContent = '✎ 重命名';
+  rename.setAttribute('role', 'menuitem');
+  const note = document.createElement('button');
+  note.type = 'button';
+  note.textContent = '📝 备注详情';
+  note.setAttribute('role', 'menuitem');
+  menu.append(title, rename, note);
+  document.body.append(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+  const events = new AbortController();
+  const dismiss = (): void => {
+    events.abort();
+    menu.remove();
+    if (dismissTabMenu === dismiss) dismissTabMenu = null;
+  };
+  dismissTabMenu = dismiss;
+  rename.addEventListener('click', () => {
+    dismiss();
+    if (sessions.includes(s)) void promptRenameSession(s);
+  });
+  note.addEventListener('click', () => {
+    dismiss();
+    if (sessions.includes(s)) void showSessionNote(s);
+  });
+  document.addEventListener('pointerdown', e => {
+    if (!menu.contains(e.target as Node)) dismiss();
+  }, { capture: true, signal: events.signal });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      (document.activeElement === rename ? note : rename).focus();
+    }
+    if (e.key === 'Escape' || e.key === 'Tab') {
+      dismiss();
+      if (e.key === 'Escape') e.preventDefault();
+    }
+  }, { capture: true, signal: events.signal });
+  document.addEventListener('scroll', dismiss, { capture: true, signal: events.signal });
+  window.addEventListener('resize', dismiss, { signal: events.signal });
+  window.addEventListener('blur', dismiss, { signal: events.signal });
+  rename.focus({ preventScroll: true });
+}
+
+async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHover): Promise<void> {
+  if (document.querySelector('.session-note-editor')) return;
+  const overlay = document.createElement('div');
+  overlay.className = anchor ? 'session-note-popover session-note-editor' :
+    'paste-overlay session-note-overlay session-note-editor';
+  const box = document.createElement('div');
+  box.className = 'paste-box session-note-box';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', anchor ? 'false' : 'true');
+  box.setAttribute('aria-labelledby', 'session-note-title');
+  const title = document.createElement('div');
+  title.id = 'session-note-title';
+  title.className = 'paste-label';
+  title.textContent = `备注详情 · ${s.displayName}`;
+  const hint = document.createElement('div');
+  hint.className = 'session-note-hint';
+  hint.textContent = '记录做到哪里、待办事项和下一步。保存后可在其他设备查看。';
+  const input = document.createElement('textarea');
+  input.className = 'session-note-input';
+  input.setAttribute('aria-label', '会话工作进度备注');
+  input.placeholder = '当前进度：\n待办事项：\n下一步：';
+  input.maxLength = 4000;
+  input.disabled = true;
+  const counter = document.createElement('div');
+  counter.className = 'session-note-hint';
+  counter.textContent = '0 / 4000';
+  input.addEventListener('input', () => { counter.textContent = `${input.value.length} / 4000`; });
+  const status = document.createElement('div');
+  status.className = 'session-note-status';
+  status.setAttribute('role', 'status');
+  status.textContent = '正在读取备注…';
+  const row = document.createElement('div');
+  row.className = 'paste-row';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'tb-btn';
+  cancel.textContent = anchor ? '关闭' : '取消';
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'tb-btn';
+  save.textContent = '保存';
+  save.disabled = true;
+  row.append(cancel, save);
+  box.append(title, hint, input, counter, status, row);
+  overlay.append(box);
+  document.body.append(overlay);
+  const requests = new AbortController();
+  if (!anchor) cancel.focus({ preventScroll: true });
+  let saving = false;
+  let original = '';
+  let insidePopover = false;
+  const close = (): void => {
+    if (saving) return;
+    requests.abort();
+    overlay.remove();
+    hover?.reset();
+    if (anchor) dismissNotePopover = null;
+    else if (!TOUCH_DEVICE) activeSession?.focus();
+  };
+  if (anchor) {
+    dismissNotePopover = () => {
+      if (insidePopover || saving || input.value !== original || overlay.contains(document.activeElement)) return false;
+      close();
+      return true;
+    };
+    overlay.addEventListener('pointerenter', () => { insidePopover = true; hover?.enter(); });
+    overlay.addEventListener('pointerleave', () => { insidePopover = false; hover?.leave(); });
+    overlay.addEventListener('focusout', () => hover?.leave());
+    const position = (): void => {
+      if (!anchor.isConnected) { close(); return; }
+      const rect = anchor.getBoundingClientRect();
+      const width = overlay.getBoundingClientRect().width;
+      const top = Math.min(rect.bottom + 6, window.innerHeight - 180);
+      overlay.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+      overlay.style.top = `${Math.max(8, top)}px`;
+      box.style.maxHeight = `${Math.max(120, window.innerHeight - Math.max(8, top) - 8)}px`;
+    };
+    position();
+    window.addEventListener('resize', position, { signal: requests.signal });
+    tabsEl.addEventListener('scroll', () => { dismissNotePopover?.(); }, { signal: requests.signal });
+  }
+  cancel.addEventListener('click', close);
+  const commit = async (): Promise<void> => {
+    if (saving || save.disabled) return;
+    saving = true;
+    save.disabled = cancel.disabled = true;
+    input.disabled = true;
+    status.textContent = '正在保存…';
+    try {
+      const response = await fetch('/api/sessions/note', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: s.name, text: input.value }), signal: requests.signal,
+      });
+      if (!response.ok) throw new Error('save failed');
+      saving = false;
+      if (anchor) {
+        original = input.value;
+        save.disabled = cancel.disabled = input.disabled = false;
+        status.textContent = `已保存：${new Date().toLocaleString()}`;
+        hover?.leave();
+      } else close();
+      flashStatus('会话备注已保存', 1500);
+    } catch {
+      status.textContent = '保存失败，内容已保留，请重试。';
+      saving = false;
+      save.disabled = cancel.disabled = input.disabled = false;
+    }
+  };
+  save.addEventListener('click', () => { void commit(); });
+  overlay.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !anchor) {
+      const controls = [input, cancel, save].filter(control => !control.disabled);
+      if (controls.length) {
+        const index = controls.indexOf(document.activeElement as typeof input | typeof cancel);
+        controls[(index + (e.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
+      }
+      e.preventDefault();
+    }
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void commit(); }
+  });
+  try {
+    const response = await fetch(`/api/sessions/note?session=${encodeURIComponent(s.name)}`, {
+      cache: 'no-store', signal: requests.signal,
+    });
+    if (!response.ok) throw new Error('load failed');
+    const note = await response.json() as { text: string; updatedAt: string | null };
+    input.value = note.text;
+    original = note.text;
+    counter.textContent = `${note.text.length} / 4000`;
+    status.textContent = note.updatedAt ? `上次保存：${new Date(note.updatedAt).toLocaleString()}` : '尚未记录备注';
+    input.disabled = save.disabled = false;
+    if (!anchor) input.focus({ preventScroll: true });
+  } catch {
+    if (!requests.signal.aborted) status.textContent = '读取失败，请关闭后重试。';
+  }
+}
+
 function buildTab(s: Session): void {
   const tab = document.createElement('div');
   tab.className = 'tab';
@@ -1923,7 +2129,7 @@ function buildTab(s: Session): void {
   const label = document.createElement('span');
   label.className = 'tab-label';
   label.textContent = s.displayName;
-  label.title = `session: ${s.name} (double-click to rename)`;
+  label.title = `session: ${s.name} (右键 / 长按 / 双击重命名)`;
   const close = document.createElement('span');
   close.className = 'tab-close';
   close.textContent = '×';
@@ -1937,6 +2143,24 @@ function buildTab(s: Session): void {
   // a tab.) touch-action:manipulation on .tab keeps the strip pannable and drops
   // the double-tap-to-zoom.
   let lastTap = 0;
+  const noteHover = new NoteHover(() => {
+    if (!tab.isConnected || dismissTabMenu || document.querySelector('.paste-overlay') ||
+        (document.querySelector('.session-note-editor') && !dismissNotePopover?.())) return false;
+    void showSessionNote(s, tab, noteHover);
+    return true;
+  }, () => dismissNotePopover?.() ?? true);
+  tab.addEventListener('pointerenter', e => {
+    if (e.pointerType === 'mouse' && e.buttons === 0) noteHover.enter();
+  });
+  tab.addEventListener('pointerleave', () => noteHover.leave());
+  tab.addEventListener('pointerdown', () => {
+    noteHover.leave();
+    dismissNotePopover?.();
+  });
+  bindTabContext(tab, (x, y) => {
+    lastTap = 0;
+    showTabMenu(s, x, y);
+  }, tabsEl);
   onTap(tab, (e) => {
     if (e.target === close) return; // the × has its own handler
     const now = performance.now();
@@ -2175,14 +2399,19 @@ function domPrompt(opts: {
 }
 
 async function promptAddSession(): Promise<void> {
-  const suggestion = nextSessionName();
+  const base = activeSession;
+  const suggestion = newSessionName(
+    sanitizeName(base?.displayName) ?? base?.name ?? defaultSessionName, sessions.map(s => s.name),
+  );
   const raw = await domPrompt({
-    label: 'New session name:',
+    label: '新建会话名称：',
     value: suggestion,
     okText: 'Create',
   });
   if (raw === null) return; // cancelled
-  addSession(sanitizeName(raw) ?? suggestion, true).intendCreate();
+  const session = addSession(sanitizeName(raw) ?? suggestion, false);
+  session.intendCreate(base?.name);
+  activateSession(session);
 }
 
 // Update only the tab's display label; the tmux session name (s.name) is left
@@ -2191,7 +2420,7 @@ function setDisplayName(s: Session, displayName: string): void {
   s.displayName = displayName;
   if (s.tabLabel) {
     s.tabLabel.textContent = displayName;
-    s.tabLabel.title = `session: ${s.name} (double-click to rename)`;
+    s.tabLabel.title = `session: ${s.name} (右键 / 长按 / 双击重命名)`;
   }
   refreshMobileUI();
 }
@@ -2200,9 +2429,9 @@ function setDisplayName(s: Session, displayName: string): void {
 // session keeps its original name, so × still kills the right session.
 async function promptRenameSession(s: Session): Promise<void> {
   const raw = await domPrompt({
-    label: `Rename tab (display only — the tmux session stays "${s.name}"):`,
+    label: '重命名标签：',
     value: s.displayName,
-    okText: 'Rename',
+    okText: '保存',
   });
   if (raw === null) return; // cancelled
   const trimmed = raw.trim().slice(0, 64);
@@ -3123,6 +3352,9 @@ const mCaret = document.createElement('span');
 mCaret.className = 'm-caret';
 mCaret.textContent = '▾';
 mTitle.append(mTitleDot, mTitleLabel, mCaret);
+bindTabContext(mTitle, (x, y) => {
+  if (activeTab) showTabMenu(activeTab, x, y);
+});
 bindIntentionalClick(mTitle, openDrawer);
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
@@ -3190,6 +3422,7 @@ function renderDrawer(): void {
     body.append(dot, name);
     // Taps only: this list scrolls, and a swipe through it must not pick the
     // session it started on (it used to, on pointerdown).
+    bindTabContext(body, (x, y) => showTabMenu(s, x, y), drawer);
     onTap(body, () => {
       activateSession(s);
       closeDrawer();
