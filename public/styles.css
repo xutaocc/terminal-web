@@ -144,7 +144,7 @@ body {
 .session-note-popover {
   position: fixed;
   z-index: 10000;
-  width: min(440px, calc(100vw - 16px));
+  width: min(520px, calc(100vw - 16px));
 }
 .session-note-popover .session-note-box {
   width: 100%;

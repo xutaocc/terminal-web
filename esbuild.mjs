@@ -7,6 +7,7 @@ const options = {
   entryPoints: ['web/terminal.ts', 'web/file-browser.js'],
   bundle: true,
   format: 'esm',
+  splitting: true,
   platform: 'browser',
   outdir: 'public/dist',
   entryNames: '[name]',

@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { bindIntentionalClick } from './intentional-click.js';
 import { bindTabContext } from './tab-context.js';
-import { newSessionName } from './session-name.js';
+import { newSessionName, newSessionId } from './session-name.js';
 import { NoteHover } from './note-hover.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 
@@ -1924,10 +1924,8 @@ function onTap(el: HTMLElement, fn: (e: PointerEvent) => void, scroller?: HTMLEl
 }
 
 let dismissTabMenu: (() => void) | null = null;
-let dismissNotePopover: (() => boolean) | null = null;
 
 function showTabMenu(s: Session, x: number, y: number): void {
-  dismissNotePopover?.();
   dismissTabMenu?.();
   const menu = document.createElement('div');
   menu.className = 'tab-context-menu';
@@ -2032,25 +2030,14 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   const requests = new AbortController();
   if (!anchor) cancel.focus({ preventScroll: true });
   let saving = false;
-  let original = '';
-  let insidePopover = false;
   const close = (): void => {
     if (saving) return;
     requests.abort();
     overlay.remove();
     hover?.reset();
-    if (anchor) dismissNotePopover = null;
-    else if (!TOUCH_DEVICE) activeSession?.focus();
+    if (!anchor && !TOUCH_DEVICE) activeSession?.focus();
   };
   if (anchor) {
-    dismissNotePopover = () => {
-      if (insidePopover || saving || input.value !== original || overlay.contains(document.activeElement)) return false;
-      close();
-      return true;
-    };
-    overlay.addEventListener('pointerenter', () => { insidePopover = true; hover?.enter(); });
-    overlay.addEventListener('pointerleave', () => { insidePopover = false; hover?.leave(); });
-    overlay.addEventListener('focusout', () => hover?.leave());
     const position = (): void => {
       if (!anchor.isConnected) { close(); return; }
       const rect = anchor.getBoundingClientRect();
@@ -2062,7 +2049,7 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     };
     position();
     window.addEventListener('resize', position, { signal: requests.signal });
-    tabsEl.addEventListener('scroll', () => { dismissNotePopover?.(); }, { signal: requests.signal });
+    tabsEl.addEventListener('scroll', position, { signal: requests.signal });
   }
   cancel.addEventListener('click', close);
   const commit = async (): Promise<void> => {
@@ -2079,10 +2066,8 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
       if (!response.ok) throw new Error('save failed');
       saving = false;
       if (anchor) {
-        original = input.value;
         save.disabled = cancel.disabled = input.disabled = false;
         status.textContent = `已保存：${new Date().toLocaleString()}`;
-        hover?.leave();
       } else close();
       flashStatus('会话备注已保存', 1500);
     } catch {
@@ -2101,7 +2086,7 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
       }
       e.preventDefault();
     }
-    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Escape' && !anchor) { e.preventDefault(); close(); }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void commit(); }
   });
   try {
@@ -2111,7 +2096,6 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     if (!response.ok) throw new Error('load failed');
     const note = await response.json() as { text: string; updatedAt: string | null };
     input.value = note.text;
-    original = note.text;
     counter.textContent = `${note.text.length} / 4000`;
     status.textContent = note.updatedAt ? `上次保存：${new Date(note.updatedAt).toLocaleString()}` : '尚未记录备注';
     input.disabled = save.disabled = false;
@@ -2129,7 +2113,6 @@ function buildTab(s: Session): void {
   const label = document.createElement('span');
   label.className = 'tab-label';
   label.textContent = s.displayName;
-  label.title = `session: ${s.name} (右键 / 长按 / 双击重命名)`;
   const close = document.createElement('span');
   close.className = 'tab-close';
   close.textContent = '×';
@@ -2145,17 +2128,16 @@ function buildTab(s: Session): void {
   let lastTap = 0;
   const noteHover = new NoteHover(() => {
     if (!tab.isConnected || dismissTabMenu || document.querySelector('.paste-overlay') ||
-        (document.querySelector('.session-note-editor') && !dismissNotePopover?.())) return false;
+        document.querySelector('.session-note-editor')) return false;
     void showSessionNote(s, tab, noteHover);
     return true;
-  }, () => dismissNotePopover?.() ?? true);
+  });
   tab.addEventListener('pointerenter', e => {
     if (e.pointerType === 'mouse' && e.buttons === 0) noteHover.enter();
   });
   tab.addEventListener('pointerleave', () => noteHover.leave());
   tab.addEventListener('pointerdown', () => {
     noteHover.leave();
-    dismissNotePopover?.();
   });
   bindTabContext(tab, (x, y) => {
     lastTap = 0;
@@ -2401,15 +2383,17 @@ function domPrompt(opts: {
 async function promptAddSession(): Promise<void> {
   const base = activeSession;
   const suggestion = newSessionName(
-    sanitizeName(base?.displayName) ?? base?.name ?? defaultSessionName, sessions.map(s => s.name),
+    base?.displayName ?? defaultSessionName, sessions.map(s => s.displayName),
   );
   const raw = await domPrompt({
     label: '新建会话名称：',
     value: suggestion,
-    okText: 'Create',
+    okText: '创建',
   });
   if (raw === null) return; // cancelled
-  const session = addSession(sanitizeName(raw) ?? suggestion, false);
+  const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
+  const name = await newSessionId(displayName, sessions.map(s => s.name));
+  const session = addSession(name, false, displayName);
   session.intendCreate(base?.name);
   activateSession(session);
 }
@@ -2420,7 +2404,7 @@ function setDisplayName(s: Session, displayName: string): void {
   s.displayName = displayName;
   if (s.tabLabel) {
     s.tabLabel.textContent = displayName;
-    s.tabLabel.title = `session: ${s.name} (右键 / 长按 / 双击重命名)`;
+    s.tabLabel.removeAttribute('title');
   }
   refreshMobileUI();
 }

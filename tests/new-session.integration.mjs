@@ -21,7 +21,8 @@ const base = `new_session_verify_${process.pid}`;
 const child = `${base}_new`;
 const sockets = [];
 const startService = () => spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/server.ts'], {
-  env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token }, stdio: 'ignore',
+  env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token,
+    LANG: 'C', LC_ALL: 'C' }, stdio: 'ignore',
 });
 let service = startService();
 async function stopService() {
@@ -58,12 +59,17 @@ try {
   })).status === 200);
   tmux('new-session', '-d', '-s', base, '-c', directory, 'sleep 120');
   await connect(child, base);
+  assert.equal((await api('/api/sessions/rename', { name: child, displayName: '前端开发 · 验收' })).status, 200);
   try { await until(() => cwd(child) === directory); }
   catch (error) {
     console.error('Directory verification:', JSON.stringify({ expected: directory, base: cwd(base), child: cwd(child) }));
     throw error;
   }
   assert.equal(cwd(child), directory, 'new tabs inherit Unicode/space/trailing-space paths');
+  await until(async () => {
+    const tabs = (await (await api('/api/sessions')).json()).tabs;
+    return tabs?.some(tab => tab.name === child && tab.displayName === '前端开发 · 验收');
+  });
 
   tmux('kill-session', '-t', `=${base}`);
   tmux('new-session', '-d', '-s', base, '-c', folder, 'sleep 120');

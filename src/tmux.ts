@@ -45,7 +45,7 @@ export function mateStartDir(mate: string, base: string): Promise<string | null>
       }
       execFile(
         "tmux",
-        ["display-message", "-p", "-t", `=${base}:`, "#{pane_current_path}"],
+        ["-u", "display-message", "-p", "-t", `=${base}:`, "#{pane_current_path}"],
         (err2, stdout) => {
           const dir = err2 ? "" : stdout.replace(/\r?\n$/, '');
           resolve(dir.startsWith("/") ? dir : null);
@@ -171,11 +171,15 @@ export function tagWebSession(name: string, attempt = 0): void {
 }
 
 /** Persist a web tab's display label on its tmux session. Best-effort. */
-export function setWebTabLabel(name: string, displayName: string): void {
+export function setWebTabLabel(name: string, displayName: string, attempt = 0): void {
   // Strip control chars (newlines/tabs) so a label can never break the
   // space-delimited parsing in listWebTabs.
   const dn = displayName.replace(/[\x00-\x1f]/g, " ").trim().slice(0, 64) || name;
-  execFile("tmux", ["set-option", "-t", name, TAB_LABEL, dn], () => {});
+  execFile("tmux", ["-u", "set-option", "-t", name, TAB_LABEL, dn], err => {
+    // The browser can send the display label before an inherited-cwd attach
+    // has created the session. Retry just as we do for its web-tab tag.
+    if (err && attempt < 10) setTimeout(() => setWebTabLabel(name, dn, attempt + 1), 150);
+  });
 }
 
 /**
@@ -197,7 +201,7 @@ export function listWebTabs(): Promise<WebTab[] | null> {
     " "
   );
   return new Promise((resolve) => {
-    execFile("tmux", ["list-sessions", "-F", fmt], (err, stdout) => {
+    execFile("tmux", ["-u", "list-sessions", "-F", fmt], (err, stdout) => {
       if (err) {
         resolve(null);
         return;
@@ -227,7 +231,7 @@ export function listWebTabs(): Promise<WebTab[] | null> {
 /** Run tmux; resolve its stdout, or null if it failed. Never throws. */
 function runTmux(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("tmux", args, (err, stdout) => resolve(err ? null : stdout));
+    execFile("tmux", ['-u', ...args], (err, stdout) => resolve(err ? null : stdout));
   });
 }
 

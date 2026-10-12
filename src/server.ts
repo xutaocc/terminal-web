@@ -956,7 +956,7 @@ function sessionCwd(session: string | null): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       "tmux",
-      ["display-message", "-p", "-t", `=${name}:`, "-F", "#{pane_current_path}"],
+      ["-u", "display-message", "-p", "-t", `=${name}:`, "-F", "#{pane_current_path}"],
       { timeout: 3000 },
       (err, stdout) => resolve(err ? null : stdout.toString().replace(/\n$/, '') || null)
     );
