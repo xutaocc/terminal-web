@@ -1,7 +1,7 @@
 // Isolated HTTP service; all created tmux sessions and directories are temporary.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { once } from 'node:events';
 import net from 'node:net';
 import os from 'node:os';
@@ -25,6 +25,7 @@ const sockets = [];
 const startService = () => spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/server.ts'], {
   env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token,
     QUICK_COMMANDS_FILE: path.join(folder, 'commands.json'),
+    PREFS_FILE: path.join(folder, 'prefs.json'),
     LANG: 'C', LC_ALL: 'C' }, stdio: 'ignore',
 });
 let service = startService();
@@ -121,9 +122,20 @@ try {
   assert.equal((await api('/api/quick-commands', { revision: commandData.revision, commands: [] })).status, 409);
   assert.equal((await api('/api/quick-commands', { revision: savedCommands.revision, commands: [null] })).status, 400);
   assert.equal((await api('/api/quick-commands', undefined, false)).status, 401);
+  assert.equal((await api('/api/prefs', { scope: 'desktop', theme: 'light', fontSize: 15 })).status, 200);
+  assert.equal((await api('/api/prefs', { scope: 'touch', theme: 'dark' })).status, 200);
+  await api('/api/prefs', { scope: 'desktop', theme: 'invalid', keybar: true });
+  const desktopPrefs = (await (await api('/api/prefs?scope=desktop')).json()).prefs;
+  assert.equal(desktopPrefs.theme, 'light', 'invalid theme cannot overwrite selection');
+  assert.equal(desktopPrefs.fontSize, 15, 'partial updates preserve other preferences');
+  assert.equal((await (await api('/api/prefs?scope=touch')).json()).prefs.theme, 'dark', 'device themes are independent');
+  assert.equal((await api('/api/prefs', { scope: 'desktop', theme: 'dark' }, false)).status, 401);
+  // Wait for the queued atomic preference write before restarting the service.
+  await until(() => JSON.parse(readFileSync(path.join(folder, 'prefs.json'), 'utf8')).desktop?.keybar === true);
   await stopService();
   service = startService();
   await until(async () => (await api(route)).status === 200);
+  assert.deepEqual((await (await api('/api/prefs?scope=desktop')).json()).prefs, desktopPrefs, 'theme survives restart');
   assert.deepEqual(await (await api(route)).json(), record, 'notes survive Web server restart');
   assert.deepEqual(await (await api('/api/quick-commands')).json(), savedCommands, 'commands survive service restart');
   assert.equal((await api('/api/sessions/note', { name: child, text: '' })).status, 200);

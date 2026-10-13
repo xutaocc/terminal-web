@@ -742,9 +742,10 @@ async function handleKillSession(
 // the cache back in.
 // ---------------------------------------------------------------------------
 
-const PREFS_FILE = path.join(os.homedir(), ".terminal-web", "prefs.json");
+const PREFS_FILE = process.env.PREFS_FILE || path.join(os.homedir(), ".terminal-web", "prefs.json");
 
 interface UiPrefs {
+  theme?: "dark" | "light";
   /** Tab (tmux session) this device class last had focused. */
   activeTab?: string;
   /** Terminal font size in px. */
@@ -832,6 +833,7 @@ async function handleSetPrefs(
   }
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
+  if (obj.theme === "dark" || obj.theme === "light") next.theme = obj.theme;
   all[scope] = next;
   prefsCache = all;
   prefsWrite = prefsWrite

@@ -1,9 +1,20 @@
 import './file-browser.css';
+import './theme.css';
+import { applyDocumentTheme, isTheme } from './theme.js';
 
 // Runs in a same-origin embedded page; cookies and all APIs belong to the terminal server.
 const $ = selector => document.querySelector(selector);
 const apiBase = '/api/files/';
 const query = new URLSearchParams(location.search);
+let theme = query.get('theme');
+if (!isTheme(theme)) {
+  try { theme = localStorage.getItem(`tw.theme.${navigator.maxTouchPoints > 0 ? 'touch' : 'desktop'}`); } catch { /* default dark */ }
+}
+applyDocumentTheme(isTheme(theme) ? theme : 'dark');
+window.addEventListener('message', event => {
+  if (event.origin !== location.origin || event.source !== window.parent) return;
+  if (event.data?.type === 'terminal-theme' && isTheme(event.data.theme)) applyDocumentTheme(event.data.theme);
+});
 const session = query.get('session') || '';
 let sessionPath = '/';
 let current = '/';

@@ -18,8 +18,8 @@ body {
   width: 100%;
   margin: 0;
   padding: 0;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--ui-surface, #1e1e1e);
+  color: var(--ui-text, #d4d4d4);
   overflow: hidden;
 }
 
@@ -44,11 +44,11 @@ body {
   padding: calc(4px + env(safe-area-inset-top)) 8px 4px;
   padding-left: max(8px, env(safe-area-inset-left));
   padding-right: max(8px, env(safe-area-inset-right));
-  background: #252526;
-  border-bottom: 1px solid #333;
+  background: var(--ui-panel, #252526);
+  border-bottom: 1px solid var(--ui-border, #333);
   font-family: var(--mono);
   font-size: 12px;
-  color: #d4d4d4;
+  color: var(--ui-text, #d4d4d4);
   z-index: 20;
   user-select: none;
   -webkit-user-select: none;
@@ -73,15 +73,15 @@ body {
   gap: 6px;
   max-width: 180px;
   padding: 4px 8px;
-  background: #2d2d2d;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-raised, #2d2d2d);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 6px;
-  color: #cfcfcf;
+  color: var(--ui-text, #cfcfcf);
   cursor: pointer;
   touch-action: manipulation; /* let the strip pan under a finger; no dbl-tap zoom */
 }
 .tab.active {
-  background: #1e1e1e;
+  background: var(--ui-surface, #1e1e1e);
   border-color: #3b8eea;
   color: #fff;
 }
@@ -102,9 +102,9 @@ body {
   z-index: 10000;
   width: min(220px, calc(100vw - 16px));
   padding: 6px;
-  border: 1px solid #505050;
+  border: 1px solid var(--ui-border-strong, #505050);
   border-radius: 10px;
-  background: #292929;
+  background: var(--ui-raised, #292929);
   box-shadow: 0 8px 28px #0008;
   font: 14px system-ui, sans-serif;
 }
@@ -113,7 +113,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #aaa;
+  color: var(--ui-muted, #aaa);
   font-size: 12px;
 }
 .tab-context-menu button {
@@ -124,7 +124,7 @@ body {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #eee;
+  color: var(--ui-text, #eee);
   text-align: left;
   font: inherit;
   cursor: pointer;
@@ -134,7 +134,7 @@ body {
 .tab-context-menu button:focus-visible {
   outline: 2px solid #3b8eea;
   outline-offset: -2px;
-  background: #383838;
+  background: var(--ui-hover, #383838);
 }
 .paste-overlay.session-note-overlay {
   z-index: 10001;
@@ -188,7 +188,7 @@ body {
   font-size: 14px;
 }
 .session-note-hint, .session-note-status {
-  color: #aaa;
+  color: var(--ui-muted, #aaa);
   font: 12px/1.5 system-ui, sans-serif;
   margin: 8px 0;
   overflow-wrap: anywhere;
@@ -200,10 +200,10 @@ body {
   min-height: 160px;
   height: min(260px, 32dvh);
   padding: 12px;
-  border: 1px solid #555;
+  border: 1px solid var(--ui-border-strong, #555);
   border-radius: 8px;
-  background: #1e1e1e;
-  color: #eee;
+  background: var(--ui-surface, #1e1e1e);
+  color: var(--ui-text, #eee);
   font: 16px/1.6 system-ui, sans-serif;
   resize: vertical;
 }
@@ -228,7 +228,7 @@ body {
   font-family: system-ui, sans-serif;
 }
 .quick-command-box h2 { margin: 0 0 8px; font-size: 18px; }
-.qc-hint, .qc-status { color: #aaa; font-size: 12px; line-height: 1.5; }
+.qc-hint, .qc-status { color: var(--ui-muted, #aaa); font-size: 12px; line-height: 1.5; }
 .qc-status { min-height: 0; margin: 6px 0; }
 .qc-status:empty { display: none; }
 .qc-list { max-height: 52dvh; min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
@@ -238,7 +238,7 @@ body {
 .qc-item {
   display: grid; grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center; column-gap: 6px; row-gap: 2px; padding: 6px 0;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--ui-border-strong, #444);
 }
 .qc-body { display: contents; }
 .qc-body strong {
@@ -247,13 +247,13 @@ body {
 }
 .qc-body pre {
   grid-column: 2 / -1; grid-row: 2; min-width: 0;
-  margin: 0; font: 12px/1.5 var(--mono); color: #aaa;
+  margin: 0; font: 12px/1.5 var(--mono); color: var(--ui-muted, #aaa);
   white-space: pre; overflow: hidden; text-overflow: ellipsis;
 }
 .qc-drag {
   grid-column: 1; grid-row: 1 / 3; width: 28px; height: 44px; padding: 5px;
   display: flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 4px; background: transparent; color: #aaa; cursor: grab;
+  border: 0; border-radius: 4px; background: transparent; color: var(--ui-muted, #aaa); cursor: grab;
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .qc-drag svg { width: 14px; height: 20px; fill: currentColor; pointer-events: none; }
@@ -269,8 +269,8 @@ body {
 .qc-form label { display: block; font-size: 13px; margin-bottom: 12px; }
 .qc-form input, .qc-form textarea {
   display: block; width: 100%; margin-top: 6px; padding: 10px;
-  border: 1px solid #555; border-radius: 6px; color: #eee;
-  background: #1e1e1e; font: 16px/1.5 var(--mono); box-sizing: border-box;
+  border: 1px solid var(--ui-border-strong, #555); border-radius: 6px; color: var(--ui-text, #eee);
+  background: var(--ui-surface, #1e1e1e); font: 16px/1.5 var(--mono); box-sizing: border-box;
 }
 .qc-form textarea { resize: vertical; }
 .qc-form input:focus, .qc-form textarea:focus { outline: 2px solid #3b8eea; }
@@ -291,7 +291,7 @@ body {
    Hollow and dim, so amber keeps meaning "this one is trying to reconnect". */
 .tab .tab-dot.idle {
   background: transparent;
-  box-shadow: inset 0 0 0 1px #6a6a6a;
+  box-shadow: inset 0 0 0 1px var(--ui-subtle, #6a6a6a);
 }
 .tab .tab-label {
   overflow: hidden;
@@ -305,10 +305,10 @@ body {
   line-height: 14px;
   text-align: center;
   border-radius: 4px;
-  color: #999;
+  color: var(--ui-muted, #999);
 }
 .tab .tab-close:hover {
-  background: #4a4a4c;
+  background: var(--ui-border-strong, #4a4a4c);
   color: #fff;
 }
 
@@ -316,9 +316,9 @@ body {
   flex: 0 0 auto;
   appearance: none;
   -webkit-appearance: none;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 6px;
   width: 28px;
   height: 28px;
@@ -328,7 +328,7 @@ body {
   touch-action: manipulation;
 }
 .tab-add:active {
-  background: #4a4a4c;
+  background: var(--ui-border-strong, #4a4a4c);
 }
 
 #controls {
@@ -345,9 +345,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
@@ -375,7 +375,7 @@ body {
 }
 
 .tb-btn:active {
-  background: #4a4a4c;
+  background: var(--ui-border-strong, #4a4a4c);
 }
 
 .tb-btn.active {
@@ -403,7 +403,7 @@ body {
   border-radius: 0 6px 6px 0;
 }
 .tb-seg .tb-btn + .tb-btn {
-  border-left-color: #2a2a2c;
+  border-left-color: var(--ui-raised, #2a2a2c);
 }
 
 /* destructive action (e.g. "Close & kill" in the confirm dialog) */
@@ -453,8 +453,8 @@ body {
   display: flex;
   gap: 8px;
   padding: 6px;
-  background: #2d2d30;
-  border: 1px solid #454548;
+  background: var(--ui-raised, #2d2d30);
+  border: 1px solid var(--ui-border-strong, #454548);
   border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   z-index: 30;
@@ -468,9 +468,9 @@ body {
   min-width: 72px;
   height: 40px;
   padding: 0 14px;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 8px;
   font-size: 15px;
   font-family: var(--mono);
@@ -495,7 +495,7 @@ body {
   right: 0;
   top: calc(var(--topbar-h) + env(safe-area-inset-top));
   height: var(--term-h);
-  background: #1e1e1e;
+  background: var(--terminal-background, var(--ui-surface, #1e1e1e));
   /* The soft keyboard slides the terminal up; it does not shrink it. Shrinking
      is what the height used to do, and it meant a SIGWINCH every time you
      tapped into the prompt — with a program on the alternate screen (Claude
@@ -528,7 +528,7 @@ body {
    The ring says which one has the keys, which two terminals need and one does
    not: without it a keypress goes somewhere you did not choose. */
 .term-pane.split {
-  box-shadow: inset 0 0 0 1px #313134;
+  box-shadow: inset 0 0 0 1px var(--ui-border, #313134);
   border-radius: 6px;
 }
 .term-pane.split.focused {
@@ -546,7 +546,7 @@ body {
   border: 2px dashed #3b8eea;
   border-radius: 8px;
   background: rgba(36, 114, 200, 0.12);
-  color: #cfe3ff;
+  color: var(--ui-accent-text, #cfe3ff);
   font-family: var(--mono);
   font-size: 14px;
   pointer-events: none;
@@ -579,8 +579,8 @@ body {
   padding: 0 8px;
   padding-left: max(8px, env(safe-area-inset-left));
   padding-right: max(8px, env(safe-area-inset-right));
-  background: #252526;
-  border-top: 1px solid #333;
+  background: var(--ui-panel, #252526);
+  border-top: 1px solid var(--ui-border, #333);
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
@@ -598,9 +598,9 @@ body {
 
 .kb-key {
   flex: 0 0 auto;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 14px;
@@ -615,7 +615,7 @@ body {
 }
 
 .kb-key:active {
-  background: #4a4a4c;
+  background: var(--ui-border-strong, #4a4a4c);
 }
 
 /* sticky modifier (Ctrl/Alt) currently armed */
@@ -643,9 +643,9 @@ body {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1;
-  color: #d4d4d4;
-  background: rgba(40, 40, 40, 0.9);
-  border: 1px solid #3a3a3a;
+  color: var(--ui-text, #d4d4d4);
+  background: var(--ui-panel, rgba(40, 40, 40, 0.9));
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
   opacity: 0;
@@ -671,8 +671,8 @@ body {
 }
 .paste-box {
   width: min(90vw, 560px);
-  background: #252526;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-panel, #252526);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 10px;
   padding: 14px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
@@ -680,16 +680,16 @@ body {
 .paste-label {
   font-family: var(--mono);
   font-size: 12px;
-  color: #cfcfcf;
+  color: var(--ui-text, #cfcfcf);
   margin-bottom: 8px;
 }
 .paste-ta {
   width: 100%;
   height: 120px;
   resize: vertical;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-surface, #1e1e1e);
+  color: var(--ui-text, #d4d4d4);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 6px;
   padding: 8px;
   font-family: var(--mono);
@@ -706,9 +706,9 @@ body {
 .prompt-input {
   width: 100%;
   box-sizing: border-box;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-surface, #1e1e1e);
+  color: var(--ui-text, #d4d4d4);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 6px;
   padding: 10px;
   font-family: var(--mono);
@@ -736,11 +736,11 @@ body {
 }
 .has-directory .prompt-content { min-height: 0; overflow-y: auto; }
 .has-directory .paste-row { flex-shrink: 0; margin-top: 12px; }
-.prompt-directory-label { margin-top: 12px; color: #aaa; font: 12px/1.5 system-ui, sans-serif; }
+.prompt-directory-label { margin-top: 12px; color: var(--ui-muted, #aaa); font: 12px/1.5 system-ui, sans-serif; }
 .prompt-directory-path {
   display: block; width: 100%; box-sizing: border-box; resize: vertical;
-  margin: 6px 0 0; padding: 10px; border: 1px solid #444; border-radius: 6px;
-  background: #1e1e1e; color: #ddd; font: 16px/1.5 var(--mono);
+  margin: 6px 0 0; padding: 10px; border: 1px solid var(--ui-border-strong, #444); border-radius: 6px;
+  background: var(--ui-surface, #1e1e1e); color: var(--ui-text, #ddd); font: 16px/1.5 var(--mono);
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24dvh; overflow-y: auto;
   user-select: text; -webkit-user-select: text;
 }
@@ -761,7 +761,7 @@ body {
 .help-list {
   margin: 0;
   padding-left: 18px;
-  color: #d4d4d4;
+  color: var(--ui-text, #d4d4d4);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -790,10 +790,10 @@ body {
   padding: env(safe-area-inset-top) 6px 0;
   padding-left: max(6px, env(safe-area-inset-left));
   padding-right: max(6px, env(safe-area-inset-right));
-  background: #252526;
-  border-bottom: 1px solid #333;
+  background: var(--ui-panel, #252526);
+  border-bottom: 1px solid var(--ui-border, #333);
   font-family: var(--mono);
-  color: #d4d4d4;
+  color: var(--ui-text, #d4d4d4);
   z-index: 20;
   user-select: none;
   -webkit-user-select: none;
@@ -809,9 +809,9 @@ body {
   min-width: 40px;
   height: 40px;
   padding: 0 8px;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 8px;
   font-size: 20px;
   line-height: 1;
@@ -819,7 +819,7 @@ body {
   touch-action: manipulation;
 }
 .m-btn:active {
-  background: #4a4a4c;
+  background: var(--ui-border-strong, #4a4a4c);
 }
 .m-btn.active {
   background: #2472c8;
@@ -836,8 +836,8 @@ body {
   gap: 8px;
   height: 40px;
   padding: 0 12px;
-  background: #2d2d2d;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-raised, #2d2d2d);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 8px;
   color: #fff;
   font-family: var(--mono);
@@ -863,7 +863,7 @@ body {
 }
 .m-title .m-caret {
   margin-left: auto;
-  color: #9a9a9a;
+  color: var(--ui-muted, #9a9a9a);
   font-size: 12px;
   flex: 0 0 auto;
 }
@@ -898,8 +898,8 @@ body {
   -webkit-overflow-scrolling: touch; /* iOS momentum scroll inside the fixed overlay */
   overscroll-behavior: contain; /* don't chain the scroll to the locked body */
   touch-action: pan-y;
-  background: #252526;
-  border-top: 1px solid #3a3a3a;
+  background: var(--ui-panel, #252526);
+  border-top: 1px solid var(--ui-hover, #3a3a3a);
   border-top-left-radius: 14px;
   border-top-right-radius: 14px;
   padding: 8px 12px calc(14px + env(safe-area-inset-bottom));
@@ -910,12 +910,12 @@ body {
   width: 40px;
   height: 4px;
   border-radius: 2px;
-  background: #555;
+  background: var(--ui-border-strong, #555);
   margin: 6px auto 12px;
 }
 .sheet-title {
   font-size: 13px;
-  color: #cfcfcf;
+  color: var(--ui-text, #cfcfcf);
   margin: 0 4px 10px;
 }
 
@@ -930,20 +930,20 @@ body {
   align-items: center;
   gap: 8px;
   padding: 10px;
-  background: #2d2d2d;
-  border: 1px solid #3a3a3a;
+  background: var(--ui-raised, #2d2d2d);
+  border: 1px solid var(--ui-hover, #3a3a3a);
   border-radius: 10px;
-  color: #e5e5e5;
+  color: var(--ui-text, #e5e5e5);
 }
 .drawer-row.active {
-  background: #1e1e1e;
+  background: var(--ui-surface, #1e1e1e);
   border-color: #3b8eea;
   color: #fff;
 }
 .drawer-hint {
   margin: 0 0 10px;
   font: 12px/1.5 system-ui, sans-serif;
-  color: #aaa;
+  color: var(--ui-muted, #aaa);
 }
 .drawer-enter svg {
   width: 14px;
@@ -990,9 +990,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 8px;
   font-size: 16px;
   cursor: pointer;
@@ -1032,9 +1032,9 @@ body {
   -webkit-appearance: none;
   width: 56px;
   height: 44px;
-  background: #3a3a3c;
-  color: #e5e5e5;
-  border: 1px solid #4a4a4c;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 8px;
   font-size: 18px;
   font-family: var(--mono);
@@ -1045,7 +1045,7 @@ body {
   flex: 1 1 auto;
   text-align: center;
   font-size: 15px;
-  color: #cfcfcf;
+  color: var(--ui-text, #cfcfcf);
 }
 /* The same split-view control in the phone's actions sheet, at touch size. */
 .sheet-seg {
@@ -1057,7 +1057,7 @@ body {
 .ss-lbl {
   flex: 1 1 auto;
   font-size: 15px;
-  color: #cfcfcf;
+  color: var(--ui-text, #cfcfcf);
 }
 .sf-btn.active {
   background: #2472c8;
@@ -1074,8 +1074,8 @@ body {
   padding: 14px 6px;
   background: transparent;
   border: 0;
-  border-top: 1px solid #333;
-  color: #e5e5e5;
+  border-top: 1px solid var(--ui-border, #333);
+  color: var(--ui-text, #e5e5e5);
   font-family: var(--mono);
   font-size: 16px;
   text-align: left;
@@ -1083,7 +1083,7 @@ body {
   touch-action: manipulation;
 }
 .sheet-row:active {
-  background: #2d2d2d;
+  background: var(--ui-raised, #2d2d2d);
 }
 .sheet-ico {
   flex: 0 0 auto;
@@ -1282,6 +1282,15 @@ body {
 }
 
 /* Full-page file manager within the existing terminal application. */
-#file-browser-frame { position: fixed; top: 0; left: 0; width: 100%; height: 100dvh; border: 0; background: #17191d; z-index: 1000; }
+#file-browser-frame { position: fixed; top: 0; left: 0; width: 100%; height: 100dvh; border: 0; background: var(--ui-surface, #17191d); z-index: 1000; }
 #file-browser-frame[hidden] { display: none; }
 body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file-browser-open > #keybar, body.file-browser-open > #status, body.file-browser-open > #selbar { visibility: hidden; pointer-events: none; }
+
+/* Theme-aware foregrounds on neutral surfaces (primary actions stay white). */
+:root[data-theme="light"] .tab.active,
+:root[data-theme="light"] .help-title,
+:root[data-theme="light"] .help-list b,
+:root[data-theme="light"] .m-title,
+:root[data-theme="light"] .tab .tab-close:hover,
+:root[data-theme="light"] .drawer-row.active { color: var(--ui-text); }
+.actions-sheet .theme-picker .sf-btn { width: auto; min-width: 72px; padding: 0 12px; white-space: nowrap; }

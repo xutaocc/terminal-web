@@ -1,0 +1,23 @@
+/* Shared UI tokens. Dark mode uses the original colors at each call site. */
+:root { color-scheme: dark; }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ui-surface: #ffffff;
+  --ui-canvas: #eef0f3;
+  --ui-panel: #f5f6f8;
+  --ui-raised: #edf0f4;
+  --ui-hover: #e0e6ee;
+  --ui-border: #d5dbe3;
+  --ui-border-strong: #b6c0cd;
+  --ui-text: #24292f;
+  --ui-muted: #586574;
+  --ui-subtle: #697687;
+  --ui-accent-text: #1756a9;
+  --ui-code-text: #263b53;
+  --ui-selected: #e2edff;
+  --ui-accent-border: #6691cb;
+  --ui-primary: #2472c8;
+  --ui-success: #176b35;
+  --ui-warning: #856000;
+  --ui-danger-text: #b42318;
+}

@@ -1,4 +1,6 @@
 import '@xterm/xterm/css/xterm.css';
+import './theme.css';
+import { applyDocumentTheme, isTheme, TERMINAL_THEMES, type ThemeName } from './theme.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -407,6 +409,7 @@ function openHelp(): void {
       : '<li><b>Literal ^V</b> (vim visual-block, readline quoted-insert) — Ctrl+V now pastes, so press <b>Ctrl+Q</b>, which both accept as its alias.</li>') +
     '<li><b>Attach a file</b> (for Claude Code etc.) — tap the 📎 button, or paste / drag any file (image, PDF, text…): it uploads and inserts the file path. Then press Enter.</li>' +
     '<li><b>Download a file</b> — tap the ⬇ button (or <b>⋯ → Download</b> on a phone) and enter a name/relative path from the terminal\'s current folder (e.g. <code>report.zip</code>), or a full path (<code>~/output/report.zip</code>). It downloads to this device.</li>' +
+    '<li><b>主题</b> — 右上角 ⋯ → 设置 → 浅色 / 深色；电脑与手机分别保存，切换不重连终端。</li>' +
     '<li><b>Scroll</b> — mouse wheel or two-finger swipe scrolls the history.</li>' +
     '<li><b>Tabs</b> — <b>+</b> new session, <b>×</b> closes the tab and kills its session, <b>⟳</b> restarts the session fresh. Right-click or long-press a tab for Rename; double-click (or double-tap) also works — the label changes but its tmux session stays the same.</li>' +
     '</ul>' +
@@ -423,29 +426,15 @@ function openHelp(): void {
   });
 }
 
-const THEME = {
-  background: '#1e1e1e',
-  foreground: '#d4d4d4',
-  cursor: '#d4d4d4',
-  cursorAccent: '#1e1e1e',
-  selectionBackground: '#264f78',
-  black: '#000000',
-  red: '#cd3131',
-  green: '#0dbc79',
-  yellow: '#e5e510',
-  blue: '#2472c8',
-  magenta: '#bc3fbc',
-  cyan: '#11a8cd',
-  white: '#e5e5e5',
-  brightBlack: '#666666',
-  brightRed: '#f14c4c',
-  brightGreen: '#23d18b',
-  brightYellow: '#f5f543',
-  brightBlue: '#3b8eea',
-  brightMagenta: '#d670d6',
-  brightCyan: '#29b8db',
-  brightWhite: '#ffffff',
-};
+const mobileMQ = window.matchMedia('(max-width: 640px), (hover: none) and (pointer: coarse)');
+const THEME_STORAGE_KEY = `tw.theme.${TOUCH_DEVICE ? 'touch' : 'desktop'}`;
+let currentTheme: ThemeName = 'dark';
+try {
+  const cachedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  if (isTheme(cachedTheme)) currentTheme = cachedTheme;
+} catch { /* server preferences can restore the theme */ }
+let themeChanged = false;
+applyDocumentTheme(currentTheme);
 
 const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
 
@@ -612,7 +601,7 @@ class Session {
       // Hold Option (macOS) / Shift (others) and drag to select text even while
       // tmux mouse mode is on, so it can be copied.
       macOptionClickForcesSelection: true,
-      theme: THEME,
+      theme: TERMINAL_THEMES[currentTheme],
     });
     this.term.loadAddon(this.fitAddon);
     this.term.loadAddon(new WebLinksAddon());
@@ -2742,6 +2731,7 @@ async function readoptTabs(tabs: SavedTab[]): Promise<void> {
 const PREF_SCOPE = TOUCH_DEVICE ? 'touch' : 'desktop';
 
 interface UiPrefs {
+  theme?: ThemeName;
   activeTab?: string;
   fontSize?: number;
   keybar?: boolean;
@@ -2955,7 +2945,6 @@ function setPaneDims(cols: number, rows: number): void {
 // Below this width the key bar wraps to several rows (see styles.css) instead
 // of being one horizontally-scrollable row, so its height is no longer fixed.
 // A phone stays in the touch layout when fullscreen landscape exceeds 640px.
-const mobileMQ = window.matchMedia('(max-width: 640px), (hover: none) and (pointer: coarse)');
 
 // Publish the key bar's real height into --keybar-h so the terminal sits right
 // above it: a fixed value on desktop (single row), the measured wrapped height
@@ -3666,7 +3655,7 @@ const sheetGrip = document.createElement('div');
 sheetGrip.className = 'sheet-grip';
 const sheetTitle = document.createElement('div');
 sheetTitle.className = 'sheet-title';
-sheetTitle.textContent = 'Actions';
+sheetTitle.textContent = '设置';
 
 const fontRow = document.createElement('div');
 fontRow.className = 'sheet-font';
@@ -3692,6 +3681,44 @@ bindIntentionalClick(fontPlus, () => {
   updateFontVal();
 }, sheet);
 fontRow.append(fontMinus, fontVal, fontPlus);
+
+const themeRow = document.createElement('div');
+themeRow.className = 'sheet-seg theme-picker';
+themeRow.setAttribute('role', 'group');
+themeRow.setAttribute('aria-label', '界面主题');
+const themeLabel = document.createElement('div');
+themeLabel.className = 'ss-lbl';
+themeLabel.textContent = '主题';
+themeRow.append(themeLabel);
+const themeButtons = new Map<ThemeName, HTMLButtonElement>();
+for (const [name, label] of [['light', '☀ 浅色'], ['dark', '☾ 深色']] as const) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sf-btn';
+  button.textContent = label;
+  bindIntentionalClick(button, () => {
+    themeChanged = true;
+    setTheme(name);
+    savePrefs({ theme: name });
+  }, sheet);
+  themeButtons.set(name, button);
+  themeRow.append(button);
+}
+function setTheme(theme: ThemeName): void {
+  currentTheme = theme;
+  applyDocumentTheme(theme);
+  for (const session of sessions) {
+    session.term.options.theme = TERMINAL_THEMES[theme];
+    if (session.mate) session.mate.term.options.theme = TERMINAL_THEMES[theme];
+  }
+  for (const [name, button] of themeButtons) {
+    button.classList.toggle('active', name === theme);
+    button.setAttribute('aria-pressed', String(name === theme));
+  }
+  try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch { /* server copy remains */ }
+  fileBrowserFrame?.contentWindow?.postMessage({ type: 'terminal-theme', theme }, location.origin);
+}
+setTheme(currentTheme);
 
 // The same split-view control, at touch size, for the phone's actions sheet
 // (the desktop top bar is hidden at that width).
@@ -3775,18 +3802,19 @@ for (const event of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 updateFullscreenButton();
 
-selectBtn = sheetRow('选择', '拖动选择文字', () => {
+selectBtn = sheetRow('↔', '拖动选择文字', () => {
   closeSheet();
   setTouchSelectMode(!touchSelectMode);
   flashStatus(touchSelectMode ? '选择模式：拖动选择文字，松手后点击复制' : '已关闭选择模式', 1800);
 });
 sheet.append(
-  selectBtn,
   sheetGrip,
   sheetTitle,
+  themeRow,
   fontRow,
   splitRow,
   keyboardLockButton,
+  selectBtn,
   sheetRow('▰', '文件管理', () => { closeSheet(); openFileBrowser(); }),
   sheetRow('📁', '复制当前路径', () => {
     closeSheet();
@@ -4220,6 +4248,7 @@ async function init(): Promise<void> {
   // still has its localStorage has already applied the same values; this only
   // differs on one that lost them (see fetchServerPrefs).
   const prefs = (await prefsPromise) ?? {};
+  if (!themeChanged && isTheme(prefs.theme)) setTheme(prefs.theme);
   if (typeof prefs.fontSize === 'number' && Number.isFinite(prefs.fontSize)) {
     currentFont = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(prefs.fontSize)));
     updateFontVal();
@@ -4266,6 +4295,7 @@ async function init(): Promise<void> {
 
   // Everything restored: from here on, changes are the user's and get saved.
   prefsReady = true;
+  if (themeChanged) savePrefs({ theme: currentTheme });
   if (keyboardLockChanged) savePrefs({ keyboardLocked });
 }
 
@@ -4309,11 +4339,14 @@ function openFileBrowser(): void {
     fileBrowserFrame = document.createElement('iframe');
     fileBrowserFrame.id = 'file-browser-frame';
     fileBrowserFrame.title = '服务器文件管理';
+    fileBrowserFrame.addEventListener('load', () => {
+      fileBrowserFrame?.contentWindow?.postMessage({ type: 'terminal-theme', theme: currentTheme }, location.origin);
+    });
     document.body.append(fileBrowserFrame);
   }
   if (fileBrowserSession !== session.name) {
     fileBrowserSession = session.name;
-    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams({ session: session.name, label: session.displayName })}`;
+    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams({ session: session.name, label: session.displayName, theme: currentTheme })}`;
   }
   fileBrowserOpen = true;
   document.body.classList.add('file-browser-open');
