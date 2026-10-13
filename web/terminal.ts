@@ -459,7 +459,11 @@ addBtn.title = 'New session';
 const controlsEl = document.createElement('div');
 controlsEl.id = 'controls';
 
-topbar.append(tabsEl, addBtn, controlsEl);
+const desktopTools = document.createElement('div');
+desktopTools.id = 'desktop-tools';
+desktopTools.append(addBtn, controlsEl);
+// A floated tool group reserves only its own rows, so later tab rows span the bar.
+topbar.append(desktopTools, tabsEl);
 
 async function logoutBrowser(): Promise<void> {
   try {
@@ -2240,7 +2244,7 @@ function buildTab(s: Session): void {
   s.tabEl = tab;
   s.tabLabel = label;
   s.tabDot = dot;
-  tabsEl.append(tab); // The fixed "+" button sits outside the scrollable strip.
+  tabsEl.append(tab); // The "+" button stays in the top-right tool group.
   updateTabDot(s);
   refreshMobileUI();
 }

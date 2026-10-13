@@ -38,9 +38,7 @@ body {
   left: 0;
   right: 0;
   min-height: calc(38px + env(safe-area-inset-top));
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  display: flow-root;
   padding: calc(4px + env(safe-area-inset-top)) 8px 4px;
   padding-left: max(8px, env(safe-area-inset-left));
   padding-right: max(8px, env(safe-area-inset-right));
@@ -54,21 +52,32 @@ body {
   -webkit-user-select: none;
 }
 
-/* Desktop tabs wrap into additional rows; the "+" button remains visible. */
-#tabs {
-  flex: 1 1 auto;
-  min-width: 0;
+/* Inline tabs flow around the tools on the first row, then use the full width.
+   Do not give #tabs its own formatting context: that would reserve a column
+   for the tools all the way down again. */
+#desktop-tools {
+  float: right;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100% - 8px);
+  margin: 0 0 4px 8px;
+}
+#tabs {
+  display: block;
+  font-size: 0;
+  line-height: 0;
   overflow: visible;
-  -webkit-overflow-scrolling: touch;
 }
 
 .tab {
   flex: 0 0 auto;
-  display: flex;
+  display: inline-flex;
+  vertical-align: top;
+  height: 28px;
+  margin: 0 4px 4px 0;
+  font-size: 12px;
+  line-height: normal;
   align-items: center;
   gap: 6px;
   max-width: 180px;
@@ -332,8 +341,10 @@ body {
 }
 
 #controls {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding-left: 6px;
