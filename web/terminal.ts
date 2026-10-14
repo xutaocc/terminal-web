@@ -1742,6 +1742,7 @@ class Session {
 
   dispose(): void {
     this.stopTouchScroll();
+    this.keyboardLock?.dispose();
     this.disposed = true;
     this.mate?.dispose(); // the pair goes together, or the second one is orphaned
     this.mate = null;
