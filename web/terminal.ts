@@ -408,7 +408,7 @@ function openHelp(): void {
     (isMac
       ? ''
       : '<li><b>Literal ^V</b> (vim visual-block, readline quoted-insert) — Ctrl+V now pastes, so press <b>Ctrl+Q</b>, which both accept as its alias.</li>') +
-    '<li><b>Attach a file</b> (for Claude Code etc.) — tap the 📎 button, or paste / drag any file (image, PDF, text…): it uploads and inserts the file path. Then press Enter.</li>' +
+    '<li><b>Attach a file</b> (for Claude Code etc.) — tap the upload button, or paste / drag any file (image, PDF, text…): it uploads and inserts the file path. Then press Enter.</li>' +
     '<li><b>Download a file</b> — tap the ⬇ button (or <b>⋯ → Download</b> on a phone) and enter a name/relative path from the terminal\'s current folder (e.g. <code>report.zip</code>), or a full path (<code>~/output/report.zip</code>). It downloads to this device.</li>' +
     '<li><b>主题</b> — 右上角 ⋯ → 设置 → 浅色 / 深色；电脑与手机分别保存，切换不重连终端。</li>' +
     '<li><b>Scroll</b> — mouse wheel or two-finger swipe scrolls the history.</li>' +
@@ -3158,7 +3158,7 @@ async function toggleFullscreen(): Promise<void> {
 
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
-makeButton(controlsEl, 'tb-btn tb-icon', '▰', '文件管理', () => openFileBrowser());
+makeButton(controlsEl, 'tb-btn tb-icon', '📁', '文件管理', () => openFileBrowser());
 // Split view. A tab can show a second terminal beside its own: this picks
 // whether you see the first, the second, or both at once. Both keep running
 // whichever you are looking at — only closing the tab closes them. The second
@@ -3204,7 +3204,7 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 // The button that opens this picker lives in the ⋯ sheet — on a phone the
-// mobile bar has its own 📎 as well, since attaching is what that device is
+// mobile bar has its own upload button as well, since attaching is what that device is
 // mostly used for.
 
 function openQuickCommandPanel(): void {
@@ -3481,9 +3481,9 @@ bindIntentionalClick(mTitle, openDrawer);
 const mAttachBtn = document.createElement('button');
 mAttachBtn.className = 'm-btn';
 mAttachBtn.type = 'button';
-mAttachBtn.textContent = '📎';
-mAttachBtn.title = 'Attach a file';
-mAttachBtn.setAttribute('aria-label', 'Attach a file');
+mAttachBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>';
+mAttachBtn.title = '上传文件';
+mAttachBtn.setAttribute('aria-label', '上传文件');
 bindIntentionalClick(mAttachBtn, () => fileInput.click());
 const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
   keyboardLockChanged = true;
@@ -3493,7 +3493,7 @@ mKeyboardLockBtn.classList.add('m-keyboard-lock');
 mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/></svg>';
 const mMoreBtn = mBtn('⋯', 'More actions', () => openSheet());
 
-const mFilesBtn = mBtn('▰', '文件管理', () => openFileBrowser());
+const mFilesBtn = mBtn('📁', '文件管理', () => openFileBrowser());
 mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeyboardLockBtn, mMoreBtn);
 document.body.append(mobilebar);
 
@@ -3854,7 +3854,7 @@ sheet.append(
   splitRow,
   keyboardLockButton,
   selectBtn,
-  sheetRow('▰', '文件管理', () => { closeSheet(); openFileBrowser(); }),
+  sheetRow('📁', '文件管理', () => { closeSheet(); openFileBrowser(); }),
   sheetRow('📁', '复制当前路径', () => {
     closeSheet();
     void copyCurrentPath();

@@ -76,12 +76,10 @@ function ordered(entries) {
 }
 async function load(p, force = false) { if (!force && cache.has(p)) return cache.get(p); const data = await request('list', undefined, { path: p }); cache.set(p, data); return data; }
 async function initialExpand(p, force = false) {
-  const data = await load(p, force); expanded.add(p);
-  // Expand the first level without eagerly scanning the entire filesystem.
-  const children = ordered(data.entries).filter(item => item.directory && !item.symlink);
-  for (let i = 0; i < children.length; i += 4) await Promise.all(children.slice(i, i + 4).map(async item => {
-    try { await load(item.path, force); expanded.add(item.path); } catch (error) { cache.set(item.path, { directory: item, entries: [], error: error.message }); }
-  }));
+  await load(p, force);
+  // Show the destination's contents, with all child directories collapsed.
+  expanded.clear();
+  expanded.add(p);
 }
 // 返回目录时恢复展开、选择和两个方向的滚动位置，保留进入前的操作上下文。
 function snapshot() { return { current, active, expanded: [...expanded], selected: [...selected], selecting, top: $('#tree').scrollTop, left: $('#tree').scrollLeft }; }
