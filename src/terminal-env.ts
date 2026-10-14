@@ -2,7 +2,7 @@
  * 修改后重启网页后台，新建会话生效；不会改变已运行程序的环境。
  * 遵循 NO_COLOR 的程序（如 Codex）会关闭颜色，强制输出 ANSI 的程序可忽略它。
  */
-export const TERMINAL_COLORS_ENABLED = true;
+export const TERMINAL_COLORS_ENABLED = false;
 
 export function terminalEnvironment(
   source: NodeJS.ProcessEnv,

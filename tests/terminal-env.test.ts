@@ -4,7 +4,7 @@ import { terminalEnvironment } from '../src/terminal-env.js';
 
 test('web terminal drops launcher NO_COLOR without changing parent environment', () => {
   const source = { NO_COLOR: '1', TERM: 'dumb', PATH: '/bin', LANG: 'zh_CN.UTF-8' };
-  const env = terminalEnvironment(source);
+  const env = terminalEnvironment(source, true);
   assert.equal(env.NO_COLOR, undefined);
   assert.equal(env.TERM, 'xterm-256color');
   assert.equal(env.COLORTERM, 'truecolor');
@@ -17,10 +17,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { tmuxColorArgs, TERMINAL_COLORS_ENABLED } from '../src/terminal-env.js';
+import { tmuxColorArgs } from '../src/terminal-env.js';
 
 test('disabled policy removes inherited force-color flags', () => {
-  assert.equal(TERMINAL_COLORS_ENABLED, true);
   const env = terminalEnvironment({ FORCE_COLOR: '3', CLICOLOR_FORCE: '1', COLORTERM: 'truecolor' }, false);
   assert.equal(env.NO_COLOR, '1');
   assert.equal(env.CLICOLOR, '0');
