@@ -19,11 +19,40 @@ class Textarea extends EventTarget {
 }
 function setup(touch = true) {
   const textarea = new Textarea();
+  const interactions = new EventTarget();
   const gate = new TerminalKeyboardLock(
     textarea as unknown as HTMLTextAreaElement, touch, () => textarea.focus(),
+    interactions,
   );
-  return { textarea, gate };
+  return { textarea, gate, interactions };
 }
+
+test('an outside tap restores the lock even when dismissing the IME retained focus', () => {
+  const { textarea, gate, interactions } = setup();
+  gate.setLocked(true);
+  gate.open();
+  assert.equal(textarea.focused, true);
+  interactions.dispatchEvent(new Event('pointerdown'));
+  assert.equal(textarea.focused, false);
+  assert.equal(textarea.readOnly, true);
+  assert.equal(textarea.inputMode, 'none');
+  textarea.focus(); // A later xterm tap must not reopen the IME.
+  assert.equal(textarea.focused, false);
+  gate.open(); // The explicit keyboard button still works.
+  assert.equal(textarea.focused, true);
+  assert.equal(textarea.readOnly, false);
+});
+
+test('outside taps do not restrict unlocked or desktop typing', () => {
+  for (const touch of [true, false]) {
+    const { textarea, gate, interactions } = setup(touch);
+    gate.setLocked(!touch);
+    gate.open();
+    interactions.dispatchEvent(new Event('pointerdown'));
+    assert.equal(textarea.focused, true);
+    assert.equal(textarea.readOnly, false);
+  }
+});
 
 test('default and unchecked states preserve ordinary focus and typing', () => {
   const { textarea, gate } = setup();

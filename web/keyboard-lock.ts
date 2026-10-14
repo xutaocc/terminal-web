@@ -2,6 +2,7 @@
 export class TerminalKeyboardLock {
   private locked = false;
   private allowed = false;
+  private readonly events = new AbortController();
   private readonly originalReadOnly: boolean;
   private readonly originalInputMode: string;
 
@@ -9,6 +10,7 @@ export class TerminalKeyboardLock {
     private readonly textarea: HTMLTextAreaElement,
     private readonly touchDevice: boolean,
     private readonly focusTerminal: () => void,
+    interactionTarget: EventTarget | undefined = textarea.ownerDocument,
   ) {
     this.originalReadOnly = textarea.readOnly;
     this.originalInputMode = textarea.inputMode;
@@ -19,6 +21,19 @@ export class TerminalKeyboardLock {
       this.allowed = false;
       this.apply();
     });
+    // Mobile browsers can dismiss the IME without blurring the textarea.
+    // Revoke the explicit-open permission before xterm handles another tap.
+    interactionTarget?.addEventListener('pointerdown', event => {
+      if (this.enabled && this.allowed && event.target !== textarea) {
+        this.allowed = false;
+        this.apply();
+        textarea.blur();
+      }
+    }, { capture: true, signal: this.events.signal });
+  }
+
+  dispose(): void {
+    this.events.abort();
   }
 
   private get enabled(): boolean {
