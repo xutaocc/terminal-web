@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { tmuxColorArgs } from './terminal-env.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -45,7 +46,7 @@ export function tmuxArgs(session: string, confPath: string, startDir?: string): 
   // `-A` hands it to attach-session, which would reset the session's default
   // directory instead.
   const dir = startDir ? ["-c", startDir] : [];
-  return ["-u", "-f", confPath, "new-session", "-A", "-s", session, ...dir];
+  return ["-u", "-f", confPath, ...tmuxColorArgs(), "new-session", "-A", "-s", session, ...dir];
 }
 
 /**

@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { terminalEnvironment, tmuxColorArgs } from './terminal-env.js';
 
 const exec = promisify(execFile);
 const TEXT_LIMIT = 2 * 1024 * 1024;
@@ -200,7 +201,7 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
       // Keep the existing ASCII tmux protocol; Unicode directory names remain intact in the tab label.
       const prefix = displayName.slice(0, -17).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10) || 'dir' + crypto.createHash('sha256').update(p).digest('hex').slice(0, 6);
       const name = prefix + displayName.slice(-17);
-      await exec('tmux', ['-u', '-f', options.tmuxConf, 'new-session', '-d', '-s', name, '-c', p], { timeout: 10000 });
+      await exec('tmux', ['-u', '-f', options.tmuxConf, ...tmuxColorArgs(), 'new-session', '-d', '-s', name, '-c', p], { timeout: 10000, env: terminalEnvironment(process.env) });
       try { await exec('tmux', ['set-option', '-t', `=${name}:`, '@twtab', '1']); await exec('tmux', ['set-option', '-t', `=${name}:`, '@twlabel', displayName]); }
       catch (error) { await exec('tmux', ['kill-session', '-t', `=${name}`]).catch(() => {}); throw error; }
       json(res, 200, { name, displayName, path: p });

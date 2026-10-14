@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
+import { terminalEnvironment } from './terminal-env.js';
 import { isKeyboardInput } from './history-input.js';
 import {
   sanitizeSession,
@@ -1238,7 +1239,7 @@ function hasUtf8(value: string | undefined): boolean {
 }
 
 function buildChildEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, TERM: "xterm-256color" };
+  const env = terminalEnvironment(process.env);
   for (const key of SERVER_ENV_VARS) {
     delete env[key];
   }
