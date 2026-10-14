@@ -852,6 +852,9 @@ body {
   border-color: #3b8eea;
   color: #fff;
 }
+.m-keyboard-lock:not(.active) {
+  color: var(--ui-muted, #888);
+}
 
 /* the centered "current session" pill — tap to open the Sessions drawer */
 .m-title {
@@ -1127,7 +1130,8 @@ body {
     --topbar-h: 40px;
   }
   #topbar,
-  .desktop-keybar-setting {
+  .desktop-keybar-setting,
+  .desktop-keyboard-lock-setting {
     display: none;
   }
   #mobilebar {
@@ -1246,6 +1250,9 @@ body {
     min-height: 28px;
     padding: 7px 4px;
     font-size: 12px;
+  }
+  #keybar > * {
+    order: var(--mobile-order, 0);
   }
   /* full-width, zero-height item -> forces the arrows onto their own row */
   .kb-break {

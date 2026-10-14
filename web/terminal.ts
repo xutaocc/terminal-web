@@ -3292,6 +3292,8 @@ document.body.append(selBar);
 
 // --- on-screen key bar (sends to the active session) -----------------------
 interface KeyDef {
+  /** Override the visual position in the wrapped mobile key bar. */
+  mobileOrder?: number;
   label?: string;
   seq?: string;
   mod?: 'ctrl' | 'shift';
@@ -3301,19 +3303,19 @@ interface KeyDef {
 }
 const KEYS: KeyDef[] = [
   { label: 'Esc', seq: '\x1b' },
-  { label: 'Tab', seq: '\t' },
-  { label: 'Ctrl', mod: 'ctrl' },
-  { label: 'Shift', mod: 'shift' },
-  { label: '^C', seq: '\x03' },
+  { label: 'Tab', seq: '\t', mobileOrder: 8 },
+  { label: 'Ctrl', mod: 'ctrl', mobileOrder: 1 },
+  { label: 'Shift', mod: 'shift', mobileOrder: 10 },
+  { label: '^C', seq: '\x03', mobileOrder: 9 },
   { label: 'Enter', seq: '\r' },
   { label: '命令', action: 'commands' },
   // On a phone the arrows get their own second row; everything else stays on the first.
   { rowBreak: true },
   // Ctrl+End: jump to the bottom in Claude Code's fullscreen view (CSI 1;5F).
-  { label: '上页', action: 'up' },
-  { label: '下页', action: 'down' },
-  { label: '底部', action: 'bottom' },
-  { label: '键盘', action: 'keyboard' },
+  { label: '上页', action: 'up', mobileOrder: 2 },
+  { label: '下页', action: 'down', mobileOrder: 3 },
+  { label: '底部', action: 'bottom', mobileOrder: 4 },
+  { label: '键盘', action: 'keyboard', mobileOrder: 11 },
   { label: '←', seq: '\x1b[D' },
   { label: '↑', seq: '\x1b[A' },
   { label: '↓', seq: '\x1b[B' },
@@ -3354,15 +3356,17 @@ function applyMods(seq: string): string {
   return seq;
 }
 
-for (const def of KEYS) {
+for (const [index, def] of KEYS.entries()) {
   if (def.rowBreak) {
     const brk = document.createElement('div');
     brk.className = 'kb-break';
+    brk.style.setProperty('--mobile-order', String(index));
     keybarEl.append(brk);
     continue;
   }
   const b = document.createElement('button');
   b.className = 'kb-key';
+  b.style.setProperty('--mobile-order', String(def.mobileOrder ?? index));
   b.type = 'button';
   b.textContent = def.label ?? '';
   b.title = def.label ?? '';
@@ -3485,10 +3489,16 @@ const mKeysBtn = mBtn('⌨', 'Toggle on-screen keys', () => {
   // which defeats the point of toggling the on-screen keys.
   setKeybarVisible(keybarEl.classList.contains('hidden'));
 });
+const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
+  keyboardLockChanged = true;
+  setKeyboardLocked(!keyboardLocked);
+});
+mKeyboardLockBtn.classList.add('m-keyboard-lock');
+mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/></svg>';
 const mMoreBtn = mBtn('⋯', 'More actions', () => openSheet());
 
 const mFilesBtn = mBtn('▰', '文件管理', () => openFileBrowser());
-mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeysBtn, mMoreBtn);
+mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeysBtn, mKeyboardLockBtn, mMoreBtn);
 document.body.append(mobilebar);
 
 // --- Sessions drawer (bottom sheet) ----------------------------------------
@@ -3784,10 +3794,14 @@ const keyboardLockButton = sheetRow('☐', '键盘锁定', () => {
   setKeyboardLocked(!keyboardLocked);
 });
 keyboardLockButton.setAttribute('role', 'checkbox');
+keyboardLockButton.classList.add('desktop-keyboard-lock-setting');
 keyboardLockButton.title = '开启后，手机仅通过“键盘”按钮弹出终端输入法';
 
 function setKeyboardLocked(locked: boolean): void {
   keyboardLocked = locked;
+  mKeyboardLockBtn.classList.toggle('active', locked);
+  mKeyboardLockBtn.setAttribute('aria-pressed', String(locked));
+  mKeyboardLockBtn.title = locked ? '键盘锁定：已开启' : '键盘锁定：已关闭';
   keyboardLockButton.setAttribute('aria-checked', String(locked));
   const icon = keyboardLockButton.querySelector('.sheet-ico');
   if (icon) icon.textContent = locked ? '☑' : '☐';
