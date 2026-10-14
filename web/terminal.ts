@@ -13,6 +13,7 @@ import { newSessionName, newSessionId } from './session-name.js';
 import { NoteHover } from './note-hover.js';
 import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
+import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
 
 // ---------------------------------------------------------------------------
@@ -522,6 +523,10 @@ class Session {
   tabLabel: HTMLElement | null = null;
   tabDot: HTMLElement | null = null;
   connected = false;
+  outputActive = false;
+  readonly readState = new SessionReadState();
+  private outputTracker: OutputActivityTracker | null = null;
+  private outputActivityTimer: ReturnType<typeof setTimeout> | null = null;
   // True once this tab has been looked at and so has attached. Tabs are not
   // connected until then: a page with a dozen of them used to open a dozen
   // WebSockets, spawn a dozen ptys and attach a dozen tmux clients, all for
@@ -1130,6 +1135,7 @@ class Session {
   private send(data: string): void {
     this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (this.readState.input(data)) this.outputTracker?.input();
       this.ws.send(encoder.encode(data));
     }
   }
@@ -1547,13 +1553,20 @@ class Session {
    * other one is doing.
    */
   setShown(shown: boolean): void {
+    const entering = this.el.classList.contains('hidden') && shown;
     this.el.classList.toggle('hidden', !shown);
     if (!shown) {
       this.stopTouchScroll();
       this.clearSelectionRange(); // a selection belongs to what is on screen
       return;
     }
+    if (!fileBrowserOpen && document.visibilityState === 'visible' && isActive(this)) {
+      this.readState.enter();
+      if (entering) this.outputTracker?.enter(performance.now());
+      updateOutputActivity();
+    }
     requestAnimationFrame(() => {
+      if (this.disposed || this.el.classList.contains('hidden')) return;
       this.fit();
       // Attach now, not at page load: this is the first frame where this pane
       // is laid out, so fit() has the real size to hand the server.
@@ -1613,8 +1626,32 @@ class Session {
 
   private setConnected(state: boolean): void {
     this.connected = state;
+    if (!state) this.clearOutputActivity();
     updateTabDot(this);
     if (isActive(this)) reflectActiveStatus();
+  }
+
+  private markOutputActivity(): void {
+    // An output change is activity only after command submission. Keep unread
+    // behind the spinner; when this timer expires the same icon becomes bright.
+    if (this.disposed) return;
+    if (!this.readState.output()) return;
+    if (this.outputActivityTimer !== null) clearTimeout(this.outputActivityTimer);
+    if (!this.outputActive) {
+      this.outputActive = true;
+    }
+    updateOutputActivity();
+    this.outputActivityTimer = setTimeout(() => this.clearOutputActivity(), 60_000);
+  }
+
+  private clearOutputActivity(): void {
+    this.readState.idle();
+    if (this.outputActivityTimer !== null) clearTimeout(this.outputActivityTimer);
+    this.outputActivityTimer = null;
+    if (this.outputActive) {
+      this.outputActive = false;
+      updateOutputActivity();
+    }
   }
 
   private scheduleReconnect(): void {
@@ -1648,8 +1685,12 @@ class Session {
     const socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
     this.ws = socket;
+    let outputTracker: OutputActivityTracker | null = null;
 
     socket.onopen = () => {
+      outputTracker = new OutputActivityTracker(performance.now());
+      this.outputTracker = outputTracker;
+      this.clearOutputActivity();
       this.reconnectDelay = MIN_DELAY;
       this.createUntil = 0; // it exists now; a later reconnect is only a reconnect
       this.createFrom = null;
@@ -1691,7 +1732,15 @@ class Session {
 
     socket.onmessage = (ev: MessageEvent) => {
       if (ev.data instanceof ArrayBuffer) {
-        this.term.write(new Uint8Array(ev.data));
+        this.term.write(new Uint8Array(ev.data), () => {
+          if (this.disposed || this.ws !== socket || !outputTracker) return;
+          const buffer = this.term.buffer.active;
+          const lines: string[] = [];
+          for (let i = buffer.baseY; i < buffer.baseY + this.term.rows; i++) {
+            lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+          }
+          if (outputTracker.observe(lines.join('\n'), performance.now())) this.markOutputActivity();
+        });
         return;
       }
       if (typeof ev.data === 'string') {
@@ -1741,6 +1790,7 @@ class Session {
   }
 
   dispose(): void {
+    this.clearOutputActivity();
     this.stopTouchScroll();
     this.keyboardLock?.dispose();
     this.disposed = true;
@@ -1817,6 +1867,34 @@ function updateTabDot(s: Session): void {
   // with it, it just hasn't attached. Hollow dot rather than a grey one.
   s.tabDot?.classList.toggle('idle', !s.started);
   refreshMobileUI();
+}
+
+function hasRecentOutput(s: Session): boolean {
+  return s.outputActive || !!s.mate?.outputActive;
+}
+
+function updateOutputActivity(): void {
+  // All three surfaces share the same state. A split tab aggregates both panes;
+  // entering a visible pane reads it, while hidden panes may remain unread.
+  const paint = (dot: Element | null | undefined, s: Session | null | undefined): void => {
+    const working = !!s && hasRecentOutput(s);
+    const unread = !!s && (s.readState.unread || !!s.mate?.readState.unread);
+    dot?.classList.toggle('working', working);
+    dot?.classList.toggle('unread', unread);
+    if (dot) {
+      const label = working ? '近期有输出' : unread ? '未读' : '已读';
+      dot.setAttribute('title', label);
+      dot.setAttribute('aria-label', label);
+    }
+  };
+  for (const s of sessions) {
+    paint(s.tabDot, s);
+  }
+  paint(mTitleDot, activeTab);
+  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
+    const s = sessions.find(session => session.name === row.dataset.session);
+    paint(row.querySelector('.tab-dot'), s);
+  }
 }
 
 /**
@@ -3555,7 +3633,7 @@ function renderDrawer(): void {
     body.setAttribute('aria-pressed', String(s === drawerSelected));
     body.setAttribute('aria-label', `选中会话：${s.displayName}`);
     const dot = document.createElement('span');
-    dot.className = 'tab-dot' + (s.connected ? ' connected' : '');
+    dot.className = 'tab-dot' + (s.connected ? ' connected' : '') + (hasRecentOutput(s) ? ' working' : '');
     const name = document.createElement('span');
     name.className = 'drawer-name';
     name.textContent = s.displayName;
@@ -3604,6 +3682,7 @@ function renderDrawer(): void {
     row.append(body, enter, rename, close);
     drawerList.append(row);
   }
+  updateOutputActivity();
 }
 
 function openDrawer(): void {
@@ -3922,6 +4001,7 @@ function refreshMobileUI(): void {
   document.title = fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web';
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
+  updateOutputActivity();
   if (drawerOpen) renderDrawer();
 }
 refreshMobileUI();
@@ -4403,9 +4483,18 @@ function closeFileBrowser(): void {
   fileBrowserOpen = false;
   document.body.classList.remove('file-browser-open');
   if (fileBrowserFrame) fileBrowserFrame.hidden = true;
+  markVisibleSessionsRead();
   refreshMobileUI();
   requestAnimationFrame(() => { updateKeyboardOffset(); fitActive(); if (!TOUCH_DEVICE) activeSession?.focus(); });
 }
+function markVisibleSessionsRead(): void {
+  if (fileBrowserOpen || document.visibilityState !== 'visible') return;
+  for (const s of [activeTab, activeTab?.mate]) {
+    if (s && isActive(s) && !s.el.classList.contains('hidden')) s.readState.enter();
+  }
+  updateOutputActivity();
+}
+document.addEventListener('visibilitychange', markVisibleSessionsRead);
 // 同时校验来源域与 iframe 实例，只有当前文件视图可以触发终端会话切换。
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== fileBrowserFrame?.contentWindow) return;
