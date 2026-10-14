@@ -477,12 +477,7 @@ async function logoutBrowser(): Promise<void> {
 window.addEventListener('storage', event => {
   if (event.key === 'tw.logout') window.location.replace('/');
 });
-const logoutButton = document.createElement('button');
-logoutButton.type = 'button';
-logoutButton.textContent = '退出登录';
-logoutButton.title = '只退出当前浏览器，保留运行中的终端任务';
-bindIntentionalClick(logoutButton, () => { void logoutBrowser(); });
-controlsEl.append(logoutButton);
+let keybarSettingsButton: HTMLButtonElement | null = null;
 
 let currentFont = (() => {
   try {
@@ -2971,7 +2966,9 @@ function isKeybarVisible(): boolean {
 
 function setKeybarVisible(visible: boolean): void {
   keybarEl.classList.toggle('hidden', !visible);
-  keysBtn.classList.toggle('active', visible);
+  keybarSettingsButton?.setAttribute('aria-checked', String(visible));
+  const keybarLabel = keybarSettingsButton?.querySelector('span:last-child');
+  if (keybarLabel) keybarLabel.textContent = visible ? '隐藏底部键盘栏' : '显示底部键盘栏';
   refreshMobileUI();
   try {
     localStorage.setItem('tw.keybar', visible ? '1' : '0');
@@ -3157,22 +3154,7 @@ async function toggleFullscreen(): Promise<void> {
 
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
-// Sessions list (opens the same bottom-sheet drawer the phone bar uses). On a
-// tablet the top #tabs strip turns into a long horizontal scroll that's awkward
-// to swipe through once there are many tabs; this gives a one-tap vertical
-// picker instead. Hidden on phones (<=640px), which already have a ☰ in
-// #mobilebar; shown on tablet/desktop where the drawer CSS is global anyway.
-makeButton(controlsEl, 'tb-btn tb-icon', '☰', '切换会话', () => openDrawer());
 makeButton(controlsEl, 'tb-btn tb-icon', '▰', '文件管理', () => openFileBrowser());
-const keysBtn = makeButton(controlsEl, 'tb-btn tb-icon', '⌨', 'Toggle on-screen keys', () => {
-  setKeybarVisible(keybarEl.classList.contains('hidden'));
-  activeSession?.focus();
-});
-makeButton(controlsEl, 'tb-btn tb-icon', '⟳', 'Restart this session', () => {
-  activeSession?.restart();
-  activeSession?.focus();
-});
-
 // Split view. A tab can show a second terminal beside its own: this picks
 // whether you see the first, the second, or both at once. Both keep running
 // whichever you are looking at — only closing the tab closes them. The second
@@ -3221,22 +3203,6 @@ fileInput.addEventListener('change', () => {
 // mobile bar has its own 📎 as well, since attaching is what that device is
 // mostly used for.
 
-// Pull a file OFF the host back to this device — the reverse of attaching one.
-// A tray-with-down-arrow glyph, monochrome like the rest.
-const dlBtn = document.createElement('button');
-dlBtn.className = 'tb-btn tb-icon';
-dlBtn.type = 'button';
-dlBtn.title = 'Download a file from the host';
-dlBtn.setAttribute('aria-label', 'Download a file from the host');
-dlBtn.innerHTML =
-  '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" ' +
-  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-  '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>' +
-  '<polyline points="7 10 12 15 17 10"></polyline>' +
-  '<line x1="12" y1="15" x2="12" y2="3"></line></svg>';
-bindIntentionalClick(dlBtn, () => promptDownload());
-controlsEl.append(dlBtn);
-
 function openQuickCommandPanel(): void {
   showQuickCommands(text => {
     const target = activeSession;
@@ -3247,7 +3213,6 @@ function openQuickCommandPanel(): void {
   });
 }
 makeButton(controlsEl, 'tb-btn', '命令', '快捷命令', openQuickCommandPanel);
-makeButton(controlsEl, 'tb-btn tb-icon', '?', 'Help: copy / paste / files', openHelp);
 // Everything that isn't reached often — font size, attach, fullscreen, help —
 // sits behind this, in the same actions sheet the phone bar opens. The bar
 // keeps only what gets used mid-session.
@@ -3806,6 +3771,13 @@ for (const event of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 updateFullscreenButton();
 
+keybarSettingsButton = sheetRow('⌨', isKeybarVisible() ? '隐藏底部键盘栏' : '显示底部键盘栏', () => {
+  setKeybarVisible(!isKeybarVisible());
+});
+keybarSettingsButton.classList.add('desktop-keybar-setting');
+keybarSettingsButton.setAttribute('role', 'checkbox');
+keybarSettingsButton.setAttribute('aria-checked', String(isKeybarVisible()));
+
 selectBtn = sheetRow('↔', '拖动选择文字', () => {
   closeSheet();
   setTouchSelectMode(!touchSelectMode);
@@ -3817,6 +3789,7 @@ sheet.append(
   themeRow,
   fontRow,
   splitRow,
+  keybarSettingsButton,
   keyboardLockButton,
   selectBtn,
   sheetRow('▰', '文件管理', () => { closeSheet(); openFileBrowser(); }),
@@ -3894,7 +3867,45 @@ refreshMobileUI();
 // ---------------------------------------------------------------------------
 // Global resize handling
 // ---------------------------------------------------------------------------
+// Size each desktop row independently: the first shares space with tools,
+// while subsequent rows span the full bar. Cap widths without wasting room
+// that can fit another compact two-line title.
+function sizeDesktopTabs(): void {
+  if (mobileMQ.matches) return;
+  const tabs = Array.from(tabsEl.children) as HTMLElement[];
+  const fullWidth = tabsEl.getBoundingClientRect().width;
+  const toolsWidth = desktopTools.getBoundingClientRect().width + 4;
+  const maxWidth = 210;
+  const minWidth = 130;
+  const gap = 4;
+  let available = Math.max(0, fullWidth - toolsWidth);
+  let index = 0;
+  while (index < tabs.length) {
+    if (available < minWidth + gap) available = fullWidth;
+    let count = Math.max(1, Math.ceil(available / (maxWidth + gap)));
+    if (available / count - gap < minWidth) count = Math.max(1, count - 1);
+    const width = Math.min(maxWidth, Math.floor((available / count - gap) * 100) / 100);
+    for (let end = Math.min(tabs.length, index + count); index < end; index++) {
+      tabs[index].style.width = `${width}px`;
+    }
+    available = fullWidth;
+  }
+}
+let tabSizingFrame = 0;
+function scheduleTabSizing(): void {
+  cancelAnimationFrame(tabSizingFrame);
+  tabSizingFrame = requestAnimationFrame(sizeDesktopTabs);
+}
+new MutationObserver(scheduleTabSizing).observe(tabsEl, { childList: true });
+if (typeof ResizeObserver !== 'undefined') {
+  const tabWidthObserver = new ResizeObserver(scheduleTabSizing);
+  tabWidthObserver.observe(desktopTools);
+  tabWidthObserver.observe(tabsEl);
+}
+scheduleTabSizing();
+
 window.addEventListener('resize', () => {
+  scheduleTabSizing();
   updateKeybarHeight(); // rows may re-wrap when the width changes
   fitActive();
 });

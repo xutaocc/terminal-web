@@ -59,9 +59,9 @@ body {
   float: right;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 3px;
   max-width: calc(100% - 8px);
-  margin: 0 0 4px 8px;
+  margin: 0 0 4px 4px;
 }
 #tabs {
   display: block;
@@ -312,6 +312,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: normal;
+  word-break: break-all;
   overflow-wrap: anywhere;
 }
 .tab .tab-close {
@@ -353,9 +354,14 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding-left: 6px;
+  gap: 3px;
+  padding-left: 0;
 }
+
+/* Compact desktop controls; shared dialog and mobile buttons keep their size. */
+#desktop-tools .tab-add { width: 26px; }
+#controls .tb-btn { padding: 4px 6px; }
+#controls .tb-icon { width: 28px; padding: 0; font-size: 22px; }
 
 .tb-btn {
   appearance: none;
@@ -1118,7 +1124,8 @@ body {
   :root {
     --topbar-h: 40px;
   }
-  #topbar {
+  #topbar,
+  .desktop-keybar-setting {
     display: none;
   }
   #mobilebar {
