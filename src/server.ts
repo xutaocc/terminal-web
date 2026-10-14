@@ -11,7 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
-import { terminalEnvironment } from './terminal-env.js';
+import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors } from './terminal-env.js';
 import { isKeyboardInput } from './history-input.js';
 import {
   sanitizeSession,
@@ -744,6 +744,7 @@ async function handleKillSession(
 // ---------------------------------------------------------------------------
 
 const PREFS_FILE = process.env.PREFS_FILE || path.join(os.homedir(), ".terminal-web", "prefs.json");
+configureColorPolicy(`${PREFS_FILE}.colors.json`);
 
 interface UiPrefs {
   theme?: "dark" | "light";
@@ -1134,6 +1135,22 @@ const server = http.createServer((req, res) => {
 
       if (method === "POST" && requestUrl.pathname === "/api/sessions/adopt") {
         await handleAdoptSessions(req, res);
+        return;
+      }
+
+      if (requestUrl.pathname === '/api/terminal-colors' && (method === 'GET' || method === 'POST')) {
+        if (method === 'POST') {
+          let body: unknown;
+          try { body = JSON.parse((await readBody(req, 1024)).toString('utf8')); }
+          catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+          const enabled = (body as { enabled?: unknown } | null)?.enabled;
+          if (typeof enabled !== 'boolean') {
+            sendJsonHttp(res, 400, { error: 'enabled must be boolean' }); return;
+          }
+          setTerminalColors(enabled);
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        sendJsonHttp(res, 200, { enabled: getTerminalColors() });
         return;
       }
 

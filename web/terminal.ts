@@ -6,6 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
+import { mouseWheelReports } from './mouse-wheel.js';
 import { bindIntentionalClick } from './intentional-click.js';
 import { bindTabContext } from './tab-context.js';
 import { newSessionName, newSessionId } from './session-name.js';
@@ -595,7 +596,7 @@ class Session {
       scrollback: 100000,
       // Local scrollback speed; tmux mouse reports are accelerated separately.
       // One-finger touch scrolling uses TouchScrollMotion independently.
-      scrollSensitivity: 3,
+      scrollSensitivity: 2,
       allowProposedApi: true,
       // Hold Option (macOS) / Shift (others) and drag to select text even while
       // tmux mouse mode is on, so it can be copied.
@@ -1171,9 +1172,11 @@ class Session {
   private mouseWheelMultiplier = 1;
 
   private wireMouseWheel(): void {
-    if (TOUCH_DEVICE) return;
-    this.term.attachCustomWheelEventHandler(() => {
-      this.mouseWheelMultiplier = this.term.modes.mouseTrackingMode === 'none' ? 1 : 3;
+    // Touch-capable Windows laptops can also have a mouse. Handle actual wheel
+    // events on every device; finger scrolling never goes through this hook.
+    this.term.attachCustomWheelEventHandler((event) => {
+      this.mouseWheelMultiplier = this.term.modes.mouseTrackingMode === 'none' ? 1
+        : mouseWheelReports(event.deltaY, event.deltaMode, this.term.rows);
       // Mouse reports are emitted synchronously inside xterm's wheel handler.
       // Reset before the next input so clicks, keys and paste are never sped up.
       queueMicrotask(() => { this.mouseWheelMultiplier = 1; });
@@ -3689,6 +3692,54 @@ function setTheme(theme: ThemeName): void {
 }
 setTheme(currentTheme);
 
+const colorRow = document.createElement('div');
+colorRow.className = 'sheet-seg theme-picker';
+colorRow.setAttribute('role', 'group');
+colorRow.setAttribute('aria-label', '终端颜色');
+const colorLabel = document.createElement('div');
+colorLabel.className = 'ss-lbl';
+colorLabel.textContent = '终端颜色';
+colorRow.append(colorLabel);
+const colorHint = document.createElement('div');
+colorHint.textContent = '所有设备共用；新建会话生效，已有会话不变。';
+colorHint.style.cssText = 'font-size:12px;line-height:1.5;padding:0 12px 8px;';
+colorHint.setAttribute('role', 'status');
+const colorButtons = new Map<boolean, HTMLButtonElement>();
+let colorRequest = false;
+async function updateColorPolicy(enabled?: boolean): Promise<void> {
+  if (colorRequest) return;
+  colorRequest = true;
+  for (const button of colorButtons.values()) button.disabled = true;
+  try {
+    const response = await fetch('/api/terminal-colors', enabled === undefined
+      ? { cache: 'no-store' }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    if (!response.ok) throw new Error('request failed');
+    const result = await response.json();
+    if (typeof result.enabled !== 'boolean') throw new Error('invalid response');
+    for (const [value, button] of colorButtons) {
+      button.classList.toggle('active', value === result.enabled);
+      button.setAttribute('aria-pressed', String(value === result.enabled));
+    }
+    colorHint.textContent = `${enabled === undefined ? '' : '已保存。'}所有设备共用；新建会话生效，已有会话不变。`;
+  } catch {
+    colorHint.textContent = enabled === undefined ? '读取颜色设置失败，请重新打开设置。' : '保存失败，请重试。';
+  } finally {
+    colorRequest = false;
+    for (const button of colorButtons.values()) button.disabled = false;
+  }
+}
+for (const [enabled, label] of [[true, '开启'], [false, '关闭']] as const) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sf-btn';
+  button.textContent = label;
+  button.setAttribute('aria-pressed', 'false');
+  bindIntentionalClick(button, () => { void updateColorPolicy(enabled); }, sheet);
+  colorButtons.set(enabled, button);
+  colorRow.append(button);
+}
+
 // The same split-view control, at touch size, for the phone's actions sheet
 // (the desktop top bar is hidden at that width).
 const splitRow = document.createElement('div');
@@ -3787,6 +3838,8 @@ sheet.append(
   sheetGrip,
   sheetTitle,
   themeRow,
+  colorRow,
+  colorHint,
   fontRow,
   splitRow,
   keybarSettingsButton,
@@ -3841,6 +3894,7 @@ bindIntentionalClick(sheetOverlay, (e) => {
 }, sheet);
 
 function openSheet(): void {
+  void updateColorPolicy();
   for (const session of sessions) session.stopTouchScroll();
   if (drawerOpen) closeDrawer();
   updateKeyboardOffset();

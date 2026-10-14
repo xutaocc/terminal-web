@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { terminalEnvironment } from '../src/terminal-env.js';
+import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors, TERMINAL_COLORS_ENABLED } from '../src/terminal-env.js';
 
 test('web terminal drops launcher NO_COLOR without changing parent environment', () => {
   const source = { NO_COLOR: '1', TERM: 'dumb', PATH: '/bin', LANG: 'zh_CN.UTF-8' };
@@ -18,6 +18,27 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { tmuxColorArgs } from '../src/terminal-env.js';
+
+test('saved color policy survives reload and controls both child and tmux environments', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'tw-color-policy-'));
+  const file = path.join(dir, 'colors.json');
+  try {
+    configureColorPolicy(file);
+    assert.equal(getTerminalColors(), TERMINAL_COLORS_ENABLED);
+    setTerminalColors(false);
+    configureColorPolicy(file);
+    assert.equal(getTerminalColors(), false);
+    assert.equal(terminalEnvironment({}).NO_COLOR, '1');
+    assert.ok(tmuxColorArgs().join(' ').includes('-g NO_COLOR 1'));
+    setTerminalColors(true);
+    configureColorPolicy(file);
+    assert.equal(terminalEnvironment({ NO_COLOR: '1' }).NO_COLOR, undefined);
+    assert.ok(tmuxColorArgs().join(' ').includes('-gu NO_COLOR'));
+  } finally {
+    configureColorPolicy(path.join(dir, 'missing.json'));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('disabled policy removes inherited force-color flags', () => {
   const env = terminalEnvironment({ FORCE_COLOR: '3', CLICOLOR_FORCE: '1', COLORTERM: 'truecolor' }, false);
