@@ -1130,7 +1130,6 @@ body {
     --topbar-h: 40px;
   }
   #topbar,
-  .desktop-keybar-setting,
   .desktop-keyboard-lock-setting {
     display: none;
   }

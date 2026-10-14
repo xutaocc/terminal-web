@@ -3485,11 +3485,6 @@ mAttachBtn.textContent = '📎';
 mAttachBtn.title = 'Attach a file';
 mAttachBtn.setAttribute('aria-label', 'Attach a file');
 bindIntentionalClick(mAttachBtn, () => fileInput.click());
-const mKeysBtn = mBtn('⌨', 'Toggle on-screen keys', () => {
-  // No focus() here: on a phone, focusing the terminal pops the soft keyboard,
-  // which defeats the point of toggling the on-screen keys.
-  setKeybarVisible(keybarEl.classList.contains('hidden'));
-});
 const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
   keyboardLockChanged = true;
   setKeyboardLocked(!keyboardLocked);
@@ -3499,7 +3494,7 @@ mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fi
 const mMoreBtn = mBtn('⋯', 'More actions', () => openSheet());
 
 const mFilesBtn = mBtn('▰', '文件管理', () => openFileBrowser());
-mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeysBtn, mKeyboardLockBtn, mMoreBtn);
+mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeyboardLockBtn, mMoreBtn);
 document.body.append(mobilebar);
 
 // --- Sessions drawer (bottom sheet) ----------------------------------------
@@ -3840,7 +3835,6 @@ updateFullscreenButton();
 keybarSettingsButton = sheetRow('⌨', isKeybarVisible() ? '隐藏底部键盘栏' : '显示底部键盘栏', () => {
   setKeybarVisible(!isKeybarVisible());
 });
-keybarSettingsButton.classList.add('desktop-keybar-setting');
 keybarSettingsButton.setAttribute('role', 'checkbox');
 keybarSettingsButton.setAttribute('aria-checked', String(isKeybarVisible()));
 
@@ -3852,12 +3846,12 @@ selectBtn = sheetRow('↔', '拖动选择文字', () => {
 sheet.append(
   sheetGrip,
   sheetTitle,
+  keybarSettingsButton,
   themeRow,
   colorRow,
   colorHint,
   fontRow,
   splitRow,
-  keybarSettingsButton,
   keyboardLockButton,
   selectBtn,
   sheetRow('▰', '文件管理', () => { closeSheet(); openFileBrowser(); }),
@@ -3928,7 +3922,6 @@ function refreshMobileUI(): void {
   document.title = fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web';
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
-  mKeysBtn.classList.toggle('active', !keybarEl.classList.contains('hidden'));
   if (drawerOpen) renderDrawer();
 }
 refreshMobileUI();
