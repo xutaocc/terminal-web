@@ -3867,45 +3867,7 @@ refreshMobileUI();
 // ---------------------------------------------------------------------------
 // Global resize handling
 // ---------------------------------------------------------------------------
-// Size each desktop row independently: the first shares space with tools,
-// while subsequent rows span the full bar. Cap widths without wasting room
-// that can fit another compact two-line title.
-function sizeDesktopTabs(): void {
-  if (mobileMQ.matches) return;
-  const tabs = Array.from(tabsEl.children) as HTMLElement[];
-  const fullWidth = tabsEl.getBoundingClientRect().width;
-  const toolsWidth = desktopTools.getBoundingClientRect().width + 4;
-  const maxWidth = 210;
-  const minWidth = 130;
-  const gap = 4;
-  let available = Math.max(0, fullWidth - toolsWidth);
-  let index = 0;
-  while (index < tabs.length) {
-    if (available < minWidth + gap) available = fullWidth;
-    let count = Math.max(1, Math.ceil(available / (maxWidth + gap)));
-    if (available / count - gap < minWidth) count = Math.max(1, count - 1);
-    const width = Math.min(maxWidth, Math.floor((available / count - gap) * 100) / 100);
-    for (let end = Math.min(tabs.length, index + count); index < end; index++) {
-      tabs[index].style.width = `${width}px`;
-    }
-    available = fullWidth;
-  }
-}
-let tabSizingFrame = 0;
-function scheduleTabSizing(): void {
-  cancelAnimationFrame(tabSizingFrame);
-  tabSizingFrame = requestAnimationFrame(sizeDesktopTabs);
-}
-new MutationObserver(scheduleTabSizing).observe(tabsEl, { childList: true });
-if (typeof ResizeObserver !== 'undefined') {
-  const tabWidthObserver = new ResizeObserver(scheduleTabSizing);
-  tabWidthObserver.observe(desktopTools);
-  tabWidthObserver.observe(tabsEl);
-}
-scheduleTabSizing();
-
 window.addEventListener('resize', () => {
-  scheduleTabSizing();
   updateKeybarHeight(); // rows may re-wrap when the width changes
   fitActive();
 });

@@ -80,6 +80,7 @@ body {
   line-height: normal;
   align-items: center;
   gap: 5px;
+  /* Short names use their natural width; long names wrap within this cap. */
   max-width: 210px;
   padding: 2px 7px;
   background: var(--ui-raised, #2d2d2d);
@@ -317,6 +318,7 @@ body {
 }
 .tab .tab-close {
   flex: 0 0 auto;
+  margin-left: auto;
   width: 16px;
   height: 16px;
   line-height: 14px;
