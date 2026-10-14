@@ -28,8 +28,14 @@ export class OutputActivityTracker {
  * Only successfully sent Enter/newline input arms activity; typing, mouse
  * reports and bracketed paste alone do not. Subsequent effective output marks
  * unread even while the terminal is being viewed, and starts/renews the spinner.
- * After 60 seconds without effective output, Session stops spinning and calls
- * idle(), preserving unread but requiring another submission for a new cycle.
+ * After 60 seconds without effective output, Session stops spinning, preserving
+ * unread AND the submission flag. The WebSocket continues listening in real
+ * time (no two-minute polling). Delayed output, even minutes later, immediately
+ * restarts the spinner and the 60-second timer without another submission.
+ * Reading and reconnecting do not disarm this listener. A new page/session
+ * starts unarmed; an unopened session has no socket and cannot be monitored.
+ * Because task completion is unknown, later text redraws after submission can
+ * also count as activity; unchanged screens and entry replay remain filtered.
  * Entry during spinning clears unread without cancelling ongoing activity;
  * further output makes it unread again. Connection color is independent and
  * must never override this icon. State is local to this browser page.
@@ -47,7 +53,6 @@ export class SessionReadState {
     this.unread = true;
     return true;
   }
-  idle(): void { this.submitted = false; }
   enter(): void { this.unread = false; }
   indicator(working: boolean): 'working' | 'unread' | 'read' {
     return working ? 'working' : this.unread ? 'unread' : 'read';

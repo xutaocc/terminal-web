@@ -1645,7 +1645,8 @@ class Session {
   }
 
   private clearOutputActivity(): void {
-    this.readState.idle();
+    // Stop only the visual activity timer. Keep the submitted-command flag:
+    // long tasks can resume output minutes later and must restart immediately.
     if (this.outputActivityTimer !== null) clearTimeout(this.outputActivityTimer);
     this.outputActivityTimer = null;
     if (this.outputActive) {

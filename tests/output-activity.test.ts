@@ -50,9 +50,6 @@ test('entry and unsolicited redraws stay read until a prompt is submitted', () =
   const state = new SessionReadState();
   const tracker = new OutputActivityTracker(0);
   tracker.observe('old screen', 100);
-  state.input('\r');
-  state.output();
-  state.idle();
   state.enter();
   assert.equal(state.indicator(false), 'read');
   tracker.enter(10000);
@@ -67,12 +64,27 @@ test('entry and unsolicited redraws stay read until a prompt is submitted', () =
   state.input('\r');
   assert.equal(state.output(), true);
   assert.equal(state.indicator(true), 'working');
-  state.idle();
   assert.equal(state.indicator(false), 'unread');
   state.enter();
   assert.equal(state.indicator(false), 'read');
-  assert.equal(state.output(), false);
-  assert.equal(state.unread, false);
+  assert.equal(state.output(), true);
+  assert.equal(state.unread, true);
+});
+
+test('long tasks can resume after repeated minutes of silence without resubmitting', () => {
+  const state = new SessionReadState();
+  const tracker = new OutputActivityTracker(0);
+  tracker.observe('prompt', 100);
+  state.input('\r');
+  for (const time of [2000, 182000, 482000]) {
+    assert.equal(tracker.observe(`output at ${time}`, time), true);
+    assert.equal(state.output(), true);
+    assert.equal(state.indicator(true), 'working');
+    assert.equal(tracker.observe(`output at ${time}`, time + 60000), false);
+    assert.equal(state.indicator(false), 'unread');
+    state.enter();
+    assert.equal(state.indicator(false), 'read');
+  }
 });
 
 test('command submission allows prompt responses during entry settling', () => {
