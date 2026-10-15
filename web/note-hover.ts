@@ -15,3 +15,20 @@ export class NoteHover {
     this.opened = false;
   }
 }
+
+/** A preview may dismiss after a grace period; an editor stays until explicit close. */
+export class NoteDismiss {
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private pinned = false;
+  constructor(private readonly close: () => void) {}
+  enter(): void { clearTimeout(this.timer); this.timer = undefined; }
+  leave(): void {
+    if (this.pinned || this.timer !== undefined) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (!this.pinned) this.close();
+    }, 700);
+  }
+  edit(): void { this.pinned = true; this.enter(); }
+  dispose(): void { this.enter(); }
+}

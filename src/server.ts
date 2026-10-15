@@ -491,7 +491,7 @@ async function readBody(
  */
 async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
-  let body: { name?: unknown; text?: unknown } = {};
+  let body: { name?: unknown; text?: unknown; tags?: unknown; displayName?: unknown } = {};
   if (req.method === 'POST') {
     try { body = JSON.parse((await readBody(req, 32768)).toString('utf8')); }
     catch { sendJsonHttp(res, 400, { error: 'Invalid note' }); return; }
@@ -503,14 +503,24 @@ async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResp
   if (req.method === 'POST' && (typeof body.text !== 'string' || body.text.length > 4000)) {
     sendJsonHttp(res, 400, { error: 'Note must contain at most 4000 characters' }); return;
   }
+  if (req.method === 'POST' && body.tags !== undefined &&
+      (!Array.isArray(body.tags) || body.tags.length > 20 ||
+       body.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 64 || /[\x00-\x1f\x7f]/.test(tag)))) {
+    sendJsonHttp(res, 400, { error: 'Use at most 20 tags, each up to 64 characters' }); return;
+  }
+  if (req.method === 'POST' && body.displayName !== undefined &&
+      (typeof body.displayName !== 'string' || !body.displayName.trim() || body.displayName.length > 64 || /[\x00-\x1f\x7f]/.test(body.displayName))) {
+    sendJsonHttp(res, 400, { error: 'Invalid display name' }); return;
+  }
   const current = await getSessionNote(name);
   if (!current) { sendJsonHttp(res, 404, { error: 'Session not found' }); return; }
   if (req.method === 'GET') { sendJsonHttp(res, 200, current); return; }
-  const note = { text: body.text as string, updatedAt: new Date().toISOString() };
+  const note = { text: body.text as string, tags: body.tags === undefined ? current.tags ?? [] : [...new Set((body.tags as string[]).map(tag => tag.trim()))], updatedAt: new Date().toISOString() };
   if (!await setSessionNote(name, note)) {
     sendJsonHttp(res, 409, { error: 'Could not save session note' }); return;
   }
-  sendJsonHttp(res, 200, note);
+  if (typeof body.displayName === 'string') setWebTabLabel(name, body.displayName.trim());
+  sendJsonHttp(res, 200, { ...note, displayName: body.displayName });
 }
 
 async function handleQuickCommands(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

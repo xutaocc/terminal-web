@@ -8,9 +8,8 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { mouseWheelReports } from './mouse-wheel.js';
 import { bindIntentionalClick } from './intentional-click.js';
-import { bindTabContext } from './tab-context.js';
 import { newSessionName, newSessionId } from './session-name.js';
-import { NoteHover } from './note-hover.js';
+import { NoteHover, NoteDismiss } from './note-hover.js';
 import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 import { OutputActivityTracker, SessionReadState } from './output-activity.js';
@@ -1575,7 +1574,7 @@ class Session {
   }
 
   focus(): void {
-    if (fileBrowserOpen) return;
+    if (fileBrowserOpen || document.querySelector('.session-note-editor')) return;
     if (this.keyboardLock) this.keyboardLock.focus();
     else this.term.focus();
   }
@@ -1999,7 +1998,6 @@ function onTap(el: HTMLElement, fn: (e: PointerEvent) => void, scroller?: HTMLEl
   );
 }
 
-let dismissTabMenu: (() => void) | null = null;
 let draggedTab: Session | null = null;
 let suppressTabTapUntil = 0;
 
@@ -2041,61 +2039,7 @@ addBtn.addEventListener('drop', e => {
   finishTabDrag();
 });
 
-function showTabMenu(s: Session, x: number, y: number): void {
-  dismissTabMenu?.();
-  const menu = document.createElement('div');
-  menu.className = 'tab-context-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', '标签操作');
-  const title = document.createElement('div');
-  title.className = 'tab-context-title';
-  title.textContent = s.displayName;
-  const rename = document.createElement('button');
-  rename.type = 'button';
-  rename.textContent = '✎ 重命名';
-  rename.setAttribute('role', 'menuitem');
-  const note = document.createElement('button');
-  note.type = 'button';
-  note.textContent = '📝 备注详情';
-  note.setAttribute('role', 'menuitem');
-  menu.append(title, rename, note);
-  document.body.append(menu);
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
-  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
-  const events = new AbortController();
-  const dismiss = (): void => {
-    events.abort();
-    menu.remove();
-    if (dismissTabMenu === dismiss) dismissTabMenu = null;
-  };
-  dismissTabMenu = dismiss;
-  rename.addEventListener('click', () => {
-    dismiss();
-    if (sessions.includes(s)) void promptRenameSession(s);
-  });
-  note.addEventListener('click', () => {
-    dismiss();
-    if (sessions.includes(s)) void showSessionNote(s);
-  });
-  document.addEventListener('pointerdown', e => {
-    if (!menu.contains(e.target as Node)) dismiss();
-  }, { capture: true, signal: events.signal });
-  document.addEventListener('keydown', e => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      (document.activeElement === rename ? note : rename).focus();
-    }
-    if (e.key === 'Escape' || e.key === 'Tab') {
-      dismiss();
-      if (e.key === 'Escape') e.preventDefault();
-    }
-  }, { capture: true, signal: events.signal });
-  document.addEventListener('scroll', dismiss, { capture: true, signal: events.signal });
-  window.addEventListener('resize', dismiss, { signal: events.signal });
-  window.addEventListener('blur', dismiss, { signal: events.signal });
-  rename.focus({ preventScroll: true });
-}
+const pendingNoteSaves = new Map<string, Promise<void>>();
 
 async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHover): Promise<void> {
   if (document.querySelector('.session-note-editor')) return;
@@ -2110,13 +2054,24 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   const title = document.createElement('div');
   title.id = 'session-note-title';
   title.className = 'paste-label';
-  title.textContent = `备注详情 · ${s.displayName}`;
+  title.textContent = '会话名称与工作详情';
   const hint = document.createElement('div');
   hint.className = 'session-note-hint';
-  hint.textContent = '记录做到哪里、待办事项和下一步。保存后可在其他设备查看。';
+  hint.textContent = anchor ? '直接编辑，鼠标移出后自动保存。也可点击保存。' : '修改会话名称和工作进度，保存后可跨设备查看。';
+  const nameInput = document.createElement('input');
+  nameInput.className = 'session-info-input';
+  nameInput.value = s.displayName;
+  nameInput.maxLength = 64;
+  nameInput.disabled = true;
+  const field = (text: string, control: HTMLElement): HTMLLabelElement => {
+    const label = document.createElement('label');
+    label.className = 'session-info-field';
+    label.append(document.createTextNode(text), control);
+    return label;
+  };
   const input = document.createElement('textarea');
   input.className = 'session-note-input';
-  input.setAttribute('aria-label', '会话工作进度备注');
+  input.setAttribute('aria-label', '工作详情');
   input.placeholder = '当前进度：\n待办事项：\n下一步：';
   input.maxLength = 4000;
   input.disabled = true;
@@ -2127,13 +2082,13 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   const status = document.createElement('div');
   status.className = 'session-note-status';
   status.setAttribute('role', 'status');
-  status.textContent = '正在读取备注…';
+  status.textContent = '正在读取会话信息…';
   const row = document.createElement('div');
   row.className = 'paste-row';
   const cancel = document.createElement('button');
   cancel.type = 'button';
   cancel.className = 'tb-btn';
-  cancel.textContent = anchor ? '关闭' : '取消';
+  cancel.textContent = '关闭';
   const save = document.createElement('button');
   save.type = 'button';
   save.className = 'tb-btn';
@@ -2142,26 +2097,52 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   row.append(cancel, save);
   const body = document.createElement('div');
   body.className = 'session-note-body';
-  body.append(hint, input, counter, status);
+  body.append(hint, field('会话名称', nameInput), field('工作详情', input), counter, status);
   box.append(title, body, row);
   overlay.append(box);
   document.body.append(overlay);
   const requests = new AbortController();
   if (!anchor) cancel.focus({ preventScroll: true });
+  let loaded = false;
+  let closed = false;
+  let composing = false;
   let saving = false;
+  const values = () => ({ displayName: nameInput.value, text: input.value });
+  let baseline = values();
+  const changed = (): boolean => loaded &&
+    (nameInput.value !== baseline.displayName || input.value !== baseline.text);
   const close = (): void => {
-    if (saving) return;
-    requests.abort();
+    if (closed || saving || composing) return;
+    closed = true;
+    dismissal.dispose();
+    requests.abort(); // Only cancels loading and listeners, never a save.
     overlay.remove();
     hover?.reset();
     if (!anchor && !TOUCH_DEVICE) activeSession?.focus();
   };
+  const dismissal = new NoteDismiss(close);
+  // Pin on interaction, before IME candidates can move focus or the pointer.
+  overlay.addEventListener('pointerdown', () => dismissal.edit());
+  overlay.addEventListener('focusin', () => dismissal.edit());
+  overlay.addEventListener('input', () => dismissal.edit());
+  overlay.addEventListener('compositionstart', () => { composing = true; dismissal.edit(); });
+  overlay.addEventListener('compositionend', () => { composing = false; });
   if (anchor) {
-    overlay.addEventListener('pointerleave', close);
+    overlay.addEventListener('pointerenter', () => dismissal.enter());
+    overlay.addEventListener('pointerleave', e => {
+      if (e.pointerType === 'mouse') dismissal.leave();
+    });
     document.addEventListener('pointermove', e => {
       if (e.pointerType !== 'mouse') return;
       const target = e.target as Node;
-      if (!overlay.contains(target) && !anchor.contains(target)) close();
+      const tabRect = anchor.getBoundingClientRect();
+      const popupRect = overlay.getBoundingClientRect();
+      // Treat the whole bridge between tab and popup as part of the hover area.
+      const inBridge = e.clientX >= Math.min(tabRect.left, popupRect.left) - 8 &&
+        e.clientX <= Math.max(tabRect.right, popupRect.right) + 8 &&
+        e.clientY >= tabRect.top - 8 && e.clientY <= popupRect.top + 8;
+      if (overlay.contains(target) || anchor.contains(target) || inBridge) dismissal.enter();
+      else dismissal.leave();
     }, { signal: requests.signal });
     const position = (): void => {
       if (!anchor.isConnected) { close(); return; }
@@ -2177,53 +2158,69 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     tabsEl.addEventListener('scroll', position, { signal: requests.signal });
   }
   cancel.addEventListener('click', close);
-  const commit = async (): Promise<void> => {
-    if (saving || save.disabled) return;
+  const commit = (): Promise<void> => {
+    if (composing || saving || !changed()) return Promise.resolve();
     saving = true;
-    save.disabled = cancel.disabled = true;
-    input.disabled = true;
+    save.disabled = cancel.disabled = nameInput.disabled = input.disabled = true;
+    const snapshot = values();
+    const previous = baseline;
+    baseline = snapshot; // Prevent duplicate saves of the same pending edit.
     status.textContent = '正在保存…';
-    try {
+    const prior = pendingNoteSaves.get(s.name) ?? Promise.resolve();
+    const task = prior.catch(() => {}).then(async () => {
       const response = await fetch('/api/sessions/note', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: s.name, text: input.value }), signal: requests.signal,
+        body: JSON.stringify({ name: s.name, text: snapshot.text,
+          displayName: snapshot.displayName.replace(/[\x00-\x1f\x7f]/g, '').trim() || s.name,
+        }),
       });
       if (!response.ok) throw new Error('save failed');
+      const saved = await response.json() as { displayName: string };
+      setDisplayName(s, saved.displayName);
+      saveTabs();
+      if (!closed) status.textContent = `已保存：${new Date().toLocaleString()}`;
+    }).catch(() => {
+      if (baseline === snapshot) baseline = previous;
+      if (!closed) status.textContent = '保存失败，可点击保存重试。';
+      else flashStatus('会话信息保存失败', 2000);
+    }).finally(() => {
       saving = false;
-      if (anchor) {
-        save.disabled = cancel.disabled = input.disabled = false;
-        status.textContent = `已保存：${new Date().toLocaleString()}`;
-      } else close();
-      flashStatus('会话备注已保存', 1500);
-    } catch {
-      status.textContent = '保存失败，内容已保留，请重试。';
-      saving = false;
-      save.disabled = cancel.disabled = input.disabled = false;
-    }
+      if (!closed) save.disabled = cancel.disabled = nameInput.disabled = input.disabled = false;
+      if (pendingNoteSaves.get(s.name) === task) pendingNoteSaves.delete(s.name);
+    });
+    pendingNoteSaves.set(s.name, task);
+    return task;
   };
   save.addEventListener('click', () => { void commit(); });
   overlay.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (composing || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Tab' && !anchor) {
-      const controls = [input, cancel, save].filter(control => !control.disabled);
+      const controls = [nameInput, input, cancel, save].filter(control => !control.disabled);
       if (controls.length) {
         const index = controls.indexOf(document.activeElement as typeof input | typeof cancel);
         controls[(index + (e.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
       }
       e.preventDefault();
     }
-    if (e.key === 'Escape' && !anchor) { e.preventDefault(); close(); }
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void commit(); }
   });
   try {
+    await pendingNoteSaves.get(s.name);
+    if (closed) return;
+    nameInput.value = s.displayName;
     const response = await fetch(`/api/sessions/note?session=${encodeURIComponent(s.name)}`, {
       cache: 'no-store', signal: requests.signal,
     });
     if (!response.ok) throw new Error('load failed');
-    const note = await response.json() as { text: string; updatedAt: string | null };
+    const note = await response.json() as { text: string; tags?: string[]; updatedAt: string | null };
     input.value = note.text;
+    baseline = values();
+    loaded = true;
     counter.textContent = `${note.text.length} / 4000`;
-    status.textContent = note.updatedAt ? `上次保存：${new Date(note.updatedAt).toLocaleString()}` : '尚未记录备注';
-    input.disabled = save.disabled = false;
+    status.textContent = note.updatedAt ? `上次保存：${new Date(note.updatedAt).toLocaleString()}` : '尚未保存会话信息';
+    input.disabled = nameInput.disabled = save.disabled = false;
     if (!anchor) input.focus({ preventScroll: true });
   } catch {
     if (!requests.signal.aborted) status.textContent = '读取失败，请关闭后重试。';
@@ -2244,13 +2241,12 @@ function buildTab(s: Session): void {
   close.title = 'Close tab & kill session';
   tab.append(dot, label, close);
 
-  // Single tap activates; a second tap within 350ms renames. On a tap only (see
+  // Single tap activates. On a tap only (see
   // onTap), and WITHOUT preventDefault, so a sideways drag scrolls the strip
   // instead of picking the tab it started on. (The old pointerdown+preventDefault
   // cancelled the pan, making the strip unscrollable once your finger landed on
   // a tab.) touch-action:manipulation on .tab keeps the strip pannable and drops
   // the double-tap-to-zoom.
-  let lastTap = 0;
   tab.draggable = !TOUCH_DEVICE;
   tab.addEventListener('pointerdown', e => {
     tab.draggable = e.pointerType === 'mouse' && e.button === 0 && e.target !== close;
@@ -2258,9 +2254,7 @@ function buildTab(s: Session): void {
   tab.addEventListener('dragstart', e => {
     if (!tab.draggable || !e.dataTransfer) { e.preventDefault(); return; }
     draggedTab = s;
-    lastTap = 0;
     noteHover.leave();
-    dismissTabMenu?.();
     tab.classList.add('tab-dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-terminal-tab', s.name);
@@ -2285,7 +2279,7 @@ function buildTab(s: Session): void {
   });
   tab.addEventListener('dragend', finishTabDrag);
   const noteHover = new NoteHover(() => {
-    if (draggedTab || !tab.isConnected || dismissTabMenu || document.querySelector('.paste-overlay') ||
+    if (draggedTab || !tab.isConnected || document.querySelector('.paste-overlay') ||
         document.querySelector('.session-note-editor')) return false;
     void showSessionNote(s, tab, noteHover);
     return true;
@@ -2297,20 +2291,9 @@ function buildTab(s: Session): void {
   tab.addEventListener('pointerdown', () => {
     noteHover.leave();
   });
-  bindTabContext(tab, (x, y) => {
-    lastTap = 0;
-    showTabMenu(s, x, y);
-  }, tabsEl);
   onTap(tab, (e) => {
     if (draggedTab || performance.now() < suppressTabTapUntil) return;
     if (e.target === close) return; // the × has its own handler
-    const now = performance.now();
-    if (now - lastTap < 350) {
-      lastTap = 0;
-      promptRenameSession(s);
-      return;
-    }
-    lastTap = now;
     activateSession(s);
   }, tabsEl);
   onTap(close, (e) => {
@@ -2631,23 +2614,6 @@ function setDisplayName(s: Session, displayName: string): void {
     s.tabLabel.removeAttribute('title');
   }
   refreshMobileUI();
-}
-
-// Rename a tab (display only). The label can be any text; the underlying tmux
-// session keeps its original name, so × still kills the right session.
-async function promptRenameSession(s: Session): Promise<void> {
-  if (drawerOpen) closeDrawer();
-  const raw = await domPrompt({
-    label: '重命名标签：',
-    value: s.displayName,
-    okText: '保存',
-  });
-  if (raw === null) return; // cancelled
-  const trimmed = raw.trim().slice(0, 64);
-  setDisplayName(s, trimmed.length ? trimmed : s.name);
-  saveTabs();
-  renameOnServer(s.name, s.displayName); // sync the label to other devices
-  activeSession?.focus();
 }
 
 interface SavedTab {
@@ -3238,6 +3204,8 @@ async function toggleFullscreen(): Promise<void> {
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
 makeButton(controlsEl, 'tb-btn tb-icon', '📁', '文件管理', () => openFileBrowser());
+const desktopUploadButton = makeButton(controlsEl, 'tb-btn tb-icon', '', '上传文件', () => fileInput.click());
+desktopUploadButton.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg>';
 // Split view. A tab can show a second terminal beside its own: this picks
 // whether you see the first, the second, or both at once. Both keep running
 // whichever you are looking at — only closing the tab closes them. The second
@@ -3282,9 +3250,7 @@ fileInput.addEventListener('change', () => {
   }
   fileInput.value = '';
 });
-// The button that opens this picker lives in the ⋯ sheet — on a phone the
-// mobile bar has its own upload button as well, since attaching is what that device is
-// mostly used for.
+// The desktop toolbar, mobile bar and ⋯ sheet share this file picker.
 
 function openQuickCommandPanel(): void {
   showQuickCommands(text => {
@@ -3550,9 +3516,6 @@ const mCaret = document.createElement('span');
 mCaret.className = 'm-caret';
 mCaret.textContent = '▾';
 mTitle.append(mTitleDot, mTitleLabel, mCaret);
-bindTabContext(mTitle, (x, y) => {
-  if (activeTab) showTabMenu(activeTab, x, y);
-});
 bindIntentionalClick(mTitle, openDrawer);
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
@@ -3641,7 +3604,6 @@ function renderDrawer(): void {
     body.append(dot, name);
     // Taps only: this list scrolls, and a swipe through it must not pick the
     // session it started on (it used to, on pointerdown).
-    bindTabContext(body, (x, y) => showTabMenu(s, x, y), drawer);
     onTap(body, () => {
       selectDrawerSession(s);
     }, drawer);
@@ -3665,9 +3627,11 @@ function renderDrawer(): void {
     rename.className = 'drawer-act';
     rename.type = 'button';
     rename.textContent = '✎';
-    rename.title = 'Rename tab';
+    rename.title = '编辑会话信息';
+    rename.setAttribute('aria-label', `编辑会话信息：${s.displayName}`);
     onTap(rename, () => {
-      void promptRenameSession(s);
+      closeDrawer();
+      void showSessionNote(s);
     }, drawer);
 
     const close = document.createElement('button');
@@ -3923,6 +3887,11 @@ selectBtn = sheetRow('↔', '拖动选择文字', () => {
   setTouchSelectMode(!touchSelectMode);
   flashStatus(touchSelectMode ? '选择模式：拖动选择文字，松手后点击复制' : '已关闭选择模式', 1800);
 });
+const uploadSheetButton = sheetRow('', 'Attach a file', () => {
+  closeSheet();
+  fileInput.click();
+});
+uploadSheetButton.querySelector('.sheet-ico')!.append(desktopUploadButton.firstElementChild!.cloneNode(true));
 sheet.append(
   sheetGrip,
   sheetTitle,
@@ -3957,14 +3926,7 @@ sheet.append(
       else flashStatus('无法全选', 1400);
     },
   ),
-  sheetRow(
-    '📎',
-    'Attach a file',
-    () => {
-      closeSheet();
-      fileInput.click();
-    },
-  ),
+  uploadSheetButton,
   sheetRow('⬇', 'Download a file', () => {
     closeSheet();
     promptDownload();

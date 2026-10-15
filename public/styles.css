@@ -107,45 +107,6 @@ body {
 .tab, .drawer-body {
   -webkit-touch-callout: none;
 }
-.tab-context-menu {
-  position: fixed;
-  z-index: 10000;
-  width: min(220px, calc(100vw - 16px));
-  padding: 6px;
-  border: 1px solid var(--ui-border-strong, #505050);
-  border-radius: 10px;
-  background: var(--ui-raised, #292929);
-  box-shadow: 0 8px 28px #0008;
-  font: 14px system-ui, sans-serif;
-}
-.tab-context-title {
-  padding: 6px 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ui-muted, #aaa);
-  font-size: 12px;
-}
-.tab-context-menu button {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  padding: 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ui-text, #eee);
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.tab-context-menu button:hover,
-.tab-context-menu button:focus-visible {
-  outline: 2px solid #3b8eea;
-  outline-offset: -2px;
-  background: var(--ui-hover, #383838);
-}
 .paste-overlay.session-note-overlay {
   z-index: 10001;
   /* Dialogs follow the visible viewport, independently of terminal panning. */
@@ -1311,6 +1272,28 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
 :root[data-theme="light"] .tab .tab-close:hover,
 :root[data-theme="light"] .drawer-row.active { color: var(--ui-text); }
 .actions-sheet .theme-picker .sf-btn { width: auto; min-width: 72px; padding: 0 12px; white-space: nowrap; }
+
+.session-info-field {
+  display: block;
+  margin: 12px 0;
+  color: var(--ui-text, #eee);
+  font: 13px/1.5 system-ui, sans-serif;
+}
+.session-info-input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--ui-border-strong, #555);
+  border-radius: 8px;
+  background: var(--ui-surface, #1e1e1e);
+  color: var(--ui-text, #eee);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+.session-info-input:focus { outline: 2px solid #3b8eea; outline-offset: -1px; }
+.session-info-field .session-note-input { margin-top: 6px; }
+
 /* One status icon on PC tabs, mobile title and drawer: read=dim, unread=bright,
    working=spinner. Working comes last so unread never paints a second dot.
    Do not restore .connected colors: they would override the dim read state. */

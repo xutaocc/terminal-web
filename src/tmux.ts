@@ -145,6 +145,7 @@ const TAB_LABEL = "@twlabel";
 const TAB_NOTE = '@twnote';
 
 export interface SessionNote {
+  tags?: string[];
   text: string;
   updatedAt: string | null;
 }
