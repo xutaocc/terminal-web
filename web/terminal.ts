@@ -4123,11 +4123,17 @@ function uploadFile(file: Blob, name?: string): Promise<void> {
       if (xhr.status >= 200 && xhr.status < 300 && data.path) {
         if (target) {
           // Quote the path if it contains whitespace; append a space so it reads
-          // as a complete argument at the prompt.
+          // as a complete argument at the prompt. The path goes in as a bracketed
+          // paste when the program asked for one: Claude Code only turns an image
+          // path into an [Image #N] attachment when it arrives as a paste, and
+          // typed keystrokes leave it as plain text. The space stays outside the
+          // markers so the pasted text is the bare path.
           const p = /\s/.test(data.path)
             ? `'${data.path.replace(/'/g, `'\\''`)}'`
             : data.path;
-          target.sendSeq(p + ' ');
+          target.sendSeq(
+            (target.term.modes.bracketedPasteMode ? `\x1b[200~${p}\x1b[201~` : p) + ' ',
+          );
           if (isActive(target)) target.focus();
         }
         // If it landed on a tab you've since switched away from, name it so you
