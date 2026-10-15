@@ -72,7 +72,20 @@ try {
   await success('remove', { paths: [path.join(src, 'outside-link')] }); assert.equal(await readFile(path.join(outside, 'keep-safe'), 'utf8'), 'safe');
   assert.equal((await post('remove', { paths: ['/'] })).status, 400);
   await success('remove', { paths: [path.join(src, 'new'), path.join(src, 'new.txt')] });
-  console.log('PASS: auth/CSRF, listing, UTF-8/versioned editing, ranges, upload, create/rename, copy/move, recursive chmod, exclusions/ZIP, symlink safety, directory terminal');
+  const site = path.join(workspace, '网页 site'); await mkdir(path.join(site, 'js'), { recursive: true });
+  await writeFile(path.join(site, 'index.html'), '<script src="js/app.js"></script>'); await writeFile(path.join(site, 'js', 'app.js'), 'console.log(1)');
+  const siteUrl = p => `${base}/site${p.split('/').map(encodeURIComponent).join('/')}`;
+  assert.equal((await fetch(siteUrl(path.join(site, 'index.html')))).status, 401);
+  const loginForm = await (await fetch(siteUrl(path.join(site, 'index.html')))).text(); assert.ok(!loginForm.includes('js/app.js')); assert.ok(loginForm.includes(`value="${new URL(siteUrl(path.join(site, 'index.html'))).pathname}"`));
+  const login = next => fetch(`${base}/auth/login`, { method: 'POST', redirect: 'manual', headers: { Origin: base, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token, next }) });
+  assert.equal((await login(new URL(siteUrl(path.join(site, 'index.html'))).pathname)).headers.get('location'), new URL(siteUrl(path.join(site, 'index.html'))).pathname);
+  for (const unsafe of ['//evil.example', 'https://evil.example', '/\\evil.example']) assert.equal((await login(unsafe)).headers.get('location'), '/');
+  const page = await fetch(siteUrl(path.join(site, 'index.html')), { headers }); assert.equal(page.status, 200); assert.match(page.headers.get('content-type'), /^text\/html/); assert.equal(page.headers.get('content-security-policy'), null);
+  assert.match((await fetch(siteUrl(path.join(site, 'js', 'app.js')), { headers })).headers.get('content-type'), /^text\/javascript/);
+  const folder = await fetch(siteUrl(site), { headers, redirect: 'manual' }); assert.equal(folder.status, 301); assert.ok(folder.headers.get('location').endsWith('/'));
+  assert.equal(await (await fetch(siteUrl(site) + '/', { headers })).text(), '<script src="js/app.js"></script>');
+  assert.equal((await fetch(siteUrl(path.join(site, 'missing.css')), { headers })).status, 404);
+  console.log('PASS: auth/CSRF, static site, listing, UTF-8/versioned editing, ranges, upload, create/rename, copy/move, recursive chmod, exclusions/ZIP, symlink safety, directory terminal');
 } finally {
   for (const name of sessions) try { execFileSync('tmux', ['kill-session', '-t', `=${name}`]); } catch {}
   if (child.exitCode === null) { const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited; }

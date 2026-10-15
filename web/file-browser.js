@@ -29,7 +29,7 @@ const cache = new Map();
 const expanded = new Set();
 const selected = new Set();
 const history = [];
-let previewItem = null, previewText = '', previewVersion = '', originalText = '';
+let previewItem = null, previewText = '', previewVersion = '', originalText = '', markdownView = false;
 let toastTimer;
 function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
 function parent(p) { const parts = p.split('/').filter(Boolean); parts.pop(); return '/' + parts.join('/'); }
@@ -193,7 +193,7 @@ function footer() {
   $('#footer-label').textContent = selecting ? `已选 ${selected.size} 项` : active?.path !== current ? `已选：${active?.name || ''}` : '● 当前目录';
   let actions;
   if (selecting) actions = [['全选', () => { document.querySelectorAll('.row input').forEach(input => { input.checked = true; input.onchange(); }); }], ['压缩', () => menuAction('压缩', null)], ['更多', () => menu(null)]];
-  else if (active?.path !== current) actions = active?.directory ? [['进入', () => navigate(active.path)], ['更多', () => menu(active)]] : [['预览', () => preview(active)], ['编辑', () => preview(active, true)], ['更多', () => menu(active)]];
+  else if (active?.path !== current) actions = active?.directory ? [['进入', () => navigate(active.path)], ['更多', () => menu(active)]] : [...(htmlExtensions.test(active.name) ? [['浏览器打开', () => openSite(active)], ['源码', () => viewSource(active)]] : [['预览', () => preview(active)]]), ['编辑', () => preview(active, true)], ['更多', () => menu(active)]];
   else actions = [['＋ 新建', () => createMenu(current)], ['↑ 上传', () => uploadInto(current)], ['更多', () => menu(active)]];
   actions.forEach(([text, action]) => box.append(button(text, action, ['进入', '压缩', '↑ 上传'].includes(text) ? 'primary' : '')));
 }
@@ -202,6 +202,7 @@ function menu(item) {
   if (item) { active = item; render(); }
   const body = sheet(item ? item.name : `已选 ${selected.size} 项`, item ? item.path : '批量操作'); const grid = el('div', 'menu-grid');
   const ops = item ? item.directory ? [['↳', '进入'], ['⌘', '立即打开对应终端目录'], ['↑', '上传'], ['＋', '新建']] : [['◉', '预览'], ['✎', '编辑'], ['↓', '下载']] : [];
+  if (item && !item.directory && htmlExtensions.test(item.name)) ops.unshift(['↗', '浏览器打开']);
   if (item) ops.push(['⧉', '复制路径'], ['✎', '重命名'], ['ⓘ', '详情']);
   ops.push(['▣', '复制'], ['↗', '移动'], ['▤', '压缩'], ['⚿', '权限'], ['∑', '统计'], ['×', '删除']);
   ops.forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
@@ -260,6 +261,7 @@ async function menuAction(label, item) {
     window.parent.postMessage({ type: 'files-open-terminal', ...result }, location.origin); return;
   }
   if (label === '预览' || label === '编辑') { closeDialog($('#sheet')); return preview(item, label === '编辑'); }
+  if (label === '浏览器打开') { closeDialog($('#sheet')); return openSite(item); }
   if (label === '复制路径') return copyText(item.path);
   if (label === '上传') { closeDialog($('#sheet')); return uploadInto(item.path); }
   if (label === '新建') return createMenu(item.path);
@@ -379,13 +381,22 @@ async function copyText(text) {
 const imageExtensions = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
 const videoExtensions = /\.(mp4|webm|mov)$/i;
 const audioExtensions = /\.(mp3|ogg|wav)$/i;
+const htmlExtensions = /\.html?$/i;
+const markdownExtensions = /\.(md|markdown)$/i;
+// 后端 /site/<绝对路径> 把文件当静态网站提供，页面里的相对路径资源按所在目录解析。
+function siteUrl(p) { return '/site' + p.split('/').map(encodeURIComponent).join('/'); }
+// 指定窗口尺寸让桌面浏览器开独立窗口而非新标签；移动端浏览器会忽略尺寸并以新标签打开。
+// 只读查看源码：与预览相同的行号视图，但隐藏编辑入口。
+async function viewSource(item) { await preview(item); if (previewItem === item) $('#edit').hidden = true; }
+function openSite(item) { window.open(siteUrl(item.path), '_blank', `popup,width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`); }
 function editingBaseline() { return originalText.replace(/\r\n?/g, '\n'); }
 function unsaved() { return !!$('#preview-content textarea') && $('#preview-content textarea').value !== editingBaseline(); }
 async function preview(item, edit = false) {
   if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;
   const media = !edit && (imageExtensions.test(item.name) || videoExtensions.test(item.name) || audioExtensions.test(item.name) || /\.pdf$/i.test(item.name));
   const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren(); $('#preview-title').textContent = item.name; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑'; $('#edit').hidden = $('#copy-content').hidden = !!media;
-  previewItem = item;
+  $('#open-site').hidden = !htmlExtensions.test(item.name); $('#render-toggle').hidden = true;
+  previewItem = item; markdownView = !edit && markdownExtensions.test(item.name);
   if (media) {
     const tag = imageExtensions.test(item.name) ? 'img' : videoExtensions.test(item.name) ? 'video' : audioExtensions.test(item.name) ? 'audio' : 'iframe';
     const node = el(tag, 'media-preview'); node.src = `${apiBase}content?${new URLSearchParams({ path: item.path })}`;
@@ -399,7 +410,19 @@ async function preview(item, edit = false) {
     $('#edit').hidden = $('#copy-content').hidden = true; box.append(el('p', 'tree-error', error.message), button('下载文件', () => menuAction('下载', item))); $('#editor-status').textContent = '无法文本预览'; openDialog($('#preview')); return;
   }
   previewText = originalText = result.text; previewVersion = result.version;
-  if (edit) startEditing(); else showText(); openDialog($('#preview'));
+  if (edit) startEditing(); else await showPreview(); openDialog($('#preview'));
+}
+async function showPreview() {
+  const toggle = $('#render-toggle'); toggle.hidden = !markdownExtensions.test(previewItem.name); toggle.textContent = markdownView ? '源码' : '渲染';
+  if (!markdownView) return showText();
+  const { marked } = await import('marked');
+  const article = el('article', 'markdown-body'); article.innerHTML = marked.parse(previewText);
+  // 相对路径的图片和链接以 Markdown 文件所在目录为基准，经 /site 加载。
+  const base = new URL(siteUrl(previewItem.path), location.origin);
+  article.querySelectorAll('img[src]').forEach(img => { img.src = new URL(img.getAttribute('src'), base).href; });
+  article.querySelectorAll('a[href]').forEach(link => { if (link.getAttribute('href').startsWith('#')) return; link.href = new URL(link.getAttribute('href'), base).href; link.target = '_blank'; });
+  const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren(article);
+  $('#editor-status').textContent = 'Markdown 渲染 · 只读'; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑';
 }
 function showText() {
   const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren();
@@ -410,7 +433,7 @@ function showText() {
   $('#editor-status').textContent = `${lines.length} 行 · 只读`; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑';
 }
 function startEditing() {
-  const box = $('#preview-content'); box.classList.add('editing');
+  const box = $('#preview-content'); box.classList.add('editing'); $('#render-toggle').hidden = true;
   const wrapper = el('div', 'text-editor'), gutter = el('div', 'editor-gutter'), numbers = el('div', 'editor-numbers'), area = el('textarea', 'editor-input'); gutter.setAttribute('aria-hidden', 'true'); gutter.append(numbers);
   area.value = previewText; area.wrap = 'off'; area.spellcheck = false; area.setAttribute('autocapitalize', 'off'); area.setAttribute('autocomplete', 'off'); area.setAttribute('aria-label', '文本编辑');
   let previousCount = 0;
@@ -428,8 +451,10 @@ click($('#edit'), async () => {
   const area = $('#preview-content textarea'); if (!area) return startEditing();
   const preserveCRLF = originalText.includes('\r\n') && !originalText.replace(/\r\n/g, '').includes('\n');
   const data = preserveCRLF ? area.value.replace(/\n/g, '\r\n') : area.value; $('#edit').disabled = true;
-  try { await request('write', { path: previewItem.path, text: data, version: previewVersion }); const result = await request('text', undefined, { path: previewItem.path }); previewText = originalText = result.text; previewVersion = result.version; showText(); toast('已保存'); await refresh(); } finally { $('#edit').disabled = false; }
+  try { await request('write', { path: previewItem.path, text: data, version: previewVersion }); const result = await request('text', undefined, { path: previewItem.path }); previewText = originalText = result.text; previewVersion = result.version; await showPreview(); toast('已保存'); await refresh(); } finally { $('#edit').disabled = false; }
 });
+click($('#render-toggle'), () => { markdownView = !markdownView; return showPreview(); });
+click($('#open-site'), () => openSite(previewItem));
 click($('#copy-content'), () => copyText($('#preview-content textarea')?.value ?? previewText));
 function closePreview() {
   if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;

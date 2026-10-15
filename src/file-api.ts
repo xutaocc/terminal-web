@@ -105,11 +105,17 @@ async function noNestedDestination(source: string, destination: string): Promise
   if (dest === src || dest.startsWith(src + '/')) throw new FileError('目标目录不能是自身或子目录');
 }
 const mime: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.pdf': 'application/pdf' };
-async function content(req: http.IncomingMessage, res: http.ServerResponse, p: string, download: boolean): Promise<void> {
+// 网页服务模式下页面与终端同源运行（个人内网使用），脚本、存储与相对路径资源均按普通静态站点处理。
+const siteMime: Record<string, string> = { ...mime, '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf', '.m4a': 'audio/mp4', '.flac': 'audio/flac' };
+async function content(req: http.IncomingMessage, res: http.ServerResponse, p: string, mode: 'inline' | 'download' | 'site'): Promise<void> {
   const handle = await fsp.open(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const stat = await handle.stat(); if (!stat.isFile()) throw new FileError('只能读取普通文件');
-    const headers: Record<string, string | number> = { 'Content-Type': download ? 'application/octet-stream' : mime[path.extname(p).toLowerCase()] || 'text/plain; charset=utf-8', 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store' };
+    const extension = path.extname(p).toLowerCase();
+    const headers: Record<string, string | number> = mode === 'site'
+      ? { 'Content-Type': siteMime[extension] || 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' }
+      : { 'Content-Type': mode === 'download' ? 'application/octet-stream' : mime[extension] || 'text/plain; charset=utf-8', 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store' };
+    const download = mode === 'download';
     if (download) headers['Content-Disposition'] = `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(path.basename(p))}`;
     let start = 0, end = stat.size - 1, status = 200;
     if (req.headers.range) {
@@ -168,11 +174,31 @@ export function directorySessionLabel(directoryPath: string, date = new Date()):
 }
 let lastSessionTime = 0;
 
+// /site/<绝对路径>：把服务器上的文件当作静态网站提供，供浏览器新标签直接打开 HTML。
+export async function handleSite(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname !== '/site' && !url.pathname.startsWith('/site/')) return false;
+  const fail = (status: number, text: string) => { res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(text); };
+  if (req.method !== 'GET' && req.method !== 'HEAD') { fail(405, '不支持的请求方法'); return true; }
+  let p: string;
+  try { p = absolute(decodeURIComponent(url.pathname.slice('/site'.length)) || '/'); } catch { fail(400, '路径无效'); return true; }
+  try {
+    if ((await fsp.stat(p)).isDirectory()) {
+      // 目录需以 / 结尾，页面里的相对路径才会解析到该目录内。
+      if (!url.pathname.endsWith('/')) { res.writeHead(301, { Location: url.pathname + '/' + url.search }); res.end(); return true; }
+      p = path.join(p, 'index.html');
+    }
+    await content(req, res, p, 'site');
+  } catch (error) {
+    if (!res.headersSent) fail((error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '') ? 403 : 400, message(error));
+    else res.destroy();
+  }
+  return true;
+}
 export async function handleFileApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, options: { maxUpload: number; tmuxConf: string }): Promise<boolean> {
   if (!url.pathname.startsWith('/api/files/')) return false;
   const route = url.pathname.slice('/api/files/'.length);
   try {
-    if ((req.method === 'GET' || req.method === 'HEAD') && route === 'content') { await content(req, res, absolute(url.searchParams.get('path')), url.searchParams.get('download') === '1'); return true; }
+    if ((req.method === 'GET' || req.method === 'HEAD') && route === 'content') { await content(req, res, absolute(url.searchParams.get('path')), url.searchParams.get('download') === '1' ? 'download' : 'inline'); return true; }
     if (req.method === 'GET' && route === 'list') {
       const p = absolute(url.searchParams.get('path')); await directory(p);
       const names = await fsp.readdir(p); if (names.length > WALK_LIMIT) throw new FileError('目录条目过多，请使用终端处理', 413);

@@ -87,7 +87,12 @@ function authCookie(token: string, secure: boolean): string {
   return attrs.join("; ");
 }
 
-function loginPage(error: string): string {
+// Only same-site absolute paths are accepted as the post-login destination.
+function safeNext(value: string | null | undefined): string {
+  return value && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : "/";
+}
+
+function loginPage(error: string, next = "/"): string {
   const err = error
     ? `<p class="err">${error.replace(/[<>&]/g, "")}</p>`
     : "";
@@ -116,6 +121,7 @@ function loginPage(error: string): string {
     <h1>Web Terminal</h1>
     <input id="t" type="password" name="token" placeholder="请输入访问 Token" autofocus
       autocapitalize="off" autocomplete="current-password" spellcheck="false" />
+    <input type="hidden" name="next" value="${next.replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}" />
     <button type="submit">登录</button>
     ${err}
   </form>
@@ -140,6 +146,7 @@ export async function gateHttp(
   // forms verifiable while withholding referrers from other sites.
   res.setHeader("Referrer-Policy", "same-origin");
   let supplied = req.method === "GET" ? url.searchParams.get("token") : null;
+  let next: string | null = null;
   if (req.method === "POST" && url.pathname === "/auth/login") {
     let body = "";
     for await (const chunk of req) {
@@ -149,7 +156,8 @@ export async function gateHttp(
         return true;
       }
     }
-    supplied = new URLSearchParams(body).get("token") ?? "";
+    const form = new URLSearchParams(body);
+    supplied = form.get("token") ?? ""; next = safeNext(form.get("next"));
   }
   if (supplied !== null) {
     if (token && safeEqual(supplied, token)) {
@@ -160,20 +168,21 @@ export async function gateHttp(
       res.writeHead(302, {
         "Set-Cookie": [authCookie(token, reqIsHttps(req)),
           `tw_browser=${browserId(req) || randomBytes(16).toString("hex")}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000${reqIsHttps(req) ? "; Secure" : ""}`],
-        Location: (url.pathname === "/auth/login" || url.pathname.startsWith("//")) ? "/" : url.pathname + (qs ? `?${qs}` : ""),
+        Location: next ?? (url.pathname === "/auth/login" ? "/" : safeNext(url.pathname + (qs ? `?${qs}` : ""))),
       });
       res.end();
       return true;
     }
     res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(loginPage("Token 不正确。"));
+    res.end(loginPage("Token 不正确。", next ?? "/"));
     return true;
   }
 
   if (hasValidCookie(req, token)) return false; // already signed in
 
   res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(loginPage(""));
+  // Remember the requested page (e.g. a /site/ HTML link) so signing in returns there.
+  res.end(loginPage("", req.method === "GET" ? safeNext(url.pathname + url.search) : "/"));
   return true;
 }
 

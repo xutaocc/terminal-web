@@ -18,6 +18,7 @@ await mkdir(path.join(fixture, 'destination'));
 await writeFile(path.join(fixture, 'subfolder', 'keep.txt'), 'keep');
 await writeFile(path.join(fixture, 'subfolder', 'exclude.txt'), 'exclude');
 await mkdir(path.join(fixture, 'subfolder', 'grandchild')); await writeFile(path.join(fixture, 'subfolder', 'grandchild', '深层很长的文件名称_用于验证手机横向滚动_完整名称.txt'), 'deep');
+await writeFile(path.join(fixture, 'readme.md'), '# 标题\n\n![图](img/a.png)\n\n- 列表'); await writeFile(path.join(fixture, 'page.html'), '<h1>page</h1>');
 const textPath = path.join(fixture, 'notes.txt'); await writeFile(textPath, Array.from({length:80}, (_, i) => `line ${i+1}`).join('\n'));
 const name = `files_ui_${process.pid}`, token = crypto.randomBytes(32).toString('hex');
 const appPort = await port(), debugPort = await port(), base = `http://127.0.0.1:${appPort}`;
@@ -81,6 +82,21 @@ try {
   await wait(()=>frame("document.querySelector('#edit').textContent==='编辑'"),'save');
   assert.ok((await readFile(textPath,'utf8')).endsWith('new line'));
   const screenshot=await cdp('Page.captureScreenshot',{format:'png'});await writeFile('/tmp/terminal-file-browser-mobile.png',Buffer.from(screenshot.data,'base64'));
+  await click('#preview .close',true);
+  // Markdown renders in the dialog with relative images routed through /site; HTML opens as a site page.
+  await frame("[...document.querySelectorAll('.name')].find(n=>n.firstChild.textContent==='readme.md').click();");
+  await click('#footer-actions button:first-child',true);
+  await wait(()=>frame("!!document.querySelector('.markdown-body h1')"),'markdown render');
+  assert.equal(await frame("document.querySelector('.markdown-body h1').textContent"),'标题');
+  assert.ok((await frame("document.querySelector('.markdown-body img').src")).endsWith('/workspace/img/a.png'));
+  await click('#render-toggle',true);
+  await wait(()=>frame("!!document.querySelector('.preview-numbers')"),'markdown source');
+  await click('#preview .close',true);
+  await frame("[...document.querySelectorAll('.name')].find(n=>n.firstChild.textContent==='page.html').click();");
+  assert.equal(await frame("document.querySelector('#footer-actions button:first-child').textContent"),'浏览器打开');
+  await click('#footer-actions button:nth-child(2)',true);
+  await wait(()=>frame("document.querySelector('#preview').open && !!document.querySelector('.preview-numbers')"),'html source view');
+  assert.equal(await frame("document.querySelector('#edit').hidden"),true);
   await click('#preview .close',true);
   // Copy requires a typed absolute path and a second confirmation.
   await frame("[...document.querySelectorAll('.name')].find(n=>n.firstChild.textContent==='notes.txt').click();");

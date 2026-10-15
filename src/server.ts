@@ -31,7 +31,7 @@ import type { ServerMessage } from "./types.js";
 import { isClientMessage } from "./types.js";
 import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
-import { handleFileApi } from "./file-api.js";
+import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 
 const config = loadConfig();
@@ -1102,6 +1102,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
+      if (await handleSite(req, res, requestUrl)) return;
       if (await handleFileApi(req, res, requestUrl, { maxUpload: config.uploadMaxBytes, tmuxConf: config.tmuxConfPath })) return;
 
       if (method === "POST" && requestUrl.pathname === "/upload") {
