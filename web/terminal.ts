@@ -2284,11 +2284,24 @@ function buildTab(s: Session): void {
     void showSessionNote(s, tab, noteHover);
     return true;
   });
-  tab.addEventListener('pointerenter', e => {
-    if (e.pointerType === 'mouse' && e.buttons === 0) noteHover.enter();
+  let inNoteHoverArea = false;
+  const updateNoteHoverArea = (e: PointerEvent): void => {
+    const rect = tab.getBoundingClientRect();
+    const inside = e.pointerType === 'mouse' && e.buttons === 0 &&
+      e.clientX >= rect.left && e.clientX < rect.left + rect.width / 3;
+    if (inside === inNoteHoverArea) return;
+    inNoteHoverArea = inside;
+    if (inside) noteHover.enter();
+    else noteHover.leave();
+  };
+  tab.addEventListener('pointerenter', updateNoteHoverArea);
+  tab.addEventListener('pointermove', updateNoteHoverArea);
+  tab.addEventListener('pointerleave', () => {
+    inNoteHoverArea = false;
+    noteHover.leave();
   });
-  tab.addEventListener('pointerleave', () => noteHover.leave());
   tab.addEventListener('pointerdown', () => {
+    inNoteHoverArea = false;
     noteHover.leave();
   });
   onTap(tab, (e) => {
