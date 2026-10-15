@@ -625,6 +625,18 @@ class Session {
       try {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
+        // The 0.18 glyph atlas can corrupt when it grows a page or merges pages
+        // (lots of CJK + emoji on coloured diff backgrounds): glyphs render as
+        // fragments of other glyphs until reload. Rebuild it from scratch
+        // whenever it grows — at most once per cooldown, so a screen that
+        // itself needs a new page cannot loop clear -> redraw -> grow.
+        let atlasClearedAt = 0;
+        webgl.onAddTextureAtlasCanvas(() => {
+          const now = performance.now();
+          if (now - atlasClearedAt < 2000) return;
+          atlasClearedAt = now;
+          requestAnimationFrame(() => this.term.clearTextureAtlas());
+        });
         this.term.loadAddon(webgl);
       } catch {
         /* fall back to the DOM renderer */
