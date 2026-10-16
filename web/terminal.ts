@@ -485,6 +485,8 @@ let folders: FolderInfo[] = [];
 let folderMembers: Record<string, string> = {};
 /** folder id ('' for none) -> cwd -> the name the user gave that directory card there. */
 let dirNames: Record<string, Record<string, string>> = {};
+/** folder id ('' for none) -> its directory cards' cwds, in the order the user dragged them into. */
+let cardOrder: Record<string, string[]> = {};
 let homeDir = '';
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
@@ -504,6 +506,10 @@ const sidebar = new ProjectSidebar({
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
   renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
+  orderCards: (folderId, cwds) => {
+    cardOrder = { ...cardOrder, [folderId]: cwds };
+    void editFolders({ action: 'orderCards', folder: folderId, cwds });
+  },
   openSettings: () => openSheet(),
   openHelp: () => openHelp(),
   resized: () => {
@@ -2848,7 +2854,7 @@ function folderOf(s: Session): string {
 
 function refreshSidebar(): void {
   const groups = groupByFolder(sessions, s => s.name, folders, folderMembers);
-  sidebar.render(groups, activeTab?.name ?? null, homeDir, dirNames);
+  sidebar.render(groups, activeTab?.name ?? null, homeDir, dirNames, cardOrder);
   const filtering = !mobileMQ.matches && !sidebar.isHidden;
   const activeFolder = activeTab ? folderOf(activeTab) : '';
   const activeDir = activeTab?.cwd ?? '';
@@ -2858,7 +2864,7 @@ function refreshSidebar(): void {
 }
 
 interface FolderReply {
-  folders?: unknown; members?: unknown; dirNames?: unknown; emptied?: unknown; home?: unknown; error?: unknown;
+  folders?: unknown; members?: unknown; dirNames?: unknown; cardOrder?: unknown; emptied?: unknown; home?: unknown; error?: unknown;
 }
 
 /**
@@ -2878,6 +2884,7 @@ function setFolders(data: FolderReply): void {
   folderMembers = Object.fromEntries(Object.entries(data.members as Record<string, unknown>)
     .filter((e): e is [string, string] => typeof e[1] === 'string'));
   if (data.dirNames && typeof data.dirNames === 'object') dirNames = data.dirNames as typeof dirNames;
+  cardOrder = data.cardOrder && typeof data.cardOrder === 'object' ? data.cardOrder as typeof cardOrder : {};
   if (typeof data.home === 'string') homeDir = data.home;
   if (gone.length) flashStatus(`文件夹「${gone.map(f => f.name).join('」「')}」已无会话，已删除`, 3500);
 }
@@ -2895,7 +2902,8 @@ type FolderEdit =
   | { action: 'create'; name: string; session: string }
   | { action: 'rename'; id: string; name: string }
   | { action: 'move'; sessions: string[]; folder: string; card?: { cwd: string; name: string } }
-  | { action: 'renameDir'; folder: string; cwd: string; name: string };
+  | { action: 'renameDir'; folder: string; cwd: string; name: string }
+  | { action: 'orderCards'; folder: string; cwds: string[] };
 
 async function editFolders(edit: FolderEdit): Promise<boolean> {
   try {

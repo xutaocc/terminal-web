@@ -1,4 +1,4 @@
-import { type FolderGroup, groupByDirectory, shortCwd } from './project-groups.js';
+import { type FolderGroup, groupByDirectory, orderCards, reorderCards, shortCwd } from './project-groups.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null }
@@ -19,6 +19,8 @@ export interface SidebarHooks {
   moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): void;
   /** Name a directory card within its folder; '' restores the directory's own name. */
   renameDir(folderId: string, cwd: string, name: string): void;
+  /** A folder's cards were dragged into a new order (their cwds, first to last). */
+  orderCards(folderId: string, cwds: string[]): void;
   openSettings(): void;
   openHelp(): void;
   /** The sidebar's width changed (shown, hidden or dragged). */
@@ -91,8 +93,12 @@ export class ProjectSidebar {
   private readonly folded = new Set<string>(readJson<string[]>('tw.sidebar.folded', []));
   private signature = '';
   private lastRender: { groups: FolderGroup<SidebarSession>[]; active: string | null; home: string } | null = null;
-  /** Sessions being dragged, with the folder they came from (and the card, if a whole one). */
-  private dragging: { names: string[]; from: string; card?: { cwd: string; name: string } } | null = null;
+  /**
+   * Sessions being dragged, with the folder they came from, the card's carried
+   * name (if it has one) and, for a whole card, its directory — which is what
+   * lets it be dropped between other cards to reorder them.
+   */
+  private dragging: { names: string[]; from: string; card?: { cwd: string; name: string }; cardCwd?: string } | null = null;
   private menu: HTMLElement | null = null;
 
   constructor(private readonly hooks: SidebarHooks) {
@@ -166,11 +172,15 @@ export class ProjectSidebar {
   /** Redraw, unless nothing the cards show has changed since last time. */
   /** folder id -> cwd -> the name the user gave that card. */
   private dirNames: Record<string, Record<string, string>> = {};
+  /** folder id -> the cwds of its cards, in the order the user dragged them into. */
+  private cardOrder: Record<string, string[]> = {};
 
   render(groups: FolderGroup<SidebarSession>[], active: string | null, home: string,
-         dirNames: Record<string, Record<string, string>> = this.dirNames): void {
+         dirNames: Record<string, Record<string, string>> = this.dirNames,
+         cardOrder: Record<string, string[]> = this.cardOrder): void {
     this.dirNames = dirNames;
-    const signature = JSON.stringify([active, home, [...this.folded], dirNames, groups.map(g => [
+    this.cardOrder = cardOrder;
+    const signature = JSON.stringify([active, home, [...this.folded], dirNames, cardOrder, groups.map(g => [
       g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd]),
     ])]);
     this.lastRender = { groups, active, home };
@@ -283,7 +293,8 @@ export class ProjectSidebar {
   /** The folder's directory cards, each holding its sessions as chips. */
   private buildCards(group: FolderGroup<SidebarSession>, active: string | null, home: string, el: HTMLElement): HTMLElement {
     this.bindDrop(el, group.key);
-    for (const dir of groupByDirectory(group.items, item => item.cwd)) {
+    const dirs = orderCards(groupByDirectory(group.items, item => item.cwd), this.cardOrder[group.key]);
+    for (const dir of dirs) {
       const names = dir.items.map(item => item.name);
       const card = document.createElement('div');
       card.className = 'ps-card';
@@ -359,7 +370,8 @@ export class ProjectSidebar {
       });
       // Only a name the user gave travels; a directory's own name is its own anywhere.
       const carry = dir.cwd && given ? { cwd: dir.cwd, name: given } : undefined;
-      this.bindDrag(card, names, group.key, carry);
+      this.bindDrag(card, names, group.key, carry, dir.cwd || undefined);
+      if (dir.cwd) this.bindReorder(card, group.key, dir.cwd, dirs.map(d => d.cwd).filter(Boolean));
       card.addEventListener('contextmenu', e => {
         e.preventDefault();
         this.openMenu(e, names, group.key, `${label.textContent}（${names.length} 个会话）`, carry);
@@ -372,11 +384,11 @@ export class ProjectSidebar {
   // -------------------------------------------------------------------------
   // Moving sessions: drag a chip or a whole card onto a folder, or right-click.
   // -------------------------------------------------------------------------
-  private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }): void {
+  private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }, cardCwd?: string): void {
     el.draggable = true;
     el.addEventListener('dragstart', e => {
       e.stopPropagation();
-      this.dragging = { names, from, card };
+      this.dragging = { names, from, card, cardCwd };
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('application/x-terminal-sessions', names.join(' '));
@@ -387,6 +399,48 @@ export class ProjectSidebar {
       this.dragging = null;
       this.el.classList.remove('ps-dragging');
       for (const t of this.list.querySelectorAll('.ps-drop')) t.classList.remove('ps-drop');
+      for (const t of this.list.querySelectorAll('.ps-drop-before, .ps-drop-after')) {
+        t.classList.remove('ps-drop-before', 'ps-drop-after');
+      }
+    });
+  }
+
+  /**
+   * A whole card dropped onto another card in the same folder goes before or
+   * after it, by which half of it the pointer is over; a line shows where.
+   * From another folder, the drop falls through to the folder (a move).
+   */
+  private bindReorder(card: HTMLElement, folderId: string, cwd: string, order: string[]): void {
+    const side = (e: DragEvent): boolean => {
+      const r = card.getBoundingClientRect();
+      return e.clientY >= r.top + r.height / 2;
+    };
+    const mine = (): boolean => {
+      const d = this.dragging;
+      return !!d?.cardCwd && d.from === folderId && d.cardCwd !== cwd;
+    };
+    card.addEventListener('dragover', e => {
+      if (!mine()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const after = side(e);
+      card.classList.toggle('ps-drop-after', after);
+      card.classList.toggle('ps-drop-before', !after);
+    });
+    card.addEventListener('dragleave', e => {
+      if (!card.contains(e.relatedTarget as Node)) card.classList.remove('ps-drop-before', 'ps-drop-after');
+    });
+    card.addEventListener('drop', e => {
+      const drag = this.dragging;
+      if (!mine() || !drag?.cardCwd) return;
+      e.preventDefault();
+      e.stopPropagation();
+      card.classList.remove('ps-drop-before', 'ps-drop-after');
+      const next = reorderCards(order, drag.cardCwd, cwd, side(e));
+      this.cardOrder = { ...this.cardOrder, [folderId]: next };
+      this.rerender();
+      this.hooks.orderCards(folderId, next);
     });
   }
 

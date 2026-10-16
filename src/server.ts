@@ -629,6 +629,7 @@ async function handleAgentStatusRead(req: http.IncomingMessage, res: http.Server
  *   { action: "move", sessions: [...], folder, card? }   folder "" takes them out;
  *       card { cwd, name } carries a dragged card's name unless the target has its own
  *   { action: "renameDir", folder, cwd, name }   name "" restores the directory's own
+ *   { action: "orderCards", folder, cwds: [...] }   the folder's cards, first to last
  * There is deliberately no "delete": a folder goes when its last session does.
  */
 async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -636,7 +637,7 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
   if (req.method === 'GET') { sendJsonHttp(res, 200, { ...(await folders.get()), emptied: [], home: os.homedir() }); return; }
   let body: {
     action?: unknown; name?: unknown; session?: unknown; id?: unknown;
-    sessions?: unknown; folder?: unknown; cwd?: unknown; card?: unknown;
+    sessions?: unknown; folder?: unknown; cwd?: unknown; card?: unknown; cwds?: unknown;
   };
   try { body = JSON.parse((await readBody(req, 16384)).toString('utf8')); }
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
@@ -657,6 +658,11 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
                body.cwd.startsWith('/') && body.cwd.length <= 4096 &&
                (body.name === '' || validFolderName(body.name))) {
       const r = await folders.renameDir(body.folder, body.cwd, body.name as string);
+      sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
+    } else if (body.action === 'orderCards' && typeof body.folder === 'string' && Array.isArray(body.cwds) &&
+               body.cwds.length <= 500 &&
+               body.cwds.every(c => typeof c === 'string' && c.startsWith('/') && c.length <= 4096)) {
+      const r = await folders.orderCards(body.folder, body.cwds as string[]);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
     } else {
       sendJsonHttp(res, 400, { error: 'invalid folder edit' });

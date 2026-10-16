@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupByDirectory, groupByFolder, shortCwd, wouldEmpty } from '../web/project-groups.js';
+import { groupByDirectory, groupByFolder, orderCards, reorderCards, shortCwd, wouldEmpty } from '../web/project-groups.js';
 
 const folders = [{ id: 'f1', name: 'Alpha' }, { id: 'f2', name: 'Beta' }];
 
@@ -53,4 +53,20 @@ test('sessions sharing a directory share a card, in order of first appearance', 
     ['/p/src', ['b']],
     ['', ['d']],
   ]);
+});
+
+test('cards follow the saved order; unmentioned cards keep their place after', () => {
+  const cards = ['/a', '/b', '/c', '/d'].map(cwd => ({ cwd }));
+  assert.deepEqual(orderCards(cards, undefined).map(c => c.cwd), ['/a', '/b', '/c', '/d']);
+  assert.deepEqual(orderCards(cards, ['/c', '/a']).map(c => c.cwd), ['/c', '/a', '/b', '/d']);
+  assert.deepEqual(orderCards(cards, ['/gone', '/d']).map(c => c.cwd), ['/d', '/a', '/b', '/c']);
+});
+
+test('dropping a card before or after another reorders around it', () => {
+  const order = ['/a', '/b', '/c', '/d'];
+  assert.deepEqual(reorderCards(order, '/d', '/a', false), ['/d', '/a', '/b', '/c']);
+  assert.deepEqual(reorderCards(order, '/a', '/c', true), ['/b', '/c', '/a', '/d']);
+  assert.deepEqual(reorderCards(order, '/b', '/b', true), order);
+  assert.deepEqual(reorderCards(order, '/x', '/b', false), ['/a', '/x', '/b', '/c', '/d']);
+  assert.deepEqual(order, ['/a', '/b', '/c', '/d']);
 });

@@ -20,6 +20,12 @@ export interface FolderData {
    * takes the name it has there.
    */
   dirNames: Record<string, Record<string, string>>;
+  /**
+   * The order the user dragged directory cards into: folder id ('' for no
+   * folder) -> cwds, first to last. Cards not listed follow in their natural
+   * order. Optional: files written before cards could be reordered lack it.
+   */
+  cardOrder?: Record<string, string[]>;
 }
 
 const MAX_FOLDERS = 100;
@@ -40,7 +46,10 @@ function valid(data: unknown): data is FolderData {
     !!d.dirNames && typeof d.dirNames === 'object' &&
     Object.values(d.dirNames).every(names => !!names && typeof names === 'object' &&
       Object.entries(names).every(([cwd, name]) => cwd.startsWith('/') && validFolderName(name))) &&
-    Object.values(d.dirNames).reduce((n, names) => n + Object.keys(names).length, 0) <= MAX_DIR_NAMES;
+    Object.values(d.dirNames).reduce((n, names) => n + Object.keys(names).length, 0) <= MAX_DIR_NAMES &&
+    (d.cardOrder === undefined || (typeof d.cardOrder === 'object' && !!d.cardOrder &&
+      Object.values(d.cardOrder).every(list => Array.isArray(list) && list.length <= MAX_DIR_NAMES &&
+        list.every(cwd => typeof cwd === 'string' && cwd.startsWith('/') && cwd.length <= 4096))));
 }
 
 /** Drop memberships of unknown folders, then folders nobody is in, then their card names. */
@@ -52,7 +61,9 @@ function settle(data: FolderData): FolderData {
   const kept = new Set(['', ...folders.map(f => f.id)]);
   const dirNames = Object.fromEntries(Object.entries(data.dirNames ?? {})
     .filter(([id, names]) => kept.has(id) && Object.keys(names).length));
-  return { folders, members, dirNames };
+  const cardOrder = Object.fromEntries(Object.entries(data.cardOrder ?? {})
+    .filter(([id, list]) => kept.has(id) && list.length));
+  return { folders, members, dirNames, cardOrder };
 }
 
 /**
@@ -166,6 +177,16 @@ export class FolderStore {
       const dirNames = { ...data.dirNames, [id]: { ...(data.dirNames[id] ?? {}) } };
       if (card && !dirNames[id][card.cwd]) dirNames[id][card.cwd] = card.name.trim();
       return { ...data, members, dirNames };
+    });
+  }
+
+  /** Set the order of a folder's directory cards ('' for no folder): its cwds, first to last. */
+  orderCards(id: string, cwds: string[]): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => {
+      const cardOrder = { ...(data.cardOrder ?? {}) };
+      if (cwds.length) cardOrder[id] = [...new Set(cwds)];
+      else delete cardOrder[id];
+      return { ...data, cardOrder };
     });
   }
 

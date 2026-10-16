@@ -60,3 +60,26 @@ export function groupByDirectory<T>(items: readonly T[], cwdOf: (item: T) => str
   }
   return [...groups.values()];
 }
+
+/**
+ * Cards in the order the user dragged them into (`order`, a list of cwds);
+ * cards it does not mention keep their natural order after the ones it does.
+ */
+export function orderCards<T extends { cwd: string }>(cards: readonly T[], order: readonly string[] | undefined): T[] {
+  if (!order?.length) return [...cards];
+  const rank = new Map(order.map((cwd, i) => [cwd, i]));
+  return cards
+    .map((card, i) => ({ card, i, r: rank.get(card.cwd) }))
+    .sort((a, b) => (a.r ?? Infinity) - (b.r ?? Infinity) || a.i - b.i)
+    .map(x => x.card);
+}
+
+/** The new card order after dropping `moving` before or after `target`. */
+export function reorderCards(current: readonly string[], moving: string, target: string, after: boolean): string[] {
+  if (moving === target) return [...current];
+  const rest = current.filter(cwd => cwd !== moving);
+  const at = rest.indexOf(target);
+  if (at < 0) return [...rest, moving];
+  rest.splice(after ? at + 1 : at, 0, moving);
+  return rest;
+}
