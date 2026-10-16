@@ -3571,7 +3571,10 @@ async function toggleFullscreen(): Promise<void> {
 
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
-makeButton(controlsEl, 'tb-btn tb-icon', '📁', '文件管理', () => openFileBrowser());
+// A line icon in the bar's own colour, like the ⋯ beside it — the yellow 📁
+// emoji stood out against the dark bar. (The phone bar keeps its own.)
+const desktopFilesButton = makeButton(controlsEl, 'tb-btn tb-icon', '', '文件管理', () => openFileBrowser());
+desktopFilesButton.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.38a1.5 1.5 0 0 1 1.06.44L11.5 8H19.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5Z"/></svg>';
 // Upload, split view and quick commands live in the settings panel (⋯) on PC;
 // only the file manager and ⋯ stay in the top bar. The upload button is still
 // built, off-screen, because the panel row borrows its icon.
