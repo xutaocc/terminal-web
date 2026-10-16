@@ -20,7 +20,9 @@ import {
   tagWebSession,
   setWebTabLabel,
   listWebTabs,
+  listSessionCwds,
   listTmuxSessions,
+  resolveSessionDirectory,
   mateStartDir,
   findClientTty,
   refreshClient,
@@ -33,10 +35,13 @@ import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
 import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
+import { ProjectStore, validProjectName } from './projects.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'quick-commands.json'));
+const projects = new ProjectStore(process.env.PROJECTS_FILE ||
+  path.join(os.homedir(), '.terminal-web', 'projects.json'));
 
 // The cross-device tab list lives on the tmux sessions themselves (a @twtab
 // user option), so it can't drift from reality — see tmux.ts. This set just
@@ -538,7 +543,7 @@ async function handleQuickCommands(req: http.IncomingMessage, res: http.ServerRe
 }
 
 async function handleListSessions(res: http.ServerResponse): Promise<void> {
-  const tagged = await listWebTabs();
+  const [tagged, cwds] = await Promise.all([listWebTabs(), listSessionCwds()]);
   if (tagged === null) {
     sendJsonHttp(res, 200, { tabs: null }); // unknown -> client keeps its state
     return;
@@ -556,7 +561,41 @@ async function handleListSessions(res: http.ServerResponse): Promise<void> {
       byName.delete(name);
     }
   }
-  sendJsonHttp(res, 200, { tabs: [...byName.values()] });
+  // Where each session is working now, so the sidebar can file it under a project.
+  const tabs = [...byName.values()].map(tab => ({ ...tab, cwd: cwds?.get(tab.name) }));
+  sendJsonHttp(res, 200, { tabs });
+}
+
+/**
+ * The sidebar's project list. POST takes one edit — { action: "add", path,
+ * name? } or { action: "remove", path } — and answers with the whole list.
+ */
+async function handleProjects(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method === 'GET') { sendJsonHttp(res, 200, { projects: await projects.list(), home: os.homedir() }); return; }
+  let body: { action?: unknown; path?: unknown; name?: unknown };
+  try { body = JSON.parse((await readBody(req, 8192)).toString('utf8')); }
+  catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+  const raw = typeof body?.path === 'string' ? body.path.trim().replace(/(.)\/+$/, '$1') : '';
+  if (!raw) { sendJsonHttp(res, 400, { error: 'missing path' }); return; }
+  if (body.action === 'remove') {
+    sendJsonHttp(res, 200, { projects: await projects.update(list => list.filter(p => p.path !== raw)) });
+    return;
+  }
+  if (body.action !== 'add') { sendJsonHttp(res, 400, { error: 'unknown action' }); return; }
+  // resolveSessionDirectory falls back to home for anything unusable; a project
+  // must be the directory asked for, so anything else is refused.
+  const expanded = raw === '~' || raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(1)) : raw;
+  const directory = path.isAbsolute(expanded) ? path.resolve(expanded) : '';
+  if (!directory || await resolveSessionDirectory(directory) !== directory) { sendJsonHttp(res, 400, { error: '目录不存在或无法访问' }); return; }
+  const name = validProjectName(body.name) ? body.name.trim() : path.basename(directory) || directory;
+  try {
+    const list = await projects.update(list => list.some(p => p.path === directory) ? list :
+      [...list, { path: directory, name }]);
+    sendJsonHttp(res, 200, { projects: list });
+  } catch {
+    sendJsonHttp(res, 400, { error: 'too many projects' });
+  }
 }
 
 /** Page tmux history, or forward paging keys to a mouse-aware application. */
@@ -1128,6 +1167,10 @@ const server = http.createServer((req, res) => {
 
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/sessions/note') {
         await handleSessionNote(req, res, requestUrl);
+        return;
+      }
+      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/projects') {
+        await handleProjects(req, res);
         return;
       }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/quick-commands') {

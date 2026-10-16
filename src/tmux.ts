@@ -250,6 +250,24 @@ export function listWebTabs(): Promise<WebTab[] | null> {
   });
 }
 
+/**
+ * Every session's active-pane working directory, keyed by session name. Null
+ * when tmux can't be queried. The path is the remainder after the first space:
+ * names never contain one, paths may.
+ */
+export async function listSessionCwds(): Promise<Map<string, string> | null> {
+  const out = await runTmux(["list-sessions", "-F", "#{session_name} #{pane_current_path}"]);
+  if (out === null) return null;
+  const cwds = new Map<string, string>();
+  for (const line of out.split("\n")) {
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    const cwd = line.slice(space + 1);
+    if (cwd.startsWith("/")) cwds.set(line.slice(0, space), cwd);
+  }
+  return cwds;
+}
+
 /** Run tmux; resolve its stdout, or null if it failed. Never throws. */
 function runTmux(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {

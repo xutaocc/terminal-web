@@ -14,6 +14,8 @@ import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
+import { groupByProject, projectKeyOf, type ProjectInfo } from './project-groups.js';
+import { ICONS, ProjectSidebar } from './project-sidebar.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -463,8 +465,45 @@ controlsEl.id = 'controls';
 const desktopTools = document.createElement('div');
 desktopTools.id = 'desktop-tools';
 desktopTools.append(addBtn, controlsEl);
+// Shown in the bar only while the sidebar is hidden, to bring it back.
+const sidebarOpenBtn = document.createElement('button');
+sidebarOpenBtn.type = 'button';
+sidebarOpenBtn.id = 'sidebar-open';
+sidebarOpenBtn.className = 'tb-btn tb-icon';
+sidebarOpenBtn.title = '展开侧栏';
+sidebarOpenBtn.innerHTML = ICONS.panel;
 // A floated tool group reserves only its own rows, so later tab rows span the bar.
-topbar.append(desktopTools, tabsEl);
+topbar.append(desktopTools, sidebarOpenBtn, tabsEl);
+
+// Desktop left column: tabs filed under project directories (hidden on phones
+// by CSS). The project list is shared by every device; see /api/projects.
+let projects: ProjectInfo[] = [];
+let homeDir = '';
+/** Directory -> the tab last shown from it, for clicks on its sidebar card. */
+const lastUsedIn = new Map<string, string>();
+const sidebar = new ProjectSidebar({
+  activate: name => {
+    const s = sessions.find(x => x.name === name);
+    if (s) activateSession(s);
+  },
+  activateDirectory: names => {
+    // Back to the session last used there, as Orca restores a worktree's tab.
+    const inDir = sessions.filter(x => names.includes(x.name));
+    const s = inDir.find(x => x.name === lastUsedIn.get(x.cwd ?? '')) ?? inDir[0];
+    if (s) activateSession(s);
+  },
+  newSession: directory => void promptAddSession(activeSession, directory || undefined),
+  addProject: () => void promptAddProject(),
+  removeProject: (path, name) => confirmRemoveProject(path, name),
+  openSettings: () => openSheet(),
+  openHelp: () => openHelp(),
+  resized: () => {
+    refreshSidebar();
+    fitActive();
+  },
+});
+document.body.prepend(sidebar.el);
+sidebarOpenBtn.addEventListener('click', () => sidebar.setHidden(false));
 
 async function logoutBrowser(): Promise<void> {
   try {
@@ -521,6 +560,9 @@ class Session {
   tabEl: HTMLElement | null = null;
   tabLabel: HTMLElement | null = null;
   tabDot: HTMLElement | null = null;
+  // Where the session is working, as last reported by the server (or where it
+  // was asked to start). The sidebar files the tab under a project by this.
+  cwd: string | null = null;
   connected = false;
   outputActive = false;
   readonly readState = new SessionReadState();
@@ -1888,9 +1930,10 @@ function hasRecentOutput(s: Session): boolean {
 function updateOutputActivity(): void {
   // All three surfaces share the same state. A split tab aggregates both panes;
   // entering a visible pane reads it, while hidden panes may remain unread.
-  const paint = (dot: Element | null | undefined, s: Session | null | undefined): void => {
-    const working = !!s && hasRecentOutput(s);
-    const unread = !!s && (s.readState.unread || !!s.mate?.readState.unread);
+  // A sidebar directory card speaks for all of its sessions at once.
+  const paint = (dot: Element | null | undefined, ...group: (Session | null | undefined)[]): void => {
+    const working = group.some(s => !!s && hasRecentOutput(s));
+    const unread = group.some(s => !!s && (s.readState.unread || !!s.mate?.readState.unread));
     dot?.classList.toggle('working', working);
     dot?.classList.toggle('unread', unread);
     if (dot) {
@@ -1906,6 +1949,10 @@ function updateOutputActivity(): void {
   for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
     const s = sessions.find(session => session.name === row.dataset.session);
     paint(row.querySelector('.tab-dot'), s);
+  }
+  for (const dot of sidebar.dots()) {
+    const names = (dot.dataset.sessions ?? '').split(' ');
+    paint(dot, ...sessions.filter(session => names.includes(session.name)));
   }
 }
 
@@ -2363,6 +2410,7 @@ function activateSession(s: Session): void {
     activeTab.mate?.setShown(false);
   }
   activeTab = s;
+  lastUsedIn.set(s.cwd ?? '', s.name);
   // Whatever had the keys belonged to the tab we just left.
   activeSession = s;
   layOutTab(s);
@@ -2459,12 +2507,25 @@ function closeSession(s: Session): void {
   if (activeTab === s) {
     activeTab = null;
     activeSession = null;
-    const next = sessions[idx] ?? sessions[idx - 1] ?? null;
+    const next = nextTabAfter(s, idx);
     if (next) activateSession(next);
   }
   if (sessions.length === 0) addFallbackTab();
   refreshMobileUI();
   saveTabs();
+}
+
+/**
+ * The tab to show once `gone` (which sat at `idx`) has left the list: its
+ * neighbour, preferring one in the same directory, then the same project, so
+ * the strip and sidebar do not jump somewhere else under you.
+ */
+function nextTabAfter(gone: Session, idx: number): Session | null {
+  const key = projectKeyOf(gone.cwd, projects);
+  const near = (match: (x: Session) => boolean): Session | undefined =>
+    sessions.slice(idx).find(match) ?? sessions.slice(0, idx).reverse().find(match);
+  return near(x => x.cwd === gone.cwd) ?? near(x => projectKeyOf(x.cwd, projects) === key) ??
+    sessions[idx] ?? sessions[idx - 1] ?? null;
 }
 
 function nextSessionName(): string {
@@ -2601,7 +2662,7 @@ function domPrompt(opts: {
   });
 }
 
-async function promptAddSession(base: Session | null = activeSession): Promise<void> {
+async function promptAddSession(base: Session | null = activeSession, startDir?: string): Promise<void> {
   const suggestion = newSessionName(
     base?.displayName ?? defaultSessionName, sessions.map(s => s.displayName),
   );
@@ -2611,6 +2672,7 @@ async function promptAddSession(base: Session | null = activeSession): Promise<v
     value: suggestion,
     okText: '创建',
     directory: async signal => {
+      if (startDir) return startDir;
       if (!base) return '';
       const response = await fetch(`/api/sessions/cwd?session=${encodeURIComponent(base.name)}`, {
         cache: 'no-store', signal,
@@ -2626,8 +2688,79 @@ async function promptAddSession(base: Session | null = activeSession): Promise<v
   const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
   const name = await newSessionId(displayName, sessions.map(s => s.name));
   const session = addSession(name, false, displayName);
+  session.cwd = directory || startDir || base?.cwd || null;
   session.intendCreate(base?.name, directory);
   activateSession(session);
+}
+
+// ---------------------------------------------------------------------------
+// Projects: the sidebar files every tab under the project directory it is
+// working in, one card per exact directory. Like an Orca worktree, a card owns
+// its tabs: the strip shows only those sharing the active tab's directory — as
+// long as the sidebar is there to reach the others. On phones, or with it
+// hidden, every tab stays in the strip.
+// ---------------------------------------------------------------------------
+function refreshSidebar(): void {
+  const groups = groupByProject(sessions, s => s.cwd, projects);
+  sidebar.render(groups, activeTab?.name ?? null, homeDir);
+  const filtering = !mobileMQ.matches && !sidebar.isHidden;
+  const activeDir = activeTab?.cwd ?? '';
+  for (const s of sessions) {
+    if (s.tabEl) s.tabEl.hidden = filtering && (s.cwd ?? '') !== activeDir;
+  }
+}
+
+function setProjects(data: { projects?: unknown; home?: unknown }): void {
+  if (Array.isArray(data.projects)) {
+    projects = data.projects.filter((p): p is ProjectInfo =>
+      !!p && typeof p.path === 'string' && typeof p.name === 'string');
+  }
+  if (typeof data.home === 'string') homeDir = data.home;
+}
+
+async function loadProjects(): Promise<void> {
+  try {
+    const res = await fetch('/api/projects', { cache: 'no-store' });
+    if (res.ok) setProjects(await res.json());
+  } catch {
+    /* keep the list we have */
+  }
+}
+
+async function editProjects(body: { action: 'add' | 'remove'; path: string }): Promise<string | null> {
+  try {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json() as { projects?: unknown; error?: unknown };
+    if (!res.ok) return typeof data.error === 'string' ? data.error : '保存失败';
+    setProjects(data);
+    refreshMobileUI();
+    return null;
+  } catch {
+    return '无法连接服务器';
+  }
+}
+
+async function promptAddProject(): Promise<void> {
+  const raw = await domPrompt({
+    label: '项目目录（绝对路径或 ~/ 开头）：',
+    value: activeTab?.cwd ?? '',
+    okText: '添加',
+  });
+  const path = raw?.trim();
+  if (!path) return;
+  const error = await editProjects({ action: 'add', path });
+  if (error) flashStatus(`添加项目失败：${error}`, 2500);
+}
+
+function confirmRemoveProject(path: string, name: string): void {
+  if (!window.confirm(`从侧栏移除项目「${name}」？\n${path}\n\n只是取消分组，会话不会被关闭。`)) return;
+  void editProjects({ action: 'remove', path }).then(error => {
+    if (error) flashStatus(`移除项目失败：${error}`, 2500);
+  });
 }
 
 // Update only the tab's display label; the tmux session name (s.name) is left
@@ -2644,6 +2777,8 @@ function setDisplayName(s: Session, displayName: string): void {
 interface SavedTab {
   name: string;
   displayName: string;
+  /** Working directory, when the server reported one (cached for the sidebar). */
+  cwd?: string;
   /** Local only: which of the tab's terminals this device had on screen. */
   view?: LayoutMode;
 }
@@ -2653,7 +2788,7 @@ function saveTabs(): void {
     localStorage.setItem(
       'tw.tabs',
       JSON.stringify(
-        sessions.map((s) => ({ name: s.name, displayName: s.displayName, view: s.view })),
+        sessions.map((s) => ({ name: s.name, displayName: s.displayName, view: s.view, cwd: s.cwd ?? undefined })),
       ),
     );
     if (activeTab) localStorage.setItem('tw.activeTab', activeTab.name);
@@ -2682,7 +2817,8 @@ function loadTabs(): { tabs: SavedTab[]; active: string | null } {
             item.view === 'one' || item.view === 'two' || item.view === 'both'
               ? item.view
               : undefined;
-          tabs.push({ name: item.name, displayName: dn, view });
+          const cwd = typeof item.cwd === 'string' && item.cwd.startsWith('/') ? item.cwd : undefined;
+          tabs.push({ name: item.name, displayName: dn, view, cwd });
         }
       }
       return { tabs, active };
@@ -2721,7 +2857,9 @@ async function fetchServerTabs(timeoutMs = 2500): Promise<SavedTab[] | null> {
         const name = (item as SavedTab).name;
         const dnRaw = (item as SavedTab).displayName;
         const dn = typeof dnRaw === 'string' && dnRaw.trim() ? dnRaw : name;
-        out.push({ name, displayName: dn });
+        const cwdRaw = (item as SavedTab).cwd;
+        const cwd = typeof cwdRaw === 'string' && cwdRaw.startsWith('/') ? cwdRaw : undefined;
+        out.push({ name, displayName: dn, cwd });
       }
     }
     return out;
@@ -2899,7 +3037,7 @@ function removeLocalSession(s: Session): void {
   if (activeTab === s) {
     activeTab = null;
     activeSession = null;
-    const next = sessions[idx] ?? sessions[idx - 1] ?? null;
+    const next = nextTabAfter(s, idx);
     if (next) activateSession(next);
   }
   refreshMobileUI();
@@ -2914,7 +3052,7 @@ async function syncFromServer(): Promise<void> {
   if (syncing) return;
   syncing = true;
   try {
-    const serverTabs = await fetchServerTabs();
+    const [serverTabs] = await Promise.all([fetchServerTabs(), loadProjects()]);
     if (!serverTabs) return; // unreachable — keep what we have
     const byName = new Map(serverTabs.map((t) => [t.name, t]));
 
@@ -2937,9 +3075,10 @@ async function syncFromServer(): Promise<void> {
       if (isMateName(t.name) && byName.has(primaryNameOf(t.name))) continue;
       const existing = sessions.find((s) => s.name === t.name);
       if (!existing) {
-        addSession(t.name, false, t.displayName);
-      } else if (t.displayName && t.displayName !== existing.displayName) {
-        setDisplayName(existing, t.displayName);
+        addSession(t.name, false, t.displayName).cwd = t.cwd ?? null;
+      } else {
+        if (t.cwd) existing.cwd = t.cwd;
+        if (t.displayName && t.displayName !== existing.displayName) setDisplayName(existing, t.displayName);
       }
     }
 
@@ -2972,6 +3111,7 @@ async function syncFromServer(): Promise<void> {
     }
 
     if (sessions.length === 0) addFallbackTab();
+    refreshMobileUI(); // directories may have moved tabs between projects
     saveTabs();
   } finally {
     syncing = false;
@@ -3989,6 +4129,7 @@ function refreshMobileUI(): void {
   document.title = fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web';
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
+  refreshSidebar();
   updateOutputActivity();
   if (drawerOpen) renderDrawer();
 }
@@ -4005,6 +4146,7 @@ window.addEventListener('resize', () => {
 // since the key bar switches between a fixed row and the wrapped layout.
 mobileMQ.addEventListener('change', () => {
   updateKeybarHeight();
+  refreshSidebar(); // the tab strip is only narrowed to a project on desktop
   fitActive();
 });
 let areaObserver: ResizeObserver | null = null;
@@ -4328,6 +4470,7 @@ async function init(): Promise<void> {
   // Both server round-trips start together; the prefs one is awaited further
   // down, just before the tabs are built.
   const prefsPromise = fetchServerPrefs();
+  const projectsPromise = loadProjects();
   // The server's list is authoritative; fall back to the local cache, then to
   // a single default session when both are empty.
   let server = await fetchServerTabs();
@@ -4390,8 +4533,11 @@ async function init(): Promise<void> {
   // answer. Only the tab you open acts on it, so a split tab you never look at
   // still opens no second session.
   const cachedViews = new Map(cached.tabs.map((t) => [t.name, t.view]));
+  const cachedCwds = new Map(cached.tabs.map((t) => [t.name, t.cwd]));
+  await projectsPromise;
   for (const t of initialTabs) {
     const s = addSession(t.name, false, t.displayName);
+    s.cwd = t.cwd ?? cachedCwds.get(t.name) ?? null;
     s.view = cachedViews.get(t.name) ?? 'one';
     // Asked for by name in the URL, or the default on a first visit: both are
     // tabs being made, not remembered, so they may create their session.
