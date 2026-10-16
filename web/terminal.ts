@@ -3921,9 +3921,38 @@ const drawer = document.createElement('div');
 drawer.className = 'sheet drawer';
 const drawerGrip = document.createElement('div');
 drawerGrip.className = 'sheet-grip';
-const drawerTitle = document.createElement('div');
-drawerTitle.className = 'sheet-title';
-drawerTitle.textContent = '会话';
+/**
+ * The product mark shown in the phone's sheet headers: a small prompt glyph,
+ * WebTerminal in bold and the owner in grey — quiet, on the right of the title.
+ */
+function brandMark(): HTMLElement {
+  const mark = document.createElement('span');
+  mark.className = 'brand-mark';
+  mark.setAttribute('aria-label', 'WebTerminal xutaocc');
+  const glyph = document.createElement('span');
+  glyph.className = 'brand-glyph';
+  glyph.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 4.5 3.5 3.5L3 11.5M8.5 11.5H13"/></svg>';
+  const name = document.createElement('b');
+  name.textContent = 'WebTerminal';
+  const owner = document.createElement('span');
+  owner.className = 'brand-owner';
+  owner.textContent = 'xutaocc';
+  mark.append(glyph, name, owner);
+  return mark;
+}
+
+/** A sheet header: the section name, and the brand mark on the right. */
+function sheetHeader(title: string): HTMLElement {
+  const head = document.createElement('div');
+  head.className = 'sheet-title sheet-head';
+  const label = document.createElement('span');
+  label.className = 'sheet-head-label';
+  label.textContent = title;
+  head.append(label, brandMark());
+  return head;
+}
+
+const drawerTitle = sheetHeader('会话');
 const drawerHint = document.createElement('div');
 drawerHint.className = 'drawer-hint';
 drawerHint.textContent = '点击名称选中基准会话；点击“进入”切换终端。';
@@ -4050,9 +4079,7 @@ const sheet = document.createElement('div');
 sheet.className = 'sheet actions-sheet';
 const sheetGrip = document.createElement('div');
 sheetGrip.className = 'sheet-grip';
-const sheetTitle = document.createElement('div');
-sheetTitle.className = 'sheet-title';
-sheetTitle.textContent = '设置';
+const sheetTitle = sheetHeader('设置');
 
 const fontRow = document.createElement('div');
 fontRow.className = 'sheet-font';

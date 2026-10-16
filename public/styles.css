@@ -1770,3 +1770,37 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   .actions-sheet .sheet-title { display: none; }
 }
 .ps-brand-owner { font-weight: 400; font-size: 11.5px; color: var(--ui-subtle, #808080); }
+
+/* Sheet headers on the phone: section name left, product mark right. */
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sheet-head-label { font-weight: 600; }
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid var(--ui-border, #333);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-text, #e5e5e5) 4%, transparent);
+  font: 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.brand-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--st-blue, #4cc2ff) 18%, transparent);
+  color: var(--st-blue, #4cc2ff);
+}
+.brand-mark b { font-weight: 700; color: var(--ui-text, #e5e5e5); letter-spacing: 0.01em; }
+.brand-owner { color: var(--ui-subtle, #808080); font-size: 10.5px; }
