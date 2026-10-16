@@ -247,13 +247,6 @@ body {
 .qc-form input:focus, .qc-form textarea:focus { outline: 2px solid #3b8eea; }
 .sheet-row.armed { color: #3b8eea; }
 .quick-command-box [hidden] { display: none !important; }
-.tab .tab-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ui-subtle, #6a6a6a);
-  flex: 0 0 auto;
-}
 .tab .tab-label {
   min-width: 0;
   display: -webkit-box;
@@ -826,13 +819,6 @@ body {
   touch-action: manipulation;
   overflow: hidden;
 }
-.m-title .tab-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--ui-subtle, #6a6a6a);
-  flex: 0 0 auto;
-}
 .m-title .m-title-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -934,13 +920,6 @@ body {
   gap: 10px;
   padding: 4px 2px;
   cursor: pointer;
-}
-.drawer-body .tab-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--ui-subtle, #6a6a6a);
-  flex: 0 0 auto;
 }
 .drawer-name {
   flex: 1 1 auto;
@@ -1128,10 +1107,7 @@ body {
     gap: 5px;
     padding: 2px 0;
   }
-  .drawer-body .tab-dot {
-    width: 7px;
-    height: 7px;
-  }
+  .drawer-body .tab-dot { --st-size: 11px; }
   .drawer-name {
     font-size: 12px;
   }
@@ -1294,44 +1270,6 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
 .session-info-input:focus { outline: 2px solid #3b8eea; outline-offset: -1px; }
 .session-info-field .session-note-input { margin-top: 6px; }
 
-/* One status icon on PC tabs, mobile title and drawer: read=dim, unread=bright,
-   working=spinner. Working comes last so unread never paints a second dot.
-   Do not restore .connected colors: they would override the dim read state. */
-.tab .tab-dot,
-.m-title .tab-dot,
-.drawer-body .tab-dot,
-.ps-card .tab-dot {
-  background: var(--ui-subtle, #6a6a6a);
-  box-shadow: none;
-}
-.tab .tab-dot.unread,
-.m-title .tab-dot.unread,
-.drawer-body .tab-dot.unread,
-.ps-card .tab-dot.unread {
-  background: #23d18b;
-  box-shadow: 0 0 5px #23d18b66;
-}
-.tab .tab-dot.working,
-.m-title .tab-dot.working,
-.drawer-body .tab-dot.working,
-.ps-card .tab-dot.working {
-  box-sizing: border-box;
-  background: transparent;
-  box-shadow: none;
-  border: 2px solid #23d18b55;
-  border-top-color: #23d18b;
-  animation: terminal-output-spin 0.8s linear infinite;
-}
-@keyframes terminal-output-spin {
-  to { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tab .tab-dot.working,
-  .m-title .tab-dot.working,
-  .drawer-body .tab-dot.working,
-  .ps-card .tab-dot.working { animation: none; }
-}
-
 /* --------------------------------------------------------------------------
    Desktop project sidebar (web/project-sidebar.ts). Everything that used to
    start at the left edge starts after it; --sidebar-w is set by the script and
@@ -1456,7 +1394,6 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
   font-size: 11px;
   color: var(--ui-subtle, #808080);
 }
-.ps-card-row .tab-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 
 .ps-footer {
   display: flex;
@@ -1520,38 +1457,6 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
   background: color-mix(in srgb, #3b8eea 16%, transparent);
 }
 .ps-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-chip .tab-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
-
-/* Agent status from the server (web/agent-indicator.ts), same dot everywhere:
-   waiting = orange pulse (blocked on you), working = spinner (above),
-   unread = bright green (above), done = dim green, idle = grey. A tab that
-   wants you also gets a faint wash so it stands out in a full strip. */
-.tab .tab-dot.waiting,
-.m-title .tab-dot.waiting,
-.drawer-body .tab-dot.waiting,
-.ps-card .tab-dot.waiting {
-  background: #f5a524;
-  box-shadow: 0 0 0 0 #f5a52499;
-  animation: agent-waiting-pulse 1.4s ease-out infinite;
-}
-@keyframes agent-waiting-pulse {
-  70% { box-shadow: 0 0 0 5px #f5a52400; }
-  100% { box-shadow: 0 0 0 0 #f5a52400; }
-}
-.tab .tab-dot.done,
-.m-title .tab-dot.done,
-.drawer-body .tab-dot.done,
-.ps-card .tab-dot.done {
-  background: #23d18b;
-  opacity: 0.45;
-}
-.tab.tab-attention:not(.active) { background: color-mix(in srgb, #f5a524 10%, var(--ui-hover, #2d2d30)); }
-@media (prefers-reduced-motion: reduce) {
-  .tab .tab-dot.waiting,
-  .m-title .tab-dot.waiting,
-  .drawer-body .tab-dot.waiting,
-  .ps-card .tab-dot.waiting { animation: none; }
-}
 
 /* Folders (web/project-sidebar.ts). The loose group is not a folder and must
    not look like one: no icon, small muted heading, always last. */
@@ -1609,3 +1514,126 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-menu-item:hover:not(:disabled) { background: var(--ui-hover, #333336); }
 .ps-menu-item:disabled { color: var(--ui-subtle, #777); cursor: default; }
 .confirm-warn { margin-top: 8px; color: #f5a524; }
+
+/* --------------------------------------------------------------------------
+   Session status icon — the same on PC tabs, the sidebar, the phone title and
+   the drawer. Every state is told apart by SHAPE first, colour second, so it
+   reads with any colour vision (and in grey): idle = hollow grey ring, read =
+   small solid grey dot, working = spinning blue arc, unread = blue check with
+   a corner badge,
+   waiting = "?" on a filled yellow tile. Grey means nothing to do. Colours avoid red/green: grey, blue, yellow.
+   The glyphs are drawn with masks so no markup is needed beyond the element.
+   -------------------------------------------------------------------------- */
+:root {
+  --st-idle: #8a8f98;
+  --st-done: #8a8f98;
+  --st-blue: #4cc2ff;
+  --st-wait: #ffc53d;
+  --st-wait-ink: #1b1b1d;
+}
+:root[data-theme="light"] {
+  --st-idle: #7a828e;
+  --st-done: #7a828e;
+  --st-blue: #0a6cd6;
+  --st-wait: #b26b00;
+  --st-wait-ink: #ffffff;
+}
+.tab .tab-dot,
+.m-title .tab-dot,
+.drawer-body .tab-dot,
+.ps-card .tab-dot {
+  --st-size: 11px;
+  position: relative;
+  box-sizing: border-box;
+  width: var(--st-size);
+  height: var(--st-size);
+  flex: 0 0 auto;
+  border-radius: 50%;
+  /* idle: a hollow ring */
+  background: transparent;
+  border: 1.5px solid var(--st-idle);
+  box-shadow: none;
+  opacity: 1;
+  animation: none;
+}
+.drawer-body .tab-dot { --st-size: 13px; }
+.ps-chip .tab-dot { --st-size: 10px; }
+
+/* working: an open arc that spins */
+.tab .tab-dot.working,
+.m-title .tab-dot.working,
+.drawer-body .tab-dot.working,
+.ps-card .tab-dot.working {
+  border: 2px solid color-mix(in srgb, var(--st-blue) 25%, transparent);
+  border-top-color: var(--st-blue);
+  border-right-color: var(--st-blue);
+  animation: terminal-output-spin 0.8s linear infinite;
+}
+@keyframes terminal-output-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* done and read: a small solid grey dot — quiet, nothing left to look at.
+   Smaller than the idle ring as well as filled, so the two greys differ in
+   two ways, not one. */
+.tab .tab-dot.done,
+.m-title .tab-dot.done,
+.drawer-body .tab-dot.done,
+.ps-card .tab-dot.done {
+  --st-size: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-done);
+}
+/* done but unread: a blue check with a filled badge in its top-right corner
+   — "finished, come and look", like an app's unread dot. Read and unread
+   differ in shape (badged check vs plain dot) and colour, not colour alone.
+   One mask draws both the check and the badge. */
+.tab .tab-dot.unread,
+.m-title .tab-dot.unread,
+.drawer-body .tab-dot.unread,
+.ps-card .tab-dot.unread {
+  --st-size: 14px;
+  width: 15px;
+  border: 0;
+  border-radius: 0;
+  background: var(--st-blue);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 14'%3E%3Cpath d='M1.4 8.6 4.6 11.8 9.6 5.6' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='12.6' cy='2.6' r='2.4' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 14'%3E%3Cpath d='M1.4 8.6 4.6 11.8 9.6 5.6' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='12.6' cy='2.6' r='2.4' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* waiting: a filled tile with "?" cut out of it — the loudest shape */
+.tab .tab-dot.waiting,
+.m-title .tab-dot.waiting,
+.drawer-body .tab-dot.waiting,
+.ps-card .tab-dot.waiting {
+  --st-size: 13px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-wait);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cdefs%3E%3Cmask id='m'%3E%3Crect width='14' height='14' rx='3' fill='white'/%3E%3Cpath d='M5 5.2a2 2 0 1 1 2.9 1.8c-.6.3-.9.7-.9 1.3v.4' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3Ccircle cx='7' cy='11' r='1' fill='black'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='14' height='14' fill='white' mask='url(%23m)'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cdefs%3E%3Cmask id='m'%3E%3Crect width='14' height='14' rx='3' fill='white'/%3E%3Cpath d='M5 5.2a2 2 0 1 1 2.9 1.8c-.6.3-.9.7-.9 1.3v.4' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3Ccircle cx='7' cy='11' r='1' fill='black'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='14' height='14' fill='white' mask='url(%23m)'/%3E%3C/svg%3E") center / contain no-repeat;
+  animation: agent-waiting-pulse 1.4s ease-in-out infinite;
+}
+@keyframes agent-waiting-pulse {
+  50% { transform: scale(1.18); }
+}
+
+/* A tab that wants you (waiting, or finished unread): a bold name and a
+   coloured bar on its left edge — not just a faint tint. */
+.tab.tab-attention:not(.active) {
+  background: color-mix(in srgb, var(--st-wait) 9%, var(--ui-hover, #2d2d30));
+  box-shadow: inset 3px 0 0 var(--st-wait);
+}
+.tab.tab-attention .tab-label { font-weight: 700; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tab .tab-dot.working,
+  .m-title .tab-dot.working,
+  .drawer-body .tab-dot.working,
+  .ps-card .tab-dot.working,
+  .tab .tab-dot.waiting,
+  .m-title .tab-dot.waiting,
+  .drawer-body .tab-dot.waiting,
+  .ps-card .tab-dot.waiting { animation: none; }
+}
