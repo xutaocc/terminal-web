@@ -305,7 +305,18 @@ body {
 }
 
 /* Compact desktop controls; shared dialog and mobile buttons keep their size. */
-#desktop-tools .tab-add { width: 26px; }
+/* "+" sits inline at the end of the tab strip, sized and aligned like a tab. */
+#tabs > .tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: top;
+  width: 28px;
+  height: 32px;
+  margin: 0 4px 4px 0;
+  font-size: 16px;
+  line-height: 1;
+}
 #controls .tb-btn { padding: 4px 6px; }
 #controls .tb-icon { width: 28px; padding: 0; font-size: 22px; }
 
@@ -1641,3 +1652,120 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 /* Where a dragged directory card will land among its folder's cards. */
 .ps-card.ps-drop-before { box-shadow: inset 0 2px 0 #3b8eea; }
 .ps-card.ps-drop-after { box-shadow: inset 0 -2px 0 #3b8eea; }
+
+/* --------------------------------------------------------------------------
+   Settings sheet, desktop only: a compact panel near the "⋯" button instead
+   of a phone-sized bottom sheet. Small segmented controls, 13px text, light
+   dividers. The phone layout (the @media blocks above) is left as it was.
+   -------------------------------------------------------------------------- */
+.sheet-group-title { display: none; }
+.sheet-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 0 12px 8px;
+  color: var(--ui-muted, #9a9a9a);
+}
+@media (min-width: 641px) and (hover: hover), (min-width: 641px) and (pointer: fine) {
+  .sheet-overlay:has(> .actions-sheet) {
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: calc(var(--topbar-h) + 6px) 10px 10px;
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .actions-sheet {
+    width: 340px;
+    max-width: calc(100vw - 20px);
+    max-height: calc(100dvh - var(--topbar-h) - 20px);
+    padding: 6px 6px 8px;
+    border: 1px solid var(--ui-border, #333);
+    border-radius: 10px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .actions-sheet .sheet-grip { display: none; }
+  .actions-sheet .sheet-title {
+    margin: 4px 8px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ui-muted, #9a9a9a);
+  }
+
+  /* Labelled rows with a small segmented control on the right. */
+  .actions-sheet .sheet-seg,
+  .actions-sheet .sheet-font {
+    gap: 0;
+    padding: 4px 8px;
+    min-height: 34px;
+  }
+  .actions-sheet .ss-lbl,
+  .actions-sheet .sf-val {
+    font-size: 13px;
+    color: var(--ui-text, #d4d4d4);
+  }
+  .actions-sheet .sheet-seg .sf-btn,
+  .actions-sheet .sheet-font .sf-btn,
+  .actions-sheet .theme-picker .sf-btn {
+    width: auto;
+    min-width: 34px;
+    height: 26px;
+    padding: 0 10px;
+    margin: 0;
+    border-radius: 0;
+    border: 1px solid var(--ui-border-strong, #4a4a4c);
+    background: transparent;
+    color: var(--ui-text, #d4d4d4);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .actions-sheet .sheet-seg .sf-btn + .sf-btn { margin-left: -1px; }
+  .actions-sheet .sheet-seg .ss-lbl + .sf-btn { border-radius: 6px 0 0 6px; }
+  .actions-sheet .sheet-seg .sf-btn:last-child { border-radius: 0 6px 6px 0; }
+  .actions-sheet .sheet-seg .ss-lbl + .sf-btn:last-child { border-radius: 6px; }
+  .actions-sheet .sf-btn:hover:not(.active) { background: var(--ui-hover, #333336); }
+  .actions-sheet .sf-btn.active {
+    position: relative;
+    background: #2472c8;
+    border-color: #2472c8;
+    color: #fff;
+  }
+  /* Font size: label in the middle of two small buttons on the right. */
+  .actions-sheet .sheet-font .sf-val { order: -1; flex: 1 1 auto; text-align: left; }
+  .actions-sheet .sheet-font .sf-btn { border-radius: 6px 0 0 6px; }
+  .actions-sheet .sheet-font .sf-btn:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+
+  .actions-sheet .sheet-hint { padding: 0 8px 6px; font-size: 11.5px; }
+
+  /* Action rows: one compact line each, icon + label, hover highlight. */
+  .actions-sheet .sheet-row {
+    gap: 10px;
+    padding: 6px 8px;
+    border-top: 0;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+  }
+  .actions-sheet .sheet-row:hover { background: var(--ui-hover, #333336); }
+  .actions-sheet .sheet-ico {
+    width: 18px;
+    font-size: 14px;
+    color: var(--ui-muted, #9a9a9a);
+  }
+  .actions-sheet .sheet-ico svg { width: 15px; height: 15px; vertical-align: middle; }
+  /* Group headings, with a divider above every group but the first. */
+  .actions-sheet .sheet-group-title {
+    display: block;
+    margin: 2px 8px 2px;
+    padding-top: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ui-subtle, #7a7a7a);
+  }
+  .actions-sheet .sheet-group-title ~ .sheet-group-title {
+    margin-top: 6px;
+    border-top: 1px solid var(--ui-border, #333);
+    padding-top: 8px;
+  }
+  .actions-sheet .sheet-title { display: none; }
+}

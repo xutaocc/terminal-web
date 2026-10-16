@@ -195,13 +195,6 @@ export class ProjectSidebar {
     for (const group of groups) {
       this.list.append(flat ? this.buildCards(group, active, home, document.createElement('section')) : this.buildGroup(group, active, home));
     }
-    if (flat) {
-      const hint = document.createElement('div');
-      hint.className = 'ps-empty';
-      hint.textContent = '点上方 ';
-      hint.append(iconButton(ICONS.folderPlus, '新建文件夹', () => this.hooks.newFolder()), ' 新建文件夹整理会话；会话可以拖进文件夹。');
-      this.list.append(hint);
-    }
     this.list.scrollTop = scrollTop;
   }
 

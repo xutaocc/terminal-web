@@ -403,22 +403,22 @@ function openHelp(): void {
   const box = document.createElement('div');
   box.className = 'paste-box help-box';
   box.innerHTML =
-    '<div class="help-title">How to copy / paste / files</div>' +
+    '<div class="help-title">使用帮助：复制 / 粘贴 / 文件</div>' +
     '<ul class="help-list">' +
-    `<li><b>Copy</b> — hold <b>${selKey}</b> and drag to select; it copies automatically. (Or select, then <b>${copyKey}</b> / tap <b>Copy</b>.)</li>` +
-    `<li><b>Paste</b> — click the terminal, then <b>${pasteKey}</b>${
-      isMac ? '' : ' (or Ctrl+Shift+V)'
-    }. On a phone/tablet, tap <b>Paste</b> and paste into the box that appears.</li>` +
+    `<li><b>复制</b> — 直接用鼠标拖动选中即可复制到剪贴板；若没有复制成功，按住 <b>${selKey}</b> 再拖动，松开后自动复制。也可以选中后按 <b>${copyKey}</b>。</li>` +
+    `<li><b>粘贴</b> — 点击终端后按 <b>${pasteKey}</b>${
+      isMac ? '' : '（或 Ctrl+Shift+V）'
+    }。手机 / 平板上点“粘贴”，在弹出的输入框里粘贴即可。</li>` +
     (isMac
       ? ''
-      : '<li><b>Literal ^V</b> (vim visual-block, readline quoted-insert) — Ctrl+V now pastes, so press <b>Ctrl+Q</b>, which both accept as its alias.</li>') +
-    '<li><b>Attach a file</b> (for Claude Code etc.) — tap the upload button, or paste / drag any file (image, PDF, text…): it uploads and inserts the file path. Then press Enter.</li>' +
-    '<li><b>Download a file</b> — tap the ⬇ button (or <b>⋯ → Download</b> on a phone) and enter a name/relative path from the terminal\'s current folder (e.g. <code>report.zip</code>), or a full path (<code>~/output/report.zip</code>). It downloads to this device.</li>' +
-    '<li><b>主题</b> — 右上角 ⋯ → 设置 → 浅色 / 深色；电脑与手机分别保存，切换不重连终端。</li>' +
-    '<li><b>Scroll</b> — mouse wheel or two-finger swipe scrolls the history.</li>' +
-    '<li><b>Tabs</b> — <b>+</b> new session, <b>×</b> closes the tab and kills its session, <b>⟳</b> restarts the session fresh. Right-click or long-press a tab for Rename; double-click (or double-tap) also works — the label changes but its tmux session stays the same.</li>' +
+      : '<li><b>输入字面 ^V</b>（vim 块选择、readline 原样插入）— Ctrl+V 已用于粘贴，请改按 <b>Ctrl+Q</b>，这两个程序都把它当作 ^V。</li>') +
+    '<li><b>上传文件</b>（给 Claude Code 等使用）— 点上传按钮，或直接粘贴 / 拖入任意文件（图片、PDF、文本…），上传后会自动插入文件路径，再按回车发送。</li>' +
+    '<li><b>下载文件</b> — 点 ⬇ 按钮（手机上为 <b>⋯ → 下载文件</b>），输入相对终端当前目录的文件名或路径（如 <code>report.zip</code>），或完整路径（<code>~/output/report.zip</code>），文件会下载到当前设备。</li>' +
+    '<li><b>主题</b> — 右上角 ⋯ → 设置 → 浅色 / 深色；电脑与手机分别保存，切换时不重连终端。</li>' +
+    '<li><b>滚动</b> — 鼠标滚轮或双指滑动查看历史输出。</li>' +
+    '<li><b>标签</b> — <b>+</b> 新建会话，<b>×</b> 关闭标签并结束其会话，<b>⟳</b> 重启会话。右键或长按标签可重命名，双击（或双击触摸）也可以；只改显示名称，对应的 tmux 会话不变。</li>' +
     '</ul>' +
-    '<div class="paste-row"><button class="tb-btn" type="button" data-help-close>Got it</button></div>';
+    '<div class="paste-row"><button class="tb-btn" type="button" data-help-close>知道了</button></div>';
   overlay.append(box);
   document.body.append(overlay);
   const close = (): void => {
@@ -459,14 +459,16 @@ const addBtn = document.createElement('button');
 addBtn.className = 'tab-add';
 addBtn.type = 'button';
 addBtn.textContent = '+';
-addBtn.title = 'New session';
+addBtn.title = '新建会话';
 
 const controlsEl = document.createElement('div');
 controlsEl.id = 'controls';
 
 const desktopTools = document.createElement('div');
 desktopTools.id = 'desktop-tools';
-desktopTools.append(addBtn, controlsEl);
+// "+" lives at the end of the tab strip, right after the last tab: new tabs
+// appear where you asked for one. Every tab is inserted before it.
+desktopTools.append(controlsEl);
 // Shown in the bar only while the sidebar is hidden, to bring it back.
 const sidebarOpenBtn = document.createElement('button');
 sidebarOpenBtn.type = 'button';
@@ -476,6 +478,7 @@ sidebarOpenBtn.title = '展开侧栏';
 sidebarOpenBtn.innerHTML = ICONS.panel;
 // A floated tool group reserves only its own rows, so later tab rows span the bar.
 topbar.append(desktopTools, sidebarOpenBtn, tabsEl);
+tabsEl.append(addBtn);
 
 // Desktop left column: tabs in the folders the user put them in, grouped by
 // directory inside each (hidden on phones by CSS). Folders and who is in them
@@ -2191,7 +2194,7 @@ function finishTabDrag(): void {
 
 function applyTabOrder(ordered: Session[]): void {
   sessions.splice(0, sessions.length, ...ordered);
-  for (const tab of sessions) if (tab.tabEl) tabsEl.append(tab.tabEl);
+  for (const tab of sessions) if (tab.tabEl) tabsEl.insertBefore(tab.tabEl, addBtn);
   saveTabs();
   refreshMobileUI();
 }
@@ -2420,7 +2423,7 @@ function buildTab(s: Session): void {
   const close = document.createElement('span');
   close.className = 'tab-close';
   close.textContent = '×';
-  close.title = 'Close tab & kill session';
+  close.title = '关闭标签并结束会话';
   tab.append(dot, label, close);
 
   // Single tap activates. On a tap only (see
@@ -2500,7 +2503,7 @@ function buildTab(s: Session): void {
   s.tabEl = tab;
   s.tabLabel = label;
   s.tabDot = dot;
-  tabsEl.append(tab); // The "+" button stays in the top-right tool group.
+  tabsEl.insertBefore(tab, addBtn); // "+" stays last, right after the tabs
   updateTabDot(s);
   refreshMobileUI();
 }
@@ -3569,16 +3572,19 @@ async function toggleFullscreen(): Promise<void> {
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
 
 makeButton(controlsEl, 'tb-btn tb-icon', '📁', '文件管理', () => openFileBrowser());
-const desktopUploadButton = makeButton(controlsEl, 'tb-btn tb-icon', '', '上传文件', () => fileInput.click());
+// Upload, split view and quick commands live in the settings panel (⋯) on PC;
+// only the file manager and ⋯ stay in the top bar. The upload button is still
+// built, off-screen, because the panel row borrows its icon.
+const desktopUploadButton = makeButton(document.createElement('div'), 'tb-btn tb-icon', '', '上传文件', () => fileInput.click());
 desktopUploadButton.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg>';
 // Split view. A tab can show a second terminal beside its own: this picks
 // whether you see the first, the second, or both at once. Both keep running
 // whichever you are looking at — only closing the tab closes them. The second
 // session is made the first time it is asked for.
 const LAYOUT_BUTTONS: { mode: LayoutMode; label: string; title: string }[] = [
-  { mode: 'one', label: '1', title: 'First terminal only (the second keeps running)' },
-  { mode: 'two', label: '2', title: 'Second terminal only (the first keeps running)' },
-  { mode: 'both', label: '⊞', title: 'Show both terminals' },
+  { mode: 'one', label: '1', title: '只显示第一个终端（第二个继续运行）' },
+  { mode: 'two', label: '2', title: '只显示第二个终端（第一个继续运行）' },
+  { mode: 'both', label: '⊞', title: '同时显示两个终端' },
 ];
 const layoutButtons = new Map<LayoutMode, HTMLElement>();
 const sheetLayoutButtons = new Map<LayoutMode, HTMLElement>();
@@ -3600,7 +3606,8 @@ for (const def of LAYOUT_BUTTONS) {
     }),
   );
 }
-controlsEl.append(layoutSeg);
+// Kept (not attached) so refreshLayoutUI can still mark the active mode on it.
+void layoutSeg;
 
 // Reliable file attach for every platform (incl. iPad) and over plain HTTP —
 // no clipboard needed: pick any file(s), each uploads and its path is inserted.
@@ -3626,11 +3633,11 @@ function openQuickCommandPanel(): void {
     return true;
   });
 }
-makeButton(controlsEl, 'tb-btn', '命令', '快捷命令', openQuickCommandPanel);
+// 快捷命令 moved into the settings panel (see sheet.append).
 // Everything that isn't reached often — font size, attach, fullscreen, help —
 // sits behind this, in the same actions sheet the phone bar opens. The bar
 // keeps only what gets used mid-session.
-makeButton(controlsEl, 'tb-btn tb-icon', '⋯', 'More actions', () => openSheet());
+makeButton(controlsEl, 'tb-btn tb-icon', '⋯', '设置', () => openSheet());
 
 // --- selection actions (touch) ---------------------------------------------
 // Copying used to happen the instant you lifted your finger, so one imprecise
@@ -3869,7 +3876,7 @@ function mBtn(label: string, title: string, onTap: () => void): HTMLButtonElemen
   return b;
 }
 
-const mMenuBtn = mBtn('☰', 'Sessions', () => openDrawer());
+const mMenuBtn = mBtn('☰', '会话列表', () => openDrawer());
 const mTitle = document.createElement('button');
 mTitle.className = 'm-title';
 mTitle.type = 'button';
@@ -3898,7 +3905,7 @@ const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
 });
 mKeyboardLockBtn.classList.add('m-keyboard-lock');
 mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/></svg>';
-const mMoreBtn = mBtn('⋯', 'More actions', () => openSheet());
+const mMoreBtn = mBtn('⋯', '设置', () => openSheet());
 
 const mFilesBtn = mBtn('📁', '文件管理', () => openFileBrowser());
 mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeyboardLockBtn, mMoreBtn);
@@ -4003,7 +4010,7 @@ function renderDrawer(): void {
     close.className = 'drawer-act danger';
     close.type = 'button';
     close.textContent = '×';
-    close.title = 'Close tab & kill session';
+    close.title = '关闭标签并结束会话';
     onTap(close, () => {
       closeDrawer();
       confirmCloseSession(s);
@@ -4050,14 +4057,16 @@ const fontMinus = document.createElement('button');
 fontMinus.className = 'sf-btn';
 fontMinus.type = 'button';
 fontMinus.textContent = 'A−';
+fontMinus.title = '缩小字号';
 const fontVal = document.createElement('div');
 fontVal.className = 'sf-val';
 const fontPlus = document.createElement('button');
 fontPlus.className = 'sf-btn';
 fontPlus.type = 'button';
 fontPlus.textContent = 'A+';
+fontPlus.title = '放大字号';
 function updateFontVal(): void {
-  fontVal.textContent = `Font ${currentFont}px`;
+  fontVal.textContent = `字号 ${currentFont}px`;
 }
 bindIntentionalClick(fontMinus, () => {
   changeFont(-1);
@@ -4117,7 +4126,7 @@ colorLabel.textContent = '终端颜色';
 colorRow.append(colorLabel);
 const colorHint = document.createElement('div');
 colorHint.textContent = '所有设备共用；新建会话生效，已有会话不变。';
-colorHint.style.cssText = 'font-size:12px;line-height:1.5;padding:0 12px 8px;';
+colorHint.className = 'sheet-hint';
 colorHint.setAttribute('role', 'status');
 const colorButtons = new Map<boolean, HTMLButtonElement>();
 let colorRequest = false;
@@ -4172,7 +4181,7 @@ statusModeLabel.className = 'ss-lbl';
 statusModeLabel.textContent = '状态来源';
 statusModeRow.append(statusModeLabel);
 const statusModeHint = document.createElement('div');
-statusModeHint.style.cssText = 'font-size:12px;line-height:1.5;padding:0 12px 8px;';
+statusModeHint.className = 'sheet-hint';
 statusModeHint.setAttribute('role', 'status');
 const statusModeButtons = new Map<string, HTMLButtonElement>();
 let statusModeError = '';
@@ -4222,7 +4231,7 @@ const splitRow = document.createElement('div');
 splitRow.className = 'sheet-seg';
 const splitLabel = document.createElement('div');
 splitLabel.className = 'ss-lbl';
-splitLabel.textContent = 'Split view';
+splitLabel.textContent = '分屏';
 splitRow.append(splitLabel);
 for (const def of LAYOUT_BUTTONS) {
   const b = document.createElement('button');
@@ -4313,58 +4322,75 @@ selectBtn = sheetRow('↔', '拖动选择文字', () => {
   setTouchSelectMode(!touchSelectMode);
   flashStatus(touchSelectMode ? '选择模式：拖动选择文字，松手后点击复制' : '已关闭选择模式', 1800);
 });
-const uploadSheetButton = sheetRow('', 'Attach a file', () => {
+const uploadSheetButton = sheetRow('', '上传文件', () => {
   closeSheet();
   fileInput.click();
 });
 uploadSheetButton.querySelector('.sheet-ico')!.append(desktopUploadButton.firstElementChild!.cloneNode(true));
+// Ordered by how often each is reached for: everyday actions first, then the
+// view, then settings that are set once, then the account. Small headings mark
+// the groups so the list scans quickly.
+function sheetGroup(title: string): HTMLElement {
+  const h = document.createElement('div');
+  h.className = 'sheet-group-title';
+  h.textContent = title;
+  return h;
+}
 sheet.append(
   sheetGrip,
   sheetTitle,
-  keybarSettingsButton,
-  themeRow,
-  colorRow,
-  colorHint,
-  statusModeRow,
-  statusModeHint,
-  fontRow,
-  splitRow,
-  keyboardLockButton,
-  selectBtn,
-  sheetRow('📁', '文件管理', () => { closeSheet(); openFileBrowser(); }),
-  sheetRow('📁', '复制当前路径', () => {
+  sheetGroup('常用'),
+  sheetRow('▤', '文件管理', () => { closeSheet(); openFileBrowser(); }),
+  uploadSheetButton,
+  sheetRow('⬇', '下载文件', () => {
+    closeSheet();
+    promptDownload();
+  }),
+  sheetRow('⎘', '复制当前路径', () => {
     closeSheet();
     void copyCurrentPath();
   }),
-  sheetRow('⟳', 'Restart this session', () => {
-    closeSheet();
-    activeSession?.restart();
-    activeSession?.focus();
-  }),
-  sheetRow('📋', 'Paste', () => {
-    closeSheet();
-    pasteFromClipboard();
-  }),
   sheetRow(
-    '⧉',
-    'Copy the screen',
+    '▣',
+    '复制当前屏幕',
     () => {
       closeSheet();
       if (activeSession?.selectVisible()) copySelectionNow();
       else flashStatus('无法全选', 1400);
     },
   ),
-  uploadSheetButton,
-  sheetRow('⬇', 'Download a file', () => {
+  sheetRow('⧉', '粘贴', () => {
     closeSheet();
-    promptDownload();
+    pasteFromClipboard();
   }),
+  sheetRow('⌘', '快捷命令', () => {
+    closeSheet();
+    openQuickCommandPanel();
+  }),
+  sheetRow('⟳', '重启当前会话', () => {
+    closeSheet();
+    activeSession?.restart();
+    activeSession?.focus();
+  }),
+  sheetGroup('显示'),
+  fontRow,
+  splitRow,
+  themeRow,
   fullscreenButton,
-  sheetRow('↪', '退出登录', () => { closeSheet(); void logoutBrowser(); }),
-  sheetRow('?', 'Help: copy / paste / files', () => {
+  keybarSettingsButton,
+  sheetGroup('设置'),
+  statusModeRow,
+  statusModeHint,
+  colorRow,
+  colorHint,
+  keyboardLockButton,
+  selectBtn,
+  sheetGroup('其他'),
+  sheetRow('?', '帮助：复制 / 粘贴 / 文件', () => {
     closeSheet();
     openHelp();
   }),
+  sheetRow('↪', '退出登录', () => { closeSheet(); void logoutBrowser(); }),
 );
 sheetOverlay.append(sheet);
 document.body.append(sheetOverlay);
