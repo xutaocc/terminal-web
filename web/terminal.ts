@@ -17,6 +17,7 @@ import { showQuickCommands } from './quick-commands.js';
 import { decodeOsc52, forceSelectKey, shouldHintDrag, takeHintTurn } from './terminal-copy.js';
 import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js';
 import { ICONS, ProjectSidebar } from './project-sidebar.js';
+import { brandMark } from './brand-mark.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 
 // ---------------------------------------------------------------------------
@@ -348,7 +349,7 @@ function openPasteBox(): void {
   box.className = 'paste-box';
   const label = document.createElement('div');
   label.className = 'paste-label';
-  label.textContent = `Paste here (${isMac ? '⌘V' : 'Ctrl+V'} / long-press → Paste) — sends automatically`;
+  label.textContent = `在此粘贴（${isMac ? '⌘V' : 'Ctrl+V'}，或长按 → 粘贴），粘贴后自动发送`;
   const ta = document.createElement('textarea');
   ta.className = 'paste-ta';
   ta.setAttribute('autocapitalize', 'off');
@@ -359,11 +360,11 @@ function openPasteBox(): void {
   const cancel = document.createElement('button');
   cancel.className = 'tb-btn';
   cancel.type = 'button';
-  cancel.textContent = 'Cancel';
+  cancel.textContent = '取消';
   const send = document.createElement('button');
   send.className = 'tb-btn';
   send.type = 'button';
-  send.textContent = 'Send';
+  send.textContent = '发送';
   row.append(cancel, send);
   box.append(label, ta, row);
   overlay.append(box);
@@ -2571,11 +2572,11 @@ function confirmCloseSession(s: Session): void {
   label.className = 'paste-label';
   const strong = document.createElement('b');
   strong.textContent = s.displayName;
-  const sessionNote = s.displayName === s.name ? '' : ` (tmux session "${s.name}")`;
+  const sessionNote = s.displayName === s.name ? '' : `（tmux 会话 "${s.name}"）`;
   label.append(
-    'Close ',
+    '关闭 ',
     strong,
-    `${sessionNote}? This kills its tmux session and ends any programs running in it.`,
+    `${sessionNote}？这会结束它的 tmux 会话，其中运行的程序也会一并结束。`,
   );
   // A folder lives as long as it holds a session; say so before taking its last.
   const lastOf = folders.find(f => f.id === folderOf(s) && wouldEmpty(f.id, [s.name], folderMembers));
@@ -2590,11 +2591,11 @@ function confirmCloseSession(s: Session): void {
   const cancel = document.createElement('button');
   cancel.className = 'tb-btn';
   cancel.type = 'button';
-  cancel.textContent = 'Cancel';
+  cancel.textContent = '取消';
   const confirm = document.createElement('button');
   confirm.className = 'tb-btn danger';
   confirm.type = 'button';
-  confirm.textContent = 'Close & kill';
+  confirm.textContent = '关闭并结束';
   row.append(cancel, confirm);
   box.append(label, row);
   overlay.append(box);
@@ -2709,16 +2710,21 @@ function domPrompt(opts: {
     const cancel = document.createElement('button');
     cancel.className = 'tb-btn';
     cancel.type = 'button';
-    cancel.textContent = 'Cancel';
+    cancel.textContent = '取消';
     const ok = document.createElement('button');
-    ok.className = 'tb-btn';
+    ok.className = 'tb-btn primary';
     ok.type = 'button';
-    ok.textContent = opts.okText ?? 'OK';
+    ok.textContent = opts.okText ?? '确定';
     row.append(cancel, ok);
     const content = document.createElement('div');
     content.className = 'prompt-content';
     content.append(label, input);
-    box.append(content, row);
+    // The product badge heads every dialog of this kind, so they read as part
+    // of the same app (new session, new folder, download …).
+    const head = document.createElement('div');
+    head.className = 'prompt-head';
+    head.append(brandMark());
+    box.append(head, content, row);
     overlay.append(box);
     document.body.append(overlay);
     window.setTimeout(() => {
@@ -3921,26 +3927,6 @@ const drawer = document.createElement('div');
 drawer.className = 'sheet drawer';
 const drawerGrip = document.createElement('div');
 drawerGrip.className = 'sheet-grip';
-/**
- * The product mark shown in the phone's sheet headers: a small prompt glyph,
- * WebTerminal in bold and the owner in grey — quiet, on the right of the title.
- */
-function brandMark(): HTMLElement {
-  const mark = document.createElement('span');
-  mark.className = 'brand-mark';
-  mark.setAttribute('aria-label', 'WebTerminal xutaocc');
-  const glyph = document.createElement('span');
-  glyph.className = 'brand-glyph';
-  glyph.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 4.5 3.5 3.5L3 11.5M8.5 11.5H13"/></svg>';
-  const name = document.createElement('b');
-  name.textContent = 'WebTerminal';
-  const owner = document.createElement('span');
-  owner.className = 'brand-owner';
-  owner.textContent = 'xutaocc';
-  mark.append(glyph, name, owner);
-  return mark;
-}
-
 /** A sheet header: the section name, and the brand mark on the right. */
 function sheetHeader(title: string): HTMLElement {
   const head = document.createElement('div');

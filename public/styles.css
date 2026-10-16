@@ -1332,10 +1332,11 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   height: 38px;
-  padding: 0 8px 0 14px;
+  padding: 0 8px 0 10px;
 }
-.ps-brand { font-weight: 600; font-size: 13px; }
+.ps-top .brand-mark.ps-brand { min-width: 0; overflow: hidden; }
 .ps-header {
   display: flex;
   align-items: center;
@@ -1767,9 +1768,24 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
     border-top: 1px solid var(--ui-border, #333);
     padding-top: 8px;
   }
-  .actions-sheet .sheet-title { display: none; }
+  /* The panel's header: the product badge on the left, "设置" quietly on
+     the right, a hairline beneath. */
+  .actions-sheet .sheet-title.sheet-head {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    margin: 0 0 4px;
+    padding: 6px 8px 8px 6px;
+    border-bottom: 1px solid var(--ui-border, #333);
+  }
+  .actions-sheet .sheet-head .sheet-head-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ui-subtle, #7a7a7a);
+  }
+  .actions-sheet .sheet-head + .sheet-group-title { padding-top: 4px; }
 }
-.ps-brand-owner { font-weight: 400; font-size: 11.5px; color: var(--ui-subtle, #808080); }
 
 /* Sheet headers on the phone: section name left, product mark right. */
 .sheet-head {
@@ -1804,3 +1820,19 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 }
 .brand-mark b { font-weight: 700; color: var(--ui-text, #e5e5e5); letter-spacing: 0.01em; }
 .brand-owner { color: var(--ui-subtle, #808080); font-size: 10.5px; }
+
+/* Dialog header (new session, new folder, download …): the product badge on a
+   hairline, then the form. The confirm button reads as the primary action. */
+.prompt-head {
+  display: flex;
+  align-items: center;
+  margin: -2px 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ui-border, #333);
+}
+.prompt-box .paste-row .tb-btn.primary {
+  background: #2472c8;
+  border-color: #2472c8;
+  color: #fff;
+}
+.prompt-box .paste-row .tb-btn.primary:hover { background: #2f80d8; }

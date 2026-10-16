@@ -1,4 +1,5 @@
 import { type FolderGroup, groupByDirectory, orderCards, reorderCards, shortCwd } from './project-groups.js';
+import { brandMark } from './brand-mark.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null }
@@ -106,14 +107,7 @@ export class ProjectSidebar {
 
     const top = document.createElement('div');
     top.className = 'ps-top';
-    const brand = document.createElement('span');
-    brand.className = 'ps-brand';
-    brand.textContent = 'WebTerminal';
-    const owner = document.createElement('span');
-    owner.className = 'ps-brand-owner';
-    owner.textContent = 'xutaocc';
-    brand.append(' ', owner);
-    top.append(brand, iconButton(ICONS.panel, '收起侧栏', () => this.setHidden(true)));
+    top.append(brandMark('ps-brand'), iconButton(ICONS.panel, '收起侧栏', () => this.setHidden(true)));
 
     const header = document.createElement('div');
     header.className = 'ps-header';
