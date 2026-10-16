@@ -36,10 +36,14 @@ import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 import { ProjectStore, validProjectName } from './projects.js';
+import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'quick-commands.json'));
+const agentStatus = new AgentStatusMonitor(process.env.AGENT_STATUS_FILE ||
+  path.join(os.homedir(), '.terminal-web', 'agent-status.json'));
+void agentStatus.start();
 const projects = new ProjectStore(process.env.PROJECTS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'projects.json'));
 
@@ -564,6 +568,47 @@ async function handleListSessions(res: http.ServerResponse): Promise<void> {
   // Where each session is working now, so the sidebar can file it under a project.
   const tabs = [...byName.values()].map(tab => ({ ...tab, cwd: cwds?.get(tab.name) }));
   sendJsonHttp(res, 200, { tabs });
+}
+
+// ---------------------------------------------------------------------------
+// Agent status (see agent-status.ts). Hooks report in from inside tmux panes;
+// browsers read a live snapshot over server-sent events and say what they saw.
+// ---------------------------------------------------------------------------
+async function handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let body: { pane?: unknown; event?: unknown; tool?: unknown; kind?: unknown };
+  try { body = JSON.parse((await readBody(req, 4096)).toString('utf8')); }
+  catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+  const word = (v: unknown): string => typeof v === 'string' && /^[A-Za-z0-9_]{0,64}$/.test(v) ? v : '';
+  const pane = typeof body?.pane === 'string' && /^%\d{1,6}$/.test(body.pane) ? body.pane : '';
+  if (!pane || !word(body.event)) { sendJsonHttp(res, 400, { error: 'invalid hook' }); return; }
+  const used = await agentStatus.hook(pane, word(body.event), word(body.tool), word(body.kind));
+  sendJsonHttp(res, 200, { ok: true, used });
+}
+
+function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Accel-Buffering': 'no',
+  });
+  const send = (snapshot: unknown): void => { res.write(`data: ${JSON.stringify(snapshot)}\n\n`); };
+  send(agentStatus.snapshot());
+  const unsubscribe = agentStatus.subscribe(send);
+  const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000);
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
+}
+
+async function handleAgentStatusRead(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let body: { sessions?: unknown };
+  try { body = JSON.parse((await readBody(req, 8192)).toString('utf8')); }
+  catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+  const names = Array.isArray(body?.sessions) ? body.sessions.filter((n): n is string =>
+    typeof n === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(n)) : [];
+  agentStatus.read(names);
+  sendJsonHttp(res, 200, { ok: true });
 }
 
 /**
@@ -1167,6 +1212,31 @@ const server = http.createServer((req, res) => {
 
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/sessions/note') {
         await handleSessionNote(req, res, requestUrl);
+        return;
+      }
+      if (method === 'POST' && requestUrl.pathname === '/api/agent-hook') {
+        await handleAgentHook(req, res);
+        return;
+      }
+      if (method === 'GET' && requestUrl.pathname === '/api/agent-status') {
+        sendJsonHttp(res, 200, agentStatus.snapshot());
+        return;
+      }
+      if (method === 'GET' && requestUrl.pathname === '/api/agent-status/events') {
+        handleAgentStatusEvents(req, res);
+        return;
+      }
+      if (method === 'POST' && requestUrl.pathname === '/api/agent-status/mode') {
+        let body: { mode?: unknown };
+        try { body = JSON.parse((await readBody(req, 1024)).toString('utf8')); }
+        catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+        if (!isAgentStatusMode(body?.mode)) { sendJsonHttp(res, 400, { error: 'invalid mode' }); return; }
+        await agentStatus.setMode(body.mode);
+        sendJsonHttp(res, 200, agentStatus.snapshot());
+        return;
+      }
+      if (method === 'POST' && requestUrl.pathname === '/api/agent-status/read') {
+        await handleAgentStatusRead(req, res);
         return;
       }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/projects') {

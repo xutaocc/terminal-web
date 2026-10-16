@@ -1521,3 +1521,34 @@ body.file-browser-open > #topbar, body.file-browser-open > #mobilebar, body.file
 }
 .ps-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-chip .tab-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+
+/* Agent status from the server (web/agent-indicator.ts), same dot everywhere:
+   waiting = orange pulse (blocked on you), working = spinner (above),
+   unread = bright green (above), done = dim green, idle = grey. A tab that
+   wants you also gets a faint wash so it stands out in a full strip. */
+.tab .tab-dot.waiting,
+.m-title .tab-dot.waiting,
+.drawer-body .tab-dot.waiting,
+.ps-card .tab-dot.waiting {
+  background: #f5a524;
+  box-shadow: 0 0 0 0 #f5a52499;
+  animation: agent-waiting-pulse 1.4s ease-out infinite;
+}
+@keyframes agent-waiting-pulse {
+  70% { box-shadow: 0 0 0 5px #f5a52400; }
+  100% { box-shadow: 0 0 0 0 #f5a52400; }
+}
+.tab .tab-dot.done,
+.m-title .tab-dot.done,
+.drawer-body .tab-dot.done,
+.ps-card .tab-dot.done {
+  background: #23d18b;
+  opacity: 0.45;
+}
+.tab.tab-attention:not(.active) { background: color-mix(in srgb, #f5a524 10%, var(--ui-hover, #2d2d30)); }
+@media (prefers-reduced-motion: reduce) {
+  .tab .tab-dot.waiting,
+  .m-title .tab-dot.waiting,
+  .drawer-body .tab-dot.waiting,
+  .ps-card .tab-dot.waiting { animation: none; }
+}

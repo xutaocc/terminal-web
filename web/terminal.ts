@@ -16,6 +16,7 @@ import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
 import { groupByProject, projectKeyOf, type ProjectInfo } from './project-groups.js';
 import { ICONS, ProjectSidebar } from './project-sidebar.js';
+import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -1927,10 +1928,97 @@ function hasRecentOutput(s: Session): boolean {
   return s.outputActive || !!s.mate?.outputActive;
 }
 
+// ---------------------------------------------------------------------------
+// Agent status from the server (src/agent-status.ts): working / waiting / done
+// and unread for every session, whether or not this page has opened it, the
+// same on every device. The mode, picked in the settings sheet, says where it
+// comes from; in 'legacy' mode — or against a server too old to say — the dots
+// fall back to this page's own output heuristic (output-activity.ts).
+// ---------------------------------------------------------------------------
+let agentMode: 'hooks' | 'screen' | 'legacy' | null = null;
+let agentStatuses = new Map<string, AgentStatus>();
+
+function serverStatusActive(): boolean {
+  return agentMode === 'hooks' || agentMode === 'screen';
+}
+
+function connectAgentStatus(): void {
+  const source = new EventSource('/api/agent-status/events');
+  source.onmessage = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data as string) as { mode?: unknown; sessions?: Record<string, AgentStatus> };
+      agentMode = data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy' ? data.mode : null;
+      agentStatuses = new Map(Object.entries(data.sessions ?? {}));
+      refreshStatusModeUI();
+      refreshMobileUI();
+    } catch {
+      /* a malformed frame changes nothing */
+    }
+  };
+  // EventSource reconnects by itself. A server without the endpoint answers
+  // 404, which ends the stream for good: the page stays on the legacy dots.
+}
+
+/**
+ * The sessions on screen right now are read — but only while someone can see
+ * them: the page visible and focused, no file browser over the top.
+ */
+function reportViewed(): void {
+  // Touch devices are exempt from the focus test: framed in the iOS launcher,
+  // the page often has no focus until it is tapped, though it is plainly seen.
+  if (!serverStatusActive() || fileBrowserOpen || document.visibilityState !== 'visible' ||
+      (!TOUCH_DEVICE && !document.hasFocus())) return;
+  const viewed = [activeTab, activeTab?.mate].filter((s): s is Session =>
+    !!s && isActive(s) && !s.el.classList.contains('hidden') && !!agentStatuses.get(s.name)?.unread);
+  if (!viewed.length) return;
+  for (const s of viewed) agentStatuses.set(s.name, { ...agentStatuses.get(s.name)!, unread: false });
+  void fetch('/api/agent-status/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessions: viewed.map(s => s.name) }),
+  }).catch(() => { /* the next view retries */ });
+}
+
+/** A tab's statuses: its own and its split half's. */
+function statusesOf(s: Session): (AgentStatus | undefined)[] {
+  return [agentStatuses.get(s.name), s.mate ? agentStatuses.get(s.mate.name) : undefined];
+}
+
+/** Sessions asking for you (waiting, or finished unread), for the page title. */
+function attentionCount(): number {
+  if (!serverStatusActive()) return 0;
+  return sessions.filter(s => wantsAttention(combineStatus(statusesOf(s)))).length;
+}
+
 function updateOutputActivity(): void {
-  // All three surfaces share the same state. A split tab aggregates both panes;
+  reportViewed(); // before painting, so what is on screen never shows as unread
+  if (serverStatusActive()) {
+    const paintServer = (dot: Element | null | undefined, ...group: (Session | null | undefined)[]): void => {
+      const indicator = combineStatus(group.flatMap(s => s ? statusesOf(s) : []));
+      if (!dot) return;
+      for (const cls of ['working', 'waiting', 'unread', 'done'] as const) dot.classList.toggle(cls, indicator === cls);
+      dot.setAttribute('title', INDICATOR_LABEL[indicator]);
+      dot.setAttribute('aria-label', INDICATOR_LABEL[indicator]);
+    };
+    for (const s of sessions) {
+      paintServer(s.tabDot, s);
+      s.tabEl?.classList.toggle('tab-attention', wantsAttention(combineStatus(statusesOf(s))));
+    }
+    paintServer(mTitleDot, activeTab);
+    for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
+      paintServer(row.querySelector('.tab-dot'), sessions.find(session => session.name === row.dataset.session));
+    }
+    for (const dot of sidebar.dots()) {
+      const names = (dot.dataset.sessions ?? '').split(' ');
+      paintServer(dot, ...sessions.filter(session => names.includes(session.name)));
+    }
+    return;
+  }
+
+  // Legacy: all three surfaces share the same state. A split tab aggregates both panes;
   // entering a visible pane reads it, while hidden panes may remain unread.
   // A sidebar directory card speaks for all of its sessions at once.
+  for (const s of sessions) s.tabEl?.classList.remove('tab-attention');
   const paint = (dot: Element | null | undefined, ...group: (Session | null | undefined)[]): void => {
     const working = group.some(s => !!s && hasRecentOutput(s));
     const unread = group.some(s => !!s && (s.readState.unread || !!s.mate?.readState.unread));
@@ -3955,6 +4043,67 @@ for (const [enabled, label] of [[true, '开启'], [false, '关闭']] as const) {
   colorRow.append(button);
 }
 
+// Where tab status comes from (src/agent-status.ts). Shared by every device;
+// the current choice arrives with each status update, so a change made on one
+// device shows on the others at once.
+const STATUS_MODES = [
+  { mode: 'hooks', label: '钩子', hint: '钩子：Claude Code / Codex 通过钩子上报，最准确；没上报过的会话自动按屏幕识别。需先安装钩子（见部署文档）。' },
+  { mode: 'screen', label: '屏幕识别', hint: '屏幕识别：不需要钩子，服务端读取各会话屏幕判断执行中、等待确认和完成。' },
+  { mode: 'legacy', label: '原始', hint: '原始：浏览器按回车后屏幕有变化就转圈 60 秒；只跟踪本页面打开过的标签，状态不跨设备。' },
+] as const;
+const statusModeRow = document.createElement('div');
+statusModeRow.className = 'sheet-seg theme-picker';
+statusModeRow.setAttribute('role', 'group');
+statusModeRow.setAttribute('aria-label', '状态来源');
+const statusModeLabel = document.createElement('div');
+statusModeLabel.className = 'ss-lbl';
+statusModeLabel.textContent = '状态来源';
+statusModeRow.append(statusModeLabel);
+const statusModeHint = document.createElement('div');
+statusModeHint.style.cssText = 'font-size:12px;line-height:1.5;padding:0 12px 8px;';
+statusModeHint.setAttribute('role', 'status');
+const statusModeButtons = new Map<string, HTMLButtonElement>();
+let statusModeError = '';
+function refreshStatusModeUI(): void {
+  for (const [mode, button] of statusModeButtons) {
+    button.classList.toggle('active', mode === agentMode);
+    button.setAttribute('aria-pressed', String(mode === agentMode));
+  }
+  const current = STATUS_MODES.find(m => m.mode === agentMode);
+  statusModeHint.textContent = statusModeError ||
+    (current ? `${current.hint} 所有设备共用。` : '服务端未提供状态来源（需重启服务以启用），当前按原始方式显示。');
+}
+async function setStatusMode(mode: string): Promise<void> {
+  for (const button of statusModeButtons.values()) button.disabled = true;
+  try {
+    const response = await fetch('/api/agent-status/mode', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+    });
+    if (!response.ok) throw new Error('request failed');
+    const data = await response.json() as { mode?: unknown; sessions?: Record<string, AgentStatus> };
+    if (data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy') agentMode = data.mode;
+    agentStatuses = new Map(Object.entries(data.sessions ?? {}));
+    statusModeError = '';
+  } catch {
+    statusModeError = '保存失败，请重试。';
+  } finally {
+    for (const button of statusModeButtons.values()) button.disabled = false;
+    refreshStatusModeUI();
+    refreshMobileUI();
+  }
+}
+for (const { mode, label } of STATUS_MODES) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sf-btn';
+  button.textContent = label;
+  button.setAttribute('aria-pressed', 'false');
+  bindIntentionalClick(button, () => { void setStatusMode(mode); }, sheet);
+  statusModeButtons.set(mode, button);
+  statusModeRow.append(button);
+}
+refreshStatusModeUI();
+
 // The same split-view control, at touch size, for the phone's actions sheet
 // (the desktop top bar is hidden at that width).
 const splitRow = document.createElement('div');
@@ -4064,6 +4213,8 @@ sheet.append(
   themeRow,
   colorRow,
   colorHint,
+  statusModeRow,
+  statusModeHint,
   fontRow,
   splitRow,
   keyboardLockButton,
@@ -4126,7 +4277,9 @@ function closeSheet(): void {
 // re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
   const s = activeTab;
-  document.title = fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web';
+  const attention = attentionCount();
+  document.title = (attention ? `(${attention}) ` : '') +
+    (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web');
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();
@@ -4559,6 +4712,7 @@ async function init(): Promise<void> {
 }
 
 void init();
+connectAgentStatus();
 
 // Keep the tab list in sync with the server: when the page regains focus /
 // visibility, and on a light interval while visible.
@@ -4568,7 +4722,10 @@ document.addEventListener('visibilitychange', () => {
   }
   if (document.visibilityState === 'visible') void syncFromServer();
 });
-window.addEventListener('focus', () => void syncFromServer());
+window.addEventListener('focus', () => {
+  void syncFromServer();
+  updateOutputActivity(); // coming back to the page reads what is on screen
+});
 setInterval(() => {
   if (document.visibilityState === 'visible') void syncFromServer();
 }, 5000);
