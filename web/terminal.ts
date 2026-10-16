@@ -14,6 +14,7 @@ import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
+import { decodeOsc52, forceSelectKey, shouldHintDrag, takeHintTurn } from './terminal-copy.js';
 import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js';
 import { ICONS, ProjectSidebar } from './project-sidebar.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
@@ -774,10 +775,31 @@ class Session {
     // pointer and letting go is a deliberate end to it. Touch does not — see
     // the selection bar, which lets an imprecise drag be redone before it
     // decides anything.
-    this.el.addEventListener('mousedown', () => {
+    let dragFrom: { x: number; y: number; modifier: boolean } | null = null;
+    this.el.addEventListener('mousedown', (e) => {
       this.lastInputWasTouch = false;
+      dragFrom = e.button === 0 ? { x: e.clientX, y: e.clientY, modifier: e.shiftKey || e.altKey } : null;
     });
-    this.el.addEventListener('mouseup', copySelection);
+    this.el.addEventListener('mouseup', (e) => {
+      copySelection();
+      // A plain drag went to tmux (or the program), which copies into its own
+      // buffer the browser cannot see. Say how to make it copyable, a few times.
+      const from = dragFrom;
+      dragFrom = null;
+      if (from && shouldHintDrag({
+        dx: e.clientX - from.x, dy: e.clientY - from.y, modifier: from.modifier,
+        selected: this.term.hasSelection(), mouseTracking: this.term.modes.mouseTrackingMode !== 'none',
+      }) && takeHintTurn(localStorage)) {
+        flashStatus(`按住 ${forceSelectKey(isMac)} 再拖动即可选中复制`, 3500);
+      }
+    });
+    // What tmux copies (a plain drag, copy-mode) arrives as OSC 52; put it on
+    // the clipboard here too, so a drag without the modifier still copies.
+    this.term.parser.registerOscHandler(52, (data) => {
+      const text = decodeOsc52(data);
+      if (text) void copyText(text).then((ok) => { if (ok) flashStatus('copied', 1200); });
+      return true;
+    });
 
     // With two terminals on screen, something has to say which one the key bar,
     // a paste and an uploaded file are meant for. Touching one is that
