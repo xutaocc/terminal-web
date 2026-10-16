@@ -22,7 +22,6 @@ import {
   listWebTabs,
   listSessionCwds,
   listTmuxSessions,
-  resolveSessionDirectory,
   mateStartDir,
   findClientTty,
   refreshClient,
@@ -35,7 +34,7 @@ import { gateHttp, isAuthed, validOrigin, browserId, logout } from "./auth.js";
 
 import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
-import { ProjectStore, validProjectName } from './projects.js';
+import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
 
 const config = loadConfig();
@@ -44,8 +43,14 @@ const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
 const agentStatus = new AgentStatusMonitor(process.env.AGENT_STATUS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'agent-status.json'));
 void agentStatus.start();
-const projects = new ProjectStore(process.env.PROJECTS_FILE ||
-  path.join(os.homedir(), '.terminal-web', 'projects.json'));
+// The file keeps its old name: the first read turns the path-based projects
+// it used to hold into folders (see migrate in projects.ts).
+// Only tabs go in folders, never the hidden second half of a split.
+const folders = new FolderStore(process.env.PROJECTS_FILE ||
+  path.join(os.homedir(), '.terminal-web', 'projects.json'), async () => {
+  const cwds = await listSessionCwds();
+  return cwds && new Map([...cwds].filter(([name]) => !name.endsWith('__b')));
+});
 
 // The cross-device tab list lives on the tmux sessions themselves (a @twtab
 // user option), so it can't drift from reality — see tmux.ts. This set just
@@ -335,7 +340,7 @@ async function serveIndexHtml(
     return;
   }
 
-  const title = path.basename(filePath) === "file-browser.html" ? "文件管理 · Web 终端" : `${escapeHtml(HOST_LABEL)} · terminal-web`;
+  const title = path.basename(filePath) === "file-browser.html" ? "文件管理 · Web 终端" : `${escapeHtml(HOST_LABEL)} · orca-ui`;
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${title}</title>`);
 
   const version = await assetVersion();
@@ -565,8 +570,12 @@ async function handleListSessions(res: http.ServerResponse): Promise<void> {
       byName.delete(name);
     }
   }
-  // Where each session is working now, so the sidebar can file it under a project.
+  // Where each session is working now, so the sidebar can group it by directory.
   const tabs = [...byName.values()].map(tab => ({ ...tab, cwd: cwds?.get(tab.name) }));
+  // A session gone (closed anywhere, or its program exited) leaves its folder,
+  // and a folder left empty goes too. Only with a full listing in hand — a
+  // failed query must never read as "everything is gone".
+  if (cwds) await folders.prune(new Set(cwds.keys())).catch(() => {});
   sendJsonHttp(res, 200, { tabs });
 }
 
@@ -612,34 +621,48 @@ async function handleAgentStatusRead(req: http.IncomingMessage, res: http.Server
 }
 
 /**
- * The sidebar's project list. POST takes one edit — { action: "add", path,
- * name? } or { action: "remove", path } — and answers with the whole list.
+ * Sidebar folders. GET answers { folders, members, emptied: [] }; POST takes
+ * one edit and answers the same, with the folders that edit left empty (and so
+ * removed) in `emptied`:
+ *   { action: "create", name, session }   new folder holding its first session
+ *   { action: "rename", id, name }
+ *   { action: "move", sessions: [...], folder, card? }   folder "" takes them out;
+ *       card { cwd, name } carries a dragged card's name unless the target has its own
+ *   { action: "renameDir", folder, cwd, name }   name "" restores the directory's own
+ * There is deliberately no "delete": a folder goes when its last session does.
  */
-async function handleProjects(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
-  if (req.method === 'GET') { sendJsonHttp(res, 200, { projects: await projects.list(), home: os.homedir() }); return; }
-  let body: { action?: unknown; path?: unknown; name?: unknown };
-  try { body = JSON.parse((await readBody(req, 8192)).toString('utf8')); }
+  if (req.method === 'GET') { sendJsonHttp(res, 200, { ...(await folders.get()), emptied: [], home: os.homedir() }); return; }
+  let body: {
+    action?: unknown; name?: unknown; session?: unknown; id?: unknown;
+    sessions?: unknown; folder?: unknown; cwd?: unknown; card?: unknown;
+  };
+  try { body = JSON.parse((await readBody(req, 16384)).toString('utf8')); }
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
-  const raw = typeof body?.path === 'string' ? body.path.trim().replace(/(.)\/+$/, '$1') : '';
-  if (!raw) { sendJsonHttp(res, 400, { error: 'missing path' }); return; }
-  if (body.action === 'remove') {
-    sendJsonHttp(res, 200, { projects: await projects.update(list => list.filter(p => p.path !== raw)) });
-    return;
-  }
-  if (body.action !== 'add') { sendJsonHttp(res, 400, { error: 'unknown action' }); return; }
-  // resolveSessionDirectory falls back to home for anything unusable; a project
-  // must be the directory asked for, so anything else is refused.
-  const expanded = raw === '~' || raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(1)) : raw;
-  const directory = path.isAbsolute(expanded) ? path.resolve(expanded) : '';
-  if (!directory || await resolveSessionDirectory(directory) !== directory) { sendJsonHttp(res, 400, { error: '目录不存在或无法访问' }); return; }
-  const name = validProjectName(body.name) ? body.name.trim() : path.basename(directory) || directory;
   try {
-    const list = await projects.update(list => list.some(p => p.path === directory) ? list :
-      [...list, { path: directory, name }]);
-    sendJsonHttp(res, 200, { projects: list });
-  } catch {
-    sendJsonHttp(res, 400, { error: 'too many projects' });
+    if (body.action === 'create' && validFolderName(body.name) && validSession(body.session)) {
+      const { data, emptied, folder } = await folders.create(body.name, body.session);
+      sendJsonHttp(res, 200, { ...data, emptied, created: folder });
+    } else if (body.action === 'rename' && typeof body.id === 'string' && validFolderName(body.name)) {
+      sendJsonHttp(res, 200, await folders.rename(body.id, body.name).then(r => ({ ...r.data, emptied: r.emptied })));
+    } else if (body.action === 'move' && Array.isArray(body.sessions) && body.sessions.length <= 100 &&
+               body.sessions.every(validSession) && typeof body.folder === 'string') {
+      const card = body.card as { cwd?: unknown; name?: unknown } | undefined;
+      const carry = card && typeof card.cwd === 'string' && card.cwd.startsWith('/') && validFolderName(card.name)
+        ? { cwd: card.cwd, name: card.name } : undefined;
+      const r = await folders.move(body.sessions as string[], body.folder, carry);
+      sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
+    } else if (body.action === 'renameDir' && typeof body.folder === 'string' && typeof body.cwd === 'string' &&
+               body.cwd.startsWith('/') && body.cwd.length <= 4096 &&
+               (body.name === '' || validFolderName(body.name))) {
+      const r = await folders.renameDir(body.folder, body.cwd, body.name as string);
+      sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
+    } else {
+      sendJsonHttp(res, 400, { error: 'invalid folder edit' });
+    }
+  } catch (error) {
+    sendJsonHttp(res, 400, { error: (error as Error).message });
   }
 }
 
@@ -1239,8 +1262,8 @@ const server = http.createServer((req, res) => {
         await handleAgentStatusRead(req, res);
         return;
       }
-      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/projects') {
-        await handleProjects(req, res);
+      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/folders') {
+        await handleFolders(req, res);
         return;
       }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/quick-commands') {

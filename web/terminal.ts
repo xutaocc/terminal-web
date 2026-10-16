@@ -14,7 +14,7 @@ import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
 import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
-import { groupByProject, projectKeyOf, type ProjectInfo } from './project-groups.js';
+import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js';
 import { ICONS, ProjectSidebar } from './project-sidebar.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 
@@ -476,9 +476,14 @@ sidebarOpenBtn.innerHTML = ICONS.panel;
 // A floated tool group reserves only its own rows, so later tab rows span the bar.
 topbar.append(desktopTools, sidebarOpenBtn, tabsEl);
 
-// Desktop left column: tabs filed under project directories (hidden on phones
-// by CSS). The project list is shared by every device; see /api/projects.
-let projects: ProjectInfo[] = [];
+// Desktop left column: tabs in the folders the user put them in, grouped by
+// directory inside each (hidden on phones by CSS). Folders and who is in them
+// are shared by every device; see /api/folders.
+let folders: FolderInfo[] = [];
+/** session name -> folder id */
+let folderMembers: Record<string, string> = {};
+/** folder id ('' for none) -> cwd -> the name the user gave that directory card there. */
+let dirNames: Record<string, Record<string, string>> = {};
 let homeDir = '';
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
@@ -493,9 +498,11 @@ const sidebar = new ProjectSidebar({
     const s = inDir.find(x => x.name === lastUsedIn.get(x.cwd ?? '')) ?? inDir[0];
     if (s) activateSession(s);
   },
-  newSession: directory => void promptAddSession(activeSession, directory || undefined),
-  addProject: () => void promptAddProject(),
-  removeProject: (path, name) => confirmRemoveProject(path, name),
+  newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
+  newFolder: () => void promptNewFolder(),
+  renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
+  moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
+  renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
   openSettings: () => openSheet(),
   openHelp: () => openHelp(),
   resized: () => {
@@ -2539,6 +2546,14 @@ function confirmCloseSession(s: Session): void {
     strong,
     `${sessionNote}? This kills its tmux session and ends any programs running in it.`,
   );
+  // A folder lives as long as it holds a session; say so before taking its last.
+  const lastOf = folders.find(f => f.id === folderOf(s) && wouldEmpty(f.id, [s.name], folderMembers));
+  if (lastOf) {
+    const warn = document.createElement('div');
+    warn.className = 'confirm-warn';
+    warn.textContent = `这是文件夹「${lastOf.name}」里最后一个会话，关闭后该文件夹也会删除。`;
+    label.append(warn);
+  }
   const row = document.createElement('div');
   row.className = 'paste-row';
   const cancel = document.createElement('button');
@@ -2585,6 +2600,9 @@ function addFallbackTab(): void {
 function closeSession(s: Session): void {
   const idx = sessions.indexOf(s);
   if (idx < 0) return;
+  // The confirm box already said this takes the folder with it.
+  const folder = folderOf(s);
+  if (wouldEmpty(folder, [s.name], folderMembers)) expectedEmptied.add(folder);
   // Guard against a server sync that raced the kill re-adding this tab.
   recentlyClosed.set(s.name, performance.now());
   // Closing a tab kills its tmux session for good (its programs are terminated).
@@ -2605,14 +2623,14 @@ function closeSession(s: Session): void {
 
 /**
  * The tab to show once `gone` (which sat at `idx`) has left the list: its
- * neighbour, preferring one in the same directory, then the same project, so
- * the strip and sidebar do not jump somewhere else under you.
+ * neighbour, preferring one in the same folder and directory, then the same
+ * folder, so the strip and sidebar do not jump somewhere else under you.
  */
 function nextTabAfter(gone: Session, idx: number): Session | null {
-  const key = projectKeyOf(gone.cwd, projects);
+  const folder = folderOf(gone);
   const near = (match: (x: Session) => boolean): Session | undefined =>
     sessions.slice(idx).find(match) ?? sessions.slice(0, idx).reverse().find(match);
-  return near(x => x.cwd === gone.cwd) ?? near(x => projectKeyOf(x.cwd, projects) === key) ??
+  return near(x => folderOf(x) === folder && x.cwd === gone.cwd) ?? near(x => folderOf(x) === folder) ??
     sessions[idx] ?? sessions[idx - 1] ?? null;
 }
 
@@ -2750,13 +2768,18 @@ function domPrompt(opts: {
   });
 }
 
-async function promptAddSession(base: Session | null = activeSession, startDir?: string): Promise<void> {
+async function promptAddSession(
+  base: Session | null = activeSession, startDir?: string, folderId: string = base ? folderOf(base) : '',
+  folderName?: string,
+): Promise<void> {
   const suggestion = newSessionName(
     base?.displayName ?? defaultSessionName, sessions.map(s => s.displayName),
   );
   let directory = '';
+  const folderLabel = folderName ?? folders.find(f => f.id === folderId)?.name;
   const raw = await domPrompt({
-    label: '新建会话名称：',
+    label: folderName ? `文件夹「${folderName}」的第一个会话：` :
+      folderLabel ? `在「${folderLabel}」新建会话：` : '新建会话名称：',
     value: suggestion,
     okText: '创建',
     directory: async signal => {
@@ -2772,83 +2795,142 @@ async function promptAddSession(base: Session | null = activeSession, startDir?:
     },
     onDirectoryChange: value => { directory = value; },
   });
-  if (raw === null) return; // cancelled
+  if (raw === null) return; // cancelled — and so is a folder waiting on this
   const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
   const name = await newSessionId(displayName, sessions.map(s => s.name));
   const session = addSession(name, false, displayName);
   session.cwd = directory || startDir || base?.cwd || null;
   session.intendCreate(base?.name, directory);
+  // Filed before it is shown, so it lands in its folder rather than flickering
+  // through "未分组" until the server answers.
+  if (folderName) {
+    folderMembers = { ...folderMembers, [name]: '' };
+    void editFolders({ action: 'create', name: folderName, session: name });
+  } else if (folderId) {
+    folderMembers = { ...folderMembers, [name]: folderId };
+    void editFolders({ action: 'move', sessions: [name], folder: folderId });
+  }
   activateSession(session);
 }
 
 // ---------------------------------------------------------------------------
-// Projects: the sidebar files every tab under the project directory it is
-// working in, one card per exact directory. Like an Orca worktree, a card owns
-// its tabs: the strip shows only those sharing the active tab's directory — as
-// long as the sidebar is there to reach the others. On phones, or with it
-// hidden, every tab stays in the strip.
+// Folders: the user puts tabs in named folders; inside one, tabs are grouped by
+// directory. A folder never collects anything by itself, and it lives exactly
+// as long as it holds a tab — there is no delete. The strip shows the tabs in
+// the active tab's folder and directory, as long as the sidebar is there to
+// reach the others. On phones, or with it hidden, every tab stays in the strip.
 // ---------------------------------------------------------------------------
+function folderOf(s: Session): string {
+  return folderMembers[s.name] ?? '';
+}
+
 function refreshSidebar(): void {
-  const groups = groupByProject(sessions, s => s.cwd, projects);
-  sidebar.render(groups, activeTab?.name ?? null, homeDir);
+  const groups = groupByFolder(sessions, s => s.name, folders, folderMembers);
+  sidebar.render(groups, activeTab?.name ?? null, homeDir, dirNames);
   const filtering = !mobileMQ.matches && !sidebar.isHidden;
+  const activeFolder = activeTab ? folderOf(activeTab) : '';
   const activeDir = activeTab?.cwd ?? '';
   for (const s of sessions) {
-    if (s.tabEl) s.tabEl.hidden = filtering && (s.cwd ?? '') !== activeDir;
+    if (s.tabEl) s.tabEl.hidden = filtering && (folderOf(s) !== activeFolder || (s.cwd ?? '') !== activeDir);
   }
 }
 
-function setProjects(data: { projects?: unknown; home?: unknown }): void {
-  if (Array.isArray(data.projects)) {
-    projects = data.projects.filter((p): p is ProjectInfo =>
-      !!p && typeof p.path === 'string' && typeof p.name === 'string');
-  }
+interface FolderReply {
+  folders?: unknown; members?: unknown; dirNames?: unknown; emptied?: unknown; home?: unknown; error?: unknown;
+}
+
+/**
+ * Take the server's folders. Folders that were here and are gone now went
+ * because their last tab did — closed elsewhere, or its program exited — and
+ * nobody was asked; say so, unless this device just removed them itself.
+ */
+let expectedEmptied = new Set<string>();
+function setFolders(data: FolderReply): void {
+  if (!Array.isArray(data.folders) || !data.members || typeof data.members !== 'object') return;
+  const next = data.folders.filter((f): f is FolderInfo =>
+    !!f && typeof f.id === 'string' && typeof f.name === 'string');
+  const kept = new Set(next.map(f => f.id));
+  const gone = folders.filter(f => !kept.has(f.id) && !expectedEmptied.has(f.id));
+  expectedEmptied = new Set([...expectedEmptied].filter(id => kept.has(id)));
+  folders = next;
+  folderMembers = Object.fromEntries(Object.entries(data.members as Record<string, unknown>)
+    .filter((e): e is [string, string] => typeof e[1] === 'string'));
+  if (data.dirNames && typeof data.dirNames === 'object') dirNames = data.dirNames as typeof dirNames;
   if (typeof data.home === 'string') homeDir = data.home;
+  if (gone.length) flashStatus(`文件夹「${gone.map(f => f.name).join('」「')}」已无会话，已删除`, 3500);
 }
 
-async function loadProjects(): Promise<void> {
+async function loadFolders(): Promise<void> {
   try {
-    const res = await fetch('/api/projects', { cache: 'no-store' });
-    if (res.ok) setProjects(await res.json());
+    const res = await fetch('/api/folders', { cache: 'no-store' });
+    if (res.ok) setFolders(await res.json());
   } catch {
-    /* keep the list we have */
+    /* keep the folders we have */
   }
 }
 
-async function editProjects(body: { action: 'add' | 'remove'; path: string }): Promise<string | null> {
+type FolderEdit =
+  | { action: 'create'; name: string; session: string }
+  | { action: 'rename'; id: string; name: string }
+  | { action: 'move'; sessions: string[]; folder: string; card?: { cwd: string; name: string } }
+  | { action: 'renameDir'; folder: string; cwd: string; name: string };
+
+async function editFolders(edit: FolderEdit): Promise<boolean> {
   try {
-    const res = await fetch('/api/projects', {
+    const res = await fetch('/api/folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(edit),
     });
-    const data = await res.json() as { projects?: unknown; error?: unknown };
-    if (!res.ok) return typeof data.error === 'string' ? data.error : '保存失败';
-    setProjects(data);
-    refreshMobileUI();
-    return null;
+    const data = await res.json() as FolderReply;
+    if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : 'failed');
+    setFolders(data);
+    return true;
   } catch {
-    return '无法连接服务器';
+    flashStatus('文件夹保存失败，请重试', 2500);
+    await loadFolders(); // put back what the server really has
+    return false;
+  } finally {
+    refreshMobileUI();
   }
 }
 
-async function promptAddProject(): Promise<void> {
-  const raw = await domPrompt({
-    label: '项目目录（绝对路径或 ~/ 开头）：',
-    value: activeTab?.cwd ?? '',
-    okText: '添加',
-  });
-  const path = raw?.trim();
-  if (!path) return;
-  const error = await editProjects({ action: 'add', path });
-  if (error) flashStatus(`添加项目失败：${error}`, 2500);
+/** A folder is made together with its first session; cancelling makes neither. */
+async function promptNewFolder(): Promise<void> {
+  const raw = await domPrompt({ label: '新建文件夹名称：', value: '', okText: '下一步' });
+  const name = raw?.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64);
+  if (!name) return;
+  await promptAddSession(activeSession, undefined, '', name);
 }
 
-function confirmRemoveProject(path: string, name: string): void {
-  if (!window.confirm(`从侧栏移除项目「${name}」？\n${path}\n\n只是取消分组，会话不会被关闭。`)) return;
-  void editProjects({ action: 'remove', path }).then(error => {
-    if (error) flashStatus(`移除项目失败：${error}`, 2500);
-  });
+/**
+ * Move tabs into a folder ('' for none), asking first if that empties the
+ * folder they leave. A whole card carries its name along, unless the target
+ * folder already has a card for that directory: the two merge under the
+ * target's name.
+ */
+function moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): void {
+  const from = folderMembers[names[0]] ?? '';
+  // Merging into a card the target already has for this directory: its name wins.
+  const moving = new Set(names);
+  const cwd = card?.cwd;
+  if (cwd && sessions.some(s => !moving.has(s.name) && folderOf(s) === folderId && s.cwd === cwd)) card = undefined;
+  const leaving = folders.find(f => f.id === from && wouldEmpty(f.id, names, folderMembers));
+  if (leaving) {
+    const target = folders.find(f => f.id === folderId)?.name ?? '未分组';
+    if (!window.confirm(`这是文件夹「${leaving.name}」里最后的会话，移到「${target}」后该文件夹会删除。继续吗？`)) return;
+    expectedEmptied.add(leaving.id);
+  }
+  folderMembers = { ...folderMembers };
+  for (const n of names) {
+    if (folderId) folderMembers[n] = folderId;
+    else delete folderMembers[n];
+  }
+  if (card && !dirNames[folderId]?.[card.cwd]) {
+    dirNames = { ...dirNames, [folderId]: { ...(dirNames[folderId] ?? {}), [card.cwd]: card.name } };
+  }
+  refreshMobileUI();
+  void editFolders({ action: 'move', sessions: names, folder: folderId, card });
 }
 
 // Update only the tab's display label; the tmux session name (s.name) is left
@@ -3140,7 +3222,7 @@ async function syncFromServer(): Promise<void> {
   if (syncing) return;
   syncing = true;
   try {
-    const [serverTabs] = await Promise.all([fetchServerTabs(), loadProjects()]);
+    const [serverTabs] = await Promise.all([fetchServerTabs(), loadFolders()]);
     if (!serverTabs) return; // unreachable — keep what we have
     const byName = new Map(serverTabs.map((t) => [t.name, t]));
 
@@ -3199,7 +3281,7 @@ async function syncFromServer(): Promise<void> {
     }
 
     if (sessions.length === 0) addFallbackTab();
-    refreshMobileUI(); // directories may have moved tabs between projects
+    refreshMobileUI(); // directories or folders may have changed
     saveTabs();
   } finally {
     syncing = false;
@@ -4279,7 +4361,7 @@ function refreshMobileUI(): void {
   const s = activeTab;
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
-    (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'terminal-web');
+    (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'orca-ui');
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();
@@ -4623,7 +4705,7 @@ async function init(): Promise<void> {
   // Both server round-trips start together; the prefs one is awaited further
   // down, just before the tabs are built.
   const prefsPromise = fetchServerPrefs();
-  const projectsPromise = loadProjects();
+  const foldersPromise = loadFolders();
   // The server's list is authoritative; fall back to the local cache, then to
   // a single default session when both are empty.
   let server = await fetchServerTabs();
@@ -4687,7 +4769,7 @@ async function init(): Promise<void> {
   // still opens no second session.
   const cachedViews = new Map(cached.tabs.map((t) => [t.name, t.view]));
   const cachedCwds = new Map(cached.tabs.map((t) => [t.name, t.cwd]));
-  await projectsPromise;
+  await foldersPromise;
   for (const t of initialTabs) {
     const s = addSession(t.name, false, t.displayName);
     s.cwd = t.cwd ?? cachedCwds.get(t.name) ?? null;

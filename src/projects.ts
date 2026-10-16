@@ -1,47 +1,183 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
-/** A directory the sidebar groups sessions under; shared by every device. */
-export interface Project { path: string; name: string }
+/**
+ * A sidebar folder: a named group the user puts sessions in. It has no path —
+ * what is in it is whatever the user put there, never what happens to sit in
+ * some directory — and it lives exactly as long as it holds a session.
+ */
+export interface Folder { id: string; name: string }
 
-const MAX_PROJECTS = 100;
+export interface FolderData {
+  folders: Folder[];
+  /** session name -> folder id */
+  members: Record<string, string>;
+  /**
+   * Names the user gave directory cards: folder id ('' for no folder) -> cwd ->
+   * name. Keyed by folder, so the same directory can be called something else
+   * in each, and a card dragged into a folder that already has that directory
+   * takes the name it has there.
+   */
+  dirNames: Record<string, Record<string, string>>;
+}
 
-export function validProjectName(value: unknown): value is string {
+const MAX_FOLDERS = 100;
+const MAX_DIR_NAMES = 500;
+
+export function validFolderName(value: unknown): value is string {
   return typeof value === 'string' && !!value.trim() && value.length <= 64 && !/[\x00-\x1f\x7f]/.test(value);
 }
 
-function validProjects(value: unknown): value is Project[] {
-  return Array.isArray(value) && value.length <= MAX_PROJECTS && value.every(item =>
-    item && typeof item.path === 'string' && path.isAbsolute(item.path) && validProjectName(item.name));
+const validSession = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(name);
+
+function valid(data: unknown): data is FolderData {
+  const d = data as FolderData;
+  return !!d && Array.isArray(d.folders) && d.folders.length <= MAX_FOLDERS &&
+    d.folders.every(f => f && typeof f.id === 'string' && validFolderName(f.name)) &&
+    !!d.members && typeof d.members === 'object' &&
+    Object.entries(d.members).every(([s, f]) => validSession(s) && typeof f === 'string') &&
+    !!d.dirNames && typeof d.dirNames === 'object' &&
+    Object.values(d.dirNames).every(names => !!names && typeof names === 'object' &&
+      Object.entries(names).every(([cwd, name]) => cwd.startsWith('/') && validFolderName(name))) &&
+    Object.values(d.dirNames).reduce((n, names) => n + Object.keys(names).length, 0) <= MAX_DIR_NAMES;
 }
 
-/** Projects are edited one operation at a time, so two devices never overwrite each other's list. */
-export class ProjectStore {
-  private queue: Promise<unknown> = Promise.resolve();
-  constructor(private readonly file: string) {}
-  private async read(): Promise<Project[]> {
-    try {
-      const data = JSON.parse(await fs.readFile(this.file, 'utf8'));
-      if (!validProjects(data.projects)) throw new Error('Invalid saved projects');
-      return data.projects;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
+/** Drop memberships of unknown folders, then folders nobody is in, then their card names. */
+function settle(data: FolderData): FolderData {
+  const ids = new Set(data.folders.map(f => f.id));
+  const members = Object.fromEntries(Object.entries(data.members).filter(([, f]) => ids.has(f)));
+  const used = new Set(Object.values(members));
+  const folders = data.folders.filter(f => used.has(f.id));
+  const kept = new Set(['', ...folders.map(f => f.id)]);
+  const dirNames = Object.fromEntries(Object.entries(data.dirNames ?? {})
+    .filter(([id, names]) => kept.has(id) && Object.keys(names).length));
+  return { folders, members, dirNames };
+}
+
+/**
+ * Before the folders, the sidebar had path-based projects in a list of
+ * { path, name }. Each becomes a folder holding the sessions working in it
+ * now, so nothing the user set up disappears.
+ */
+function migrate(raw: unknown, cwds: Map<string, string>): FolderData {
+  const data: FolderData = { folders: [], members: {}, dirNames: {} };
+  // Folders saved before cards could be named.
+  const saved = raw as Partial<FolderData>;
+  if (Array.isArray(saved?.folders) && saved.members && !saved.dirNames) return settle({ ...saved, dirNames: {} } as FolderData);
+  const projects = (raw as { projects?: unknown })?.projects;
+  if (!Array.isArray(projects)) return data;
+  const inside = (dir: string, root: string): boolean => dir === root || dir.startsWith(root.endsWith('/') ? root : `${root}/`);
+  for (const p of projects) {
+    if (!p || typeof p.path !== 'string' || !validFolderName(p.name)) continue;
+    const folder = { id: randomUUID(), name: p.name };
+    data.folders.push(folder);
+    for (const [session, cwd] of cwds) {
+      if (!data.members[session] && inside(cwd, p.path)) data.members[session] = folder.id;
     }
   }
-  async list(): Promise<Project[]> { await this.queue; return this.read(); }
-  /** Apply one edit to the saved list and return the result. */
-  update(edit: (projects: Project[]) => Project[]): Promise<Project[]> {
+  return settle(data);
+}
+
+/** Folder edits are applied one at a time, so two devices never overwrite each other. */
+export class FolderStore {
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(private readonly file: string, private readonly sessionCwds: () => Promise<Map<string, string> | null>) {}
+
+  private async read(): Promise<FolderData> {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await fs.readFile(this.file, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { folders: [], members: {}, dirNames: {} };
+      throw error;
+    }
+    if (valid(raw)) return raw;
+    // Written straight back: folder ids are random, and a migration redone on
+    // every read would hand out new ones each time.
+    const data = migrate(raw, (await this.sessionCwds()) ?? new Map());
+    await this.write(data);
+    return data;
+  }
+
+  private async write(data: FolderData): Promise<void> {
+    await fs.mkdir(path.dirname(this.file), { recursive: true });
+    const temp = `${this.file}.${process.pid}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(data, null, 2), { mode: 0o600 });
+    await fs.rename(temp, this.file);
+  }
+
+  async get(): Promise<FolderData> {
+    await this.queue;
+    return this.read();
+  }
+
+  /** Apply one edit; empty folders go with it. Returns what was removed along the way. */
+  update(edit: (data: FolderData) => FolderData): Promise<{ data: FolderData; emptied: Folder[] }> {
     const task = this.queue.then(async () => {
-      const projects = edit(await this.read());
-      if (!validProjects(projects)) throw new Error('Invalid projects');
-      await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const temp = `${this.file}.${process.pid}.tmp`;
-      await fs.writeFile(temp, JSON.stringify({ projects }, null, 2), { mode: 0o600 });
-      await fs.rename(temp, this.file);
-      return projects;
+      const before = await this.read();
+      const data = settle(edit(structuredClone(before)));
+      if (!valid(data)) throw new Error('Invalid folders');
+      const kept = new Set(data.folders.map(f => f.id));
+      const emptied = before.folders.filter(f => !kept.has(f.id));
+      await this.write(data);
+      return { data, emptied };
     });
     this.queue = task.catch(() => {});
     return task;
   }
+
+  /** Sessions that no longer exist leave their folders; folders left empty go too. */
+  prune(live: Set<string>): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => ({
+      ...data,
+      members: Object.fromEntries(Object.entries(data.members).filter(([s]) => live.has(s))),
+    }));
+  }
+
+  create(name: string, session: string): Promise<{ data: FolderData; emptied: Folder[]; folder: Folder }> {
+    const folder = { id: randomUUID(), name: name.trim() };
+    return this.update(data => {
+      if (data.folders.length >= MAX_FOLDERS) throw new Error('too many folders');
+      return { ...data, folders: [...data.folders, folder], members: { ...data.members, [session]: folder.id } };
+    }).then(result => ({ ...result, folder }));
+  }
+
+  rename(id: string, name: string): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => ({
+      ...data, folders: data.folders.map(f => f.id === id ? { ...f, name: name.trim() } : f),
+    }));
+  }
+
+  /**
+   * Put sessions in a folder, or take them out of any ('' as the folder). A
+   * whole card moved along with its name (`card`) keeps that name — unless the
+   * folder already has a card for the same directory: the two merge, and the
+   * name it has there wins.
+   */
+  move(sessions: string[], id: string, card?: { cwd: string; name: string }): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => {
+      if (id && !data.folders.some(f => f.id === id)) throw new Error('unknown folder');
+      const members = { ...data.members };
+      for (const s of sessions) {
+        if (id) members[s] = id;
+        else delete members[s];
+      }
+      const dirNames = { ...data.dirNames, [id]: { ...(data.dirNames[id] ?? {}) } };
+      if (card && !dirNames[id][card.cwd]) dirNames[id][card.cwd] = card.name.trim();
+      return { ...data, members, dirNames };
+    });
+  }
+
+  /** Name a directory card within one folder ('' for no folder); an empty name restores the default. */
+  renameDir(id: string, cwd: string, name: string): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => {
+      const names = { ...(data.dirNames[id] ?? {}) };
+      if (name.trim()) names[cwd] = name.trim();
+      else delete names[cwd];
+      return { ...data, dirNames: { ...data.dirNames, [id]: names } };
+    });
+  }
 }
+
+export { validSession };

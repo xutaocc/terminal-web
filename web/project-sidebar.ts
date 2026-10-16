@@ -1,4 +1,4 @@
-import { groupByDirectory, type ProjectGroup, shortCwd } from './project-groups.js';
+import { type FolderGroup, groupByDirectory, shortCwd } from './project-groups.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null }
@@ -7,10 +7,18 @@ export interface SidebarHooks {
   activate(name: string): void;
   /** A directory card was clicked: show one of these sessions (they share its directory). */
   activateDirectory(names: string[]): void;
-  /** New session in this directory; '' means wherever the active one is. */
-  newSession(directory: string): void;
-  addProject(): void;
-  removeProject(path: string, name: string): void;
+  /** New session in a folder ('' for none), starting in `directory` ('' for the active one's). */
+  newSession(folderId: string, directory: string): void;
+  /** New folder; it starts with a new session, so it is never empty. */
+  newFolder(): void;
+  renameFolder(id: string, name: string): void;
+  /**
+   * Move sessions into a folder ('' takes them out of any). `card` is set when
+   * a whole directory card moves, so its name can go with it.
+   */
+  moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): void;
+  /** Name a directory card within its folder; '' restores the directory's own name. */
+  renameDir(folderId: string, cwd: string, name: string): void;
   openSettings(): void;
   openHelp(): void;
   /** The sidebar's width changed (shown, hidden or dragged). */
@@ -31,6 +39,7 @@ export const ICONS = {
   plus: svg('<path d="M5 12h14M12 5v14"/>'),
   close: svg('<path d="M18 6 6 18M6 6l12 12"/>', 12),
   chevron: svg('<path d="m6 9 6 6 6-6"/>', 12),
+  pencil: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 12),
   terminal: svg('<path d="m4 17 6-6-6-6M12 19h8"/>', 13),
   gear: svg('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>'),
   help: svg('<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/>'),
@@ -81,7 +90,10 @@ export class ProjectSidebar {
   private hidden = readJson<unknown>('tw.sidebar.hidden', false) === true;
   private readonly folded = new Set<string>(readJson<string[]>('tw.sidebar.folded', []));
   private signature = '';
-  private lastRender: { groups: ProjectGroup<SidebarSession>[]; active: string | null; home: string } | null = null;
+  private lastRender: { groups: FolderGroup<SidebarSession>[]; active: string | null; home: string } | null = null;
+  /** Sessions being dragged, with the folder they came from (and the card, if a whole one). */
+  private dragging: { names: string[]; from: string; card?: { cwd: string; name: string } } | null = null;
+  private menu: HTMLElement | null = null;
 
   constructor(private readonly hooks: SidebarHooks) {
     this.el.id = 'sidebar';
@@ -90,18 +102,18 @@ export class ProjectSidebar {
     top.className = 'ps-top';
     const brand = document.createElement('span');
     brand.className = 'ps-brand';
-    brand.textContent = 'terminal-web';
+    brand.textContent = 'orca-ui';
     top.append(brand, iconButton(ICONS.panel, '收起侧栏', () => this.setHidden(true)));
 
     const header = document.createElement('div');
     header.className = 'ps-header';
     const title = document.createElement('span');
     title.className = 'ps-title';
-    title.textContent = '项目';
+    title.textContent = '会话';
     header.append(
       title,
-      iconButton(ICONS.folderPlus, '添加项目', () => hooks.addProject()),
-      iconButton(ICONS.plus, '在当前项目新建会话', () => hooks.newSession('')),
+      iconButton(ICONS.folderPlus, '新建文件夹', () => hooks.newFolder()),
+      iconButton(ICONS.plus, '新建会话', () => hooks.newSession(this.activeFolder(), '')),
     );
 
     this.list.className = 'ps-list';
@@ -127,6 +139,18 @@ export class ProjectSidebar {
 
     this.el.append(top, header, this.list, footer, handle);
     this.applyWidth();
+    document.addEventListener('pointerdown', e => {
+      if (this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') this.closeMenu();
+    });
+  }
+
+  /** The folder holding the active session ('' for none). */
+  private activeFolder(): string {
+    const last = this.lastRender;
+    return last?.groups.find(g => g.items.some(s => s.name === last.active))?.key ?? '';
   }
 
   get isHidden(): boolean { return this.hidden; }
@@ -140,9 +164,14 @@ export class ProjectSidebar {
   }
 
   /** Redraw, unless nothing the cards show has changed since last time. */
-  render(groups: ProjectGroup<SidebarSession>[], active: string | null, home: string): void {
-    const signature = JSON.stringify([active, home, [...this.folded], groups.map(g => [
-      g.key, g.project?.name, g.items.map(s => [s.name, s.displayName, s.cwd]),
+  /** folder id -> cwd -> the name the user gave that card. */
+  private dirNames: Record<string, Record<string, string>> = {};
+
+  render(groups: FolderGroup<SidebarSession>[], active: string | null, home: string,
+         dirNames: Record<string, Record<string, string>> = this.dirNames): void {
+    this.dirNames = dirNames;
+    const signature = JSON.stringify([active, home, [...this.folded], dirNames, groups.map(g => [
+      g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd]),
     ])]);
     this.lastRender = { groups, active, home };
     if (signature === this.signature) return;
@@ -150,14 +179,19 @@ export class ProjectSidebar {
 
     const scrollTop = this.list.scrollTop;
     this.list.replaceChildren();
-    if (!groups.length) {
-      const empty = document.createElement('div');
-      empty.className = 'ps-empty';
-      empty.textContent = '还没有项目。点击上方 ';
-      empty.append(iconButton(ICONS.folderPlus, '添加项目', () => this.hooks.addProject()), ' 添加项目目录，会话会按工作目录自动归组。');
-      this.list.append(empty);
+    // With no folders there is nothing to tell the loose sessions apart from:
+    // they are listed as they are, with no "未分组" heading over them.
+    const flat = groups.length === 1 && !groups[0].folder;
+    for (const group of groups) {
+      this.list.append(flat ? this.buildCards(group, active, home, document.createElement('section')) : this.buildGroup(group, active, home));
     }
-    for (const group of groups) this.list.append(this.buildGroup(group, active, home));
+    if (flat) {
+      const hint = document.createElement('div');
+      hint.className = 'ps-empty';
+      hint.textContent = '点上方 ';
+      hint.append(iconButton(ICONS.folderPlus, '新建文件夹', () => this.hooks.newFolder()), ' 新建文件夹整理会话；会话可以拖进文件夹。');
+      this.list.append(hint);
+    }
     this.list.scrollTop = scrollTop;
   }
 
@@ -193,55 +227,62 @@ export class ProjectSidebar {
     writeJson('tw.sidebar.folded', [...this.folded]);
   }
 
-  private buildGroup(group: ProjectGroup<SidebarSession>, active: string | null, home: string): HTMLElement {
+  private buildGroup(group: FolderGroup<SidebarSession>, active: string | null, home: string): HTMLElement {
     const el = document.createElement('section');
     el.className = 'ps-group';
+    el.classList.toggle('loose', !group.folder);
     el.dataset.key = group.key;
     const folded = this.folded.has(group.key);
     el.classList.toggle('folded', folded);
 
     const head = document.createElement('div');
     head.className = 'ps-group-head';
-    head.title = group.project?.path ?? '不在任何项目目录下的会话';
+    head.title = group.folder ? '' : '不在任何文件夹里的会话';
     const chevron = document.createElement('span');
     chevron.className = 'ps-chevron';
     chevron.innerHTML = ICONS.chevron;
-    const icon = document.createElement('span');
-    icon.className = 'ps-group-icon';
-    icon.innerHTML = ICONS.folder;
     const name = document.createElement('span');
     name.className = 'ps-group-name';
-    name.textContent = group.project?.name ?? '其他';
+    name.textContent = group.folder?.name ?? '未分组';
     const count = document.createElement('span');
     count.className = 'ps-group-count';
     count.textContent = String(group.items.length);
     const actions = document.createElement('span');
     actions.className = 'ps-group-actions';
-    if (group.project) {
-      const project = group.project;
+    if (group.folder) {
+      const folder = group.folder;
+      const icon = document.createElement('span');
+      icon.className = 'ps-group-icon';
+      icon.innerHTML = ICONS.folder;
+      head.append(chevron, icon, name, count, actions);
+      // No delete: a folder goes when its last session does.
       actions.append(
-        iconButton(ICONS.plus, `在 ${project.name} 新建会话`, () => this.hooks.newSession(project.path)),
-        iconButton(ICONS.close, '移除项目（不影响会话）', () => this.hooks.removeProject(project.path, project.name)),
+        iconButton(ICONS.pencil, '重命名文件夹', () => this.startRename(name, folder)),
+        iconButton(ICONS.plus, `在「${folder.name}」新建会话`, () => this.hooks.newSession(folder.id, '')),
       );
+      name.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        this.startRename(name, folder);
+      });
+    } else {
+      head.append(chevron, name, count, actions);
     }
-    head.append(chevron, icon, name, count, actions);
     head.addEventListener('click', () => {
+      if (head.querySelector('.ps-rename')) return;
       if (this.folded.has(group.key)) this.folded.delete(group.key);
       else this.folded.add(group.key);
       this.saveFolded();
       this.rerender();
     });
+    this.bindDrop(head, group.key);
     el.append(head);
     if (folded) return el;
+    return this.buildCards(group, active, home, el);
+  }
 
-    if (!group.items.length) {
-      const hint = document.createElement('div');
-      hint.className = 'ps-group-empty';
-      hint.textContent = '暂无会话';
-      el.append(hint);
-    }
-    // Second level, as in Orca: one card per working directory, its sessions
-    // as chips inside it.
+  /** The folder's directory cards, each holding its sessions as chips. */
+  private buildCards(group: FolderGroup<SidebarSession>, active: string | null, home: string, el: HTMLElement): HTMLElement {
+    this.bindDrop(el, group.key);
     for (const dir of groupByDirectory(group.items, item => item.cwd)) {
       const names = dir.items.map(item => item.name);
       const card = document.createElement('div');
@@ -258,17 +299,31 @@ export class ProjectSidebar {
       glyph.innerHTML = ICONS.terminal;
       const label = document.createElement('span');
       label.className = 'ps-card-name';
-      label.textContent = dir.cwd ? dir.cwd.split('/').filter(Boolean).pop() ?? '/' : '目录未知';
+      const ownName = dir.cwd ? dir.cwd.split('/').filter(Boolean).pop() ?? '/' : '目录未知';
+      const given = dir.cwd ? this.dirNames[group.key]?.[dir.cwd] : undefined;
+      label.textContent = given ?? ownName;
       row.append(dot, glyph, label);
       if (dir.cwd) {
         const cwd = dir.cwd;
-        const add = iconButton(ICONS.plus, '在此目录新建会话', () => this.hooks.newSession(cwd));
+        const edit = iconButton(ICONS.pencil, '重命名（只改显示名，不改目录）', () =>
+          this.startRename(label, { id: '', name: label.textContent ?? '' }, value =>
+            this.hooks.renameDir(group.key, cwd, value === ownName ? '' : value)));
+        edit.classList.add('ps-card-add');
+        row.append(edit);
+        label.addEventListener('dblclick', e => {
+          e.stopPropagation();
+          edit.click();
+        });
+      }
+      if (dir.cwd) {
+        const cwd = dir.cwd;
+        const add = iconButton(ICONS.plus, '在此目录新建会话', () => this.hooks.newSession(group.key, cwd));
         add.classList.add('ps-card-add');
         row.append(add);
       }
       const sub = document.createElement('div');
       sub.className = 'ps-card-sub';
-      sub.textContent = shortCwd(dir.cwd, '', home);
+      sub.textContent = shortCwd(dir.cwd, home);
       const chips = document.createElement('div');
       chips.className = 'ps-chips';
       for (const session of dir.items) {
@@ -276,7 +331,7 @@ export class ProjectSidebar {
         chip.type = 'button';
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
-        chip.title = session.displayName;
+        chip.title = `${session.displayName}（可拖到文件夹）`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
         chipDot.dataset.sessions = session.name;
@@ -288,15 +343,138 @@ export class ProjectSidebar {
           e.stopPropagation();
           this.hooks.activate(session.name);
         });
+        this.bindDrag(chip, [session.name], group.key);
+        chip.addEventListener('contextmenu', e => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openMenu(e, [session.name], group.key, session.displayName);
+        });
         chips.append(chip);
       }
       card.append(row);
       if (sub.textContent) card.append(sub);
       card.append(chips);
-      card.addEventListener('click', () => this.hooks.activateDirectory(names));
+      card.addEventListener('click', () => {
+        if (!card.querySelector('.ps-rename')) this.hooks.activateDirectory(names);
+      });
+      // Only a name the user gave travels; a directory's own name is its own anywhere.
+      const carry = dir.cwd && given ? { cwd: dir.cwd, name: given } : undefined;
+      this.bindDrag(card, names, group.key, carry);
+      card.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        this.openMenu(e, names, group.key, `${label.textContent}（${names.length} 个会话）`, carry);
+      });
       el.append(card);
     }
     return el;
+  }
+
+  // -------------------------------------------------------------------------
+  // Moving sessions: drag a chip or a whole card onto a folder, or right-click.
+  // -------------------------------------------------------------------------
+  private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }): void {
+    el.draggable = true;
+    el.addEventListener('dragstart', e => {
+      e.stopPropagation();
+      this.dragging = { names, from, card };
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('application/x-terminal-sessions', names.join(' '));
+      }
+      this.el.classList.add('ps-dragging');
+    });
+    el.addEventListener('dragend', () => {
+      this.dragging = null;
+      this.el.classList.remove('ps-dragging');
+      for (const t of this.list.querySelectorAll('.ps-drop')) t.classList.remove('ps-drop');
+    });
+  }
+
+  private bindDrop(el: HTMLElement, folderId: string): void {
+    el.addEventListener('dragover', e => {
+      if (!this.dragging || this.dragging.from === folderId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      el.closest('.ps-group, section')?.classList.add('ps-drop');
+    });
+    el.addEventListener('dragleave', e => {
+      if (!el.contains(e.relatedTarget as Node)) el.closest('.ps-group, section')?.classList.remove('ps-drop');
+    });
+    el.addEventListener('drop', e => {
+      const drag = this.dragging;
+      if (!drag || drag.from === folderId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.closest('.ps-group, section')?.classList.remove('ps-drop');
+      this.hooks.moveSessions(drag.names, folderId, drag.card);
+    });
+  }
+
+  private openMenu(e: MouseEvent, names: string[], from: string, label: string, card?: { cwd: string; name: string }): void {
+    this.closeMenu();
+    const folders = (this.lastRender?.groups ?? []).flatMap(g => g.folder ? [g.folder] : []);
+    const menu = document.createElement('div');
+    menu.className = 'ps-menu';
+    const title = document.createElement('div');
+    title.className = 'ps-menu-title';
+    title.textContent = `移动：${label}`;
+    menu.append(title);
+    const item = (text: string, onPick: () => void, disabled = false): void => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ps-menu-item';
+      b.textContent = text;
+      b.disabled = disabled;
+      b.addEventListener('click', () => {
+        this.closeMenu();
+        onPick();
+      });
+      menu.append(b);
+    };
+    for (const f of folders) item(`移到「${f.name}」`, () => this.hooks.moveSessions(names, f.id, card), f.id === from);
+    if (from) item('移出文件夹', () => this.hooks.moveSessions(names, '', card));
+    if (!folders.length) item('还没有文件夹，先点上方按钮新建', () => {}, true);
+    document.body.append(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(e.clientX, innerWidth - rect.width - 8)}px`;
+    menu.style.top = `${Math.min(e.clientY, innerHeight - rect.height - 8)}px`;
+    this.menu = menu;
+  }
+
+  private closeMenu(): void {
+    this.menu?.remove();
+    this.menu = null;
+  }
+
+  /** Edit a name in place; Enter or blur saves, Escape cancels. */
+  private startRename(nameEl: HTMLElement, folder: { id: string; name: string },
+                      save: (name: string) => void = name => this.hooks.renameFolder(folder.id, name)): void {
+    const input = document.createElement('input');
+    input.className = 'ps-rename';
+    input.value = folder.name;
+    input.maxLength = 64;
+    let done = false;
+    const finish = (keep: boolean): void => {
+      if (done) return;
+      done = true;
+      const value = input.value.replace(/[\x00-\x1f\x7f]/g, '').trim();
+      input.replaceWith(nameEl);
+      if (keep && value && value !== folder.name) {
+        nameEl.textContent = value;
+        save(value);
+      }
+    };
+    input.addEventListener('click', e => e.stopPropagation());
+    input.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
   }
 
   private applyWidth(): void {

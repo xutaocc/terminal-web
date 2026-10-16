@@ -1,45 +1,49 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupByDirectory, groupByProject, projectKeyOf, shortCwd } from '../web/project-groups.js';
+import { groupByDirectory, groupByFolder, shortCwd, wouldEmpty } from '../web/project-groups.js';
 
-const projects = [
-  { path: '/work/app', name: 'app' },
-  { path: '/work/app/packages/ui', name: 'ui' },
-  { path: '/srv', name: 'srv' },
-];
+const folders = [{ id: 'f1', name: 'Alpha' }, { id: 'f2', name: 'Beta' }];
 
-test('a directory belongs to the deepest project containing it', () => {
-  assert.equal(projectKeyOf('/work/app', projects), '/work/app');
-  assert.equal(projectKeyOf('/work/app/src', projects), '/work/app');
-  assert.equal(projectKeyOf('/work/app/packages/ui/src', projects), '/work/app/packages/ui');
-  assert.equal(projectKeyOf('/work/application', projects), '');
-  assert.equal(projectKeyOf(null, projects), '');
-  assert.equal(projectKeyOf('/anything', [{ path: '/', name: 'root' }]), '/');
-});
-
-test('groups keep project order, include empty projects and end with the unclaimed', () => {
+test('sessions go where the user put them, not where they are working', () => {
   const sessions = [
-    { name: 'a', cwd: '/srv/x' },
-    { name: 'b', cwd: '/tmp' },
-    { name: 'c', cwd: '/work/app' },
-    { name: 'd', cwd: '/srv' },
+    { name: 'a', cwd: '/work/x' },
+    { name: 'b', cwd: '/work/x' },
+    { name: 'c', cwd: '/tmp' },
+    { name: 'd', cwd: '/work/x' },
   ];
-  const groups = groupByProject(sessions, s => s.cwd, projects);
+  const members = { a: 'f2', b: 'f1', d: 'f2' };
+  const groups = groupByFolder(sessions, s => s.name, folders, members);
   assert.deepEqual(groups.map(g => [g.key, g.items.map(s => s.name)]), [
-    ['/work/app', ['c']],
-    ['/work/app/packages/ui', []],
-    ['/srv', ['a', 'd']],
-    ['', ['b']],
+    ['f1', ['b']],
+    ['f2', ['a', 'd']],
+    ['', ['c']],
   ]);
-  assert.equal(groupByProject([{ cwd: '/srv' }], s => s.cwd, projects).at(-1)?.key, '/srv');
 });
 
-test('card subtitles are relative to the project, else to home', () => {
-  assert.equal(shortCwd('/work/app', '/work/app', '/home/me'), 'app');
-  assert.equal(shortCwd('/work/app/src/lib', '/work/app', '/home/me'), './src/lib');
-  assert.equal(shortCwd('/home/me/notes', '', '/home/me'), '~/notes');
-  assert.equal(shortCwd('/tmp', '', '/home/me'), '/tmp');
-  assert.equal(shortCwd(null, '', '/home/me'), '');
+test('the same directory can sit in two folders', () => {
+  const sessions = [{ name: 'a', cwd: '/p' }, { name: 'b', cwd: '/p' }];
+  const groups = groupByFolder(sessions, s => s.name, folders, { a: 'f1', b: 'f2' });
+  assert.deepEqual(groups.map(g => g.items.map(s => s.cwd)), [['/p'], ['/p']]);
+});
+
+test('no loose group when every session has a folder; unknown folders count as none', () => {
+  assert.equal(groupByFolder([{ name: 'a' }], s => s.name, folders, { a: 'f1' }).at(-1)?.key, 'f2');
+  assert.equal(groupByFolder([{ name: 'a' }], s => s.name, folders, { a: 'gone' }).at(-1)?.key, '');
+});
+
+test('moving the last sessions out empties a folder', () => {
+  const members = { a: 'f1', b: 'f1', c: 'f2' };
+  assert.equal(wouldEmpty('f1', ['a'], members), false);
+  assert.equal(wouldEmpty('f1', ['a', 'b'], members), true);
+  assert.equal(wouldEmpty('f2', ['c'], members), true);
+  assert.equal(wouldEmpty('', ['a'], members), false);
+});
+
+test('card subtitles abbreviate home', () => {
+  assert.equal(shortCwd('/home/me/notes', '/home/me'), '~/notes');
+  assert.equal(shortCwd('/home/menu', '/home/me'), '/home/menu');
+  assert.equal(shortCwd('/tmp', '/home/me'), '/tmp');
+  assert.equal(shortCwd(null, '/home/me'), '');
 });
 
 test('sessions sharing a directory share a card, in order of first appearance', () => {
