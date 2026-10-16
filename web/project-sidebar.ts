@@ -108,7 +108,11 @@ export class ProjectSidebar {
     top.className = 'ps-top';
     const brand = document.createElement('span');
     brand.className = 'ps-brand';
-    brand.textContent = 'orca-ui';
+    brand.textContent = 'WebTerminal';
+    const owner = document.createElement('span');
+    owner.className = 'ps-brand-owner';
+    owner.textContent = 'xutaocc';
+    brand.append(' ', owner);
     top.append(brand, iconButton(ICONS.panel, '收起侧栏', () => this.setHidden(true)));
 
     const header = document.createElement('div');

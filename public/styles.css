@@ -1769,3 +1769,4 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   }
   .actions-sheet .sheet-title { display: none; }
 }
+.ps-brand-owner { font-weight: 400; font-size: 11.5px; color: var(--ui-subtle, #808080); }

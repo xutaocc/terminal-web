@@ -4420,7 +4420,7 @@ function refreshMobileUI(): void {
   const s = activeTab;
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
-    (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'orca-ui');
+    (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();

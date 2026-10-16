@@ -340,7 +340,7 @@ async function serveIndexHtml(
     return;
   }
 
-  const title = path.basename(filePath) === "file-browser.html" ? "文件管理 · Web 终端" : `${escapeHtml(HOST_LABEL)} · orca-ui`;
+  const title = path.basename(filePath) === "file-browser.html" ? "文件管理 · Web 终端" : `${escapeHtml(HOST_LABEL)} · WebTerminal xutaocc`;
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${title}</title>`);
 
   const version = await assetVersion();
