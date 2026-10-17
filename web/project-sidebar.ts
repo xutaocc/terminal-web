@@ -1,8 +1,23 @@
 import { type FolderGroup, groupByDirectory, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { brandMark } from './brand-mark.js';
+import { hostOfKey } from './hosts.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null }
+
+/**
+ * One server's sessions. With no remotes there is a single local section and
+ * the list looks as it always has; with remotes, each server is a top-level
+ * folder of its own, its folders nested inside.
+ */
+export interface SidebarSection {
+  host: string;
+  title: string;
+  remote: boolean;
+  online: boolean;
+  home: string;
+  groups: FolderGroup<SidebarSession>[];
+}
 
 export interface SidebarHooks {
   activate(name: string): void;
@@ -10,8 +25,8 @@ export interface SidebarHooks {
   activateDirectory(names: string[]): void;
   /** New session in a folder ('' for none), starting in `directory` ('' for the active one's). */
   newSession(folderId: string, directory: string): void;
-  /** New folder; it starts with a new session, so it is never empty. */
-  newFolder(): void;
+  /** New folder on a server; it starts with a new session, so it is never empty. */
+  newFolder(host: string): void;
   renameFolder(id: string, name: string): void;
   /**
    * Move sessions into a folder ('' takes them out of any). `card` is set when
@@ -93,7 +108,7 @@ export class ProjectSidebar {
   private hidden = readJson<unknown>('tw.sidebar.hidden', false) === true;
   private readonly folded = new Set<string>(readJson<string[]>('tw.sidebar.folded', []));
   private signature = '';
-  private lastRender: { groups: FolderGroup<SidebarSession>[]; active: string | null; home: string } | null = null;
+  private lastRender: { sections: SidebarSection[]; groups: FolderGroup<SidebarSession>[]; active: string | null } | null = null;
   /**
    * Sessions being dragged, with the folder they came from, the card's carried
    * name (if it has one) and, for a whole card, its directory — which is what
@@ -116,7 +131,7 @@ export class ProjectSidebar {
     title.textContent = '会话';
     header.append(
       title,
-      iconButton(ICONS.folderPlus, '新建文件夹', () => hooks.newFolder()),
+      iconButton(ICONS.folderPlus, '新建文件夹', () => hooks.newFolder(hostOfKey(this.activeFolder()))),
       iconButton(ICONS.plus, '新建会话', () => hooks.newSession(this.activeFolder(), '')),
     );
 
@@ -173,27 +188,94 @@ export class ProjectSidebar {
   /** folder id -> the cwds of its cards, in the order the user dragged them into. */
   private cardOrder: Record<string, string[]> = {};
 
-  render(groups: FolderGroup<SidebarSession>[], active: string | null, home: string,
+  render(sections: SidebarSection[], active: string | null,
          dirNames: Record<string, Record<string, string>> = this.dirNames,
          cardOrder: Record<string, string[]> = this.cardOrder): void {
     this.dirNames = dirNames;
     this.cardOrder = cardOrder;
-    const signature = JSON.stringify([active, home, [...this.folded], dirNames, cardOrder, groups.map(g => [
-      g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd]),
-    ])]);
-    this.lastRender = { groups, active, home };
+    const signature = JSON.stringify([active, [...this.folded], dirNames, cardOrder, sections.map(sec => [
+      sec.host, sec.title, sec.online, sec.home, sec.groups.map(g => [
+        g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd]),
+      ])])]);
+    this.lastRender = { sections, groups: sections.flatMap(sec => sec.groups), active };
     if (signature === this.signature) return;
     this.signature = signature;
 
     const scrollTop = this.list.scrollTop;
     this.list.replaceChildren();
-    // With no folders there is nothing to tell the loose sessions apart from:
-    // they are listed as they are, with no "未分组" heading over them.
-    const flat = groups.length === 1 && !groups[0].folder;
-    for (const group of groups) {
-      this.list.append(flat ? this.buildCards(group, active, home, document.createElement('section')) : this.buildGroup(group, active, home));
+    const nested = sections.length > 1 || sections.some(sec => sec.remote);
+    for (const section of sections) {
+      const { groups, home } = section;
+      const target = nested ? this.buildHost(section) : this.list;
+      if (!target) continue;
+      // With no folders there is nothing to tell the loose sessions apart from:
+      // they are listed as they are, with no "未分组" heading over them.
+      const flat = groups.length === 1 && !groups[0].folder;
+      for (const group of groups) {
+        target.append(flat ? this.buildCards(group, active, home, document.createElement('section')) : this.buildGroup(group, active, home));
+      }
+      if (nested && !groups.length) {
+        const empty = document.createElement('div');
+        empty.className = 'ps-host-empty';
+        empty.textContent = section.online ? '暂无会话' : '无法连接，稍后自动重试';
+        target.append(empty);
+      }
     }
     this.list.scrollTop = scrollTop;
+  }
+
+  /**
+   * A server's top-level folder: badge, name, whether it answers, and its own
+   * new-folder / new-session buttons. Returns where its groups go, or null
+   * while it is folded.
+   */
+  private buildHost(section: SidebarSection): HTMLElement | null {
+    const key = `host:${section.host}`;
+    const el = document.createElement('section');
+    el.className = 'ps-host';
+    el.classList.toggle('remote', section.remote);
+    el.classList.toggle('offline', !section.online);
+    const folded = this.folded.has(key);
+    el.classList.toggle('folded', folded);
+    const head = document.createElement('div');
+    head.className = 'ps-host-head';
+    head.title = section.remote ? `远程主机：${section.title}` : '本机上的会话';
+    const chevron = document.createElement('span');
+    chevron.className = 'ps-chevron';
+    chevron.innerHTML = ICONS.chevron;
+    const badge = document.createElement('span');
+    badge.className = `host-badge ${section.remote ? 'remote' : 'local'}`;
+    badge.textContent = section.remote ? '远程' : '本地';
+    const name = document.createElement('span');
+    name.className = 'ps-host-name';
+    name.textContent = section.title;
+    const state = document.createElement('span');
+    state.className = 'ps-host-state';
+    state.title = section.online ? '已连接' : '无法连接';
+    const count = document.createElement('span');
+    count.className = 'ps-group-count';
+    count.textContent = String(section.groups.reduce((n, g) => n + g.items.length, 0));
+    const actions = document.createElement('span');
+    actions.className = 'ps-group-actions';
+    actions.append(
+      iconButton(ICONS.folderPlus, `在「${section.title}」新建文件夹`, () => this.hooks.newFolder(section.host)),
+      iconButton(ICONS.plus, `在「${section.title}」新建会话`, () =>
+        this.hooks.newSession(section.groups.find(g => !g.folder)?.key ?? (section.host ? `@${section.host}/` : ''), '')),
+    );
+    head.append(chevron, badge, name, state, count, actions);
+    head.addEventListener('click', () => {
+      if (this.folded.has(key)) this.folded.delete(key);
+      else this.folded.add(key);
+      this.saveFolded();
+      this.rerender();
+    });
+    el.append(head);
+    this.list.append(el);
+    if (folded) return null;
+    const body = document.createElement('div');
+    body.className = 'ps-host-body';
+    el.append(body);
+    return body;
   }
 
   /** The status dots of every card, for the caller to paint. */
@@ -205,7 +287,9 @@ export class ProjectSidebar {
   revealActive(): void {
     const last = this.lastRender;
     const group = last?.groups.find(g => g.items.some(s => s.name === last.active));
-    if (group && this.folded.delete(group.key)) {
+    const unfoldedGroup = !!group && this.folded.delete(group.key);
+    const unfoldedHost = this.folded.delete(`host:${hostOfKey(last?.active ?? '')}`);
+    if (unfoldedGroup || unfoldedHost) {
       this.saveFolded();
       this.rerender();
     }
@@ -220,8 +304,8 @@ export class ProjectSidebar {
   private rerender(): void {
     if (!this.lastRender) return;
     this.signature = '';
-    const { groups, active, home } = this.lastRender;
-    this.render(groups, active, home);
+    const { sections, active } = this.lastRender;
+    this.render(sections, active);
   }
 
   private saveFolded(): void {
@@ -436,8 +520,10 @@ export class ProjectSidebar {
   }
 
   private bindDrop(el: HTMLElement, folderId: string): void {
+    const movable = (): boolean => !!this.dragging && this.dragging.from !== folderId &&
+      hostOfKey(this.dragging.names[0]) === hostOfKey(folderId);
     el.addEventListener('dragover', e => {
-      if (!this.dragging || this.dragging.from === folderId) return;
+      if (!movable()) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -448,7 +534,7 @@ export class ProjectSidebar {
     });
     el.addEventListener('drop', e => {
       const drag = this.dragging;
-      if (!drag || drag.from === folderId) return;
+      if (!drag || !movable()) return;
       e.preventDefault();
       e.stopPropagation();
       el.closest('.ps-group, section')?.classList.remove('ps-drop');
@@ -458,7 +544,9 @@ export class ProjectSidebar {
 
   private openMenu(e: MouseEvent, names: string[], from: string, label: string, card?: { cwd: string; name: string }): void {
     this.closeMenu();
-    const folders = (this.lastRender?.groups ?? []).flatMap(g => g.folder ? [g.folder] : []);
+    // A session can only move between folders of the server it runs on.
+    const host = hostOfKey(names[0] ?? '');
+    const folders = (this.lastRender?.groups ?? []).flatMap(g => g.folder && hostOfKey(g.key) === host ? [g.folder] : []);
     const menu = document.createElement('div');
     menu.className = 'ps-menu';
     const title = document.createElement('div');
@@ -478,7 +566,9 @@ export class ProjectSidebar {
       menu.append(b);
     };
     for (const f of folders) item(`移到「${f.name}」`, () => this.hooks.moveSessions(names, f.id, card), f.id === from);
-    if (from) item('移出文件夹', () => this.hooks.moveSessions(names, '', card));
+    if (hostOfKey(from) === host && from !== (host ? `@${host}/` : '')) {
+      item('移出文件夹', () => this.hooks.moveSessions(names, host ? `@${host}/` : '', card));
+    }
     if (!folders.length) item('还没有文件夹，先点上方按钮新建', () => {}, true);
     document.body.append(menu);
     const rect = menu.getBoundingClientRect();

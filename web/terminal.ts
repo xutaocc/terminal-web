@@ -1,5 +1,6 @@
 import '@xterm/xterm/css/xterm.css';
 import './theme.css';
+import './hosts.css';
 import { applyDocumentTheme, isTheme, TERMINAL_THEMES, type ThemeName } from './theme.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -16,9 +17,10 @@ import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
 import { decodeOsc52, forceSelectKey, shouldHintDrag, takeHintTurn } from './terminal-copy.js';
 import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js';
-import { ICONS, ProjectSidebar } from './project-sidebar.js';
+import { ICONS, ProjectSidebar, type SidebarSection } from './project-sidebar.js';
 import { brandMark } from './brand-mark.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
+import { hostOfKey, hostUrl, makeKey, type RemoteHost, splitKey } from './hosts.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -305,7 +307,7 @@ async function copyCurrentPath(): Promise<void> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 4000);
   const pathRequest = (async (): Promise<string> => {
-    const response = await fetch(`/api/sessions/cwd?session=${encodeURIComponent(session.name)}`, {
+    const response = await fetch(hostUrl(session.host, `/api/sessions/cwd?session=${encodeURIComponent(session.raw)}`), {
       cache: 'no-store', signal: controller.signal,
     });
     if (!response.ok) throw new Error('working directory unavailable');
@@ -491,7 +493,28 @@ let folderMembers: Record<string, string> = {};
 let dirNames: Record<string, Record<string, string>> = {};
 /** folder id ('' for none) -> its directory cards' cwds, in the order the user dragged them into. */
 let cardOrder: Record<string, string[]> = {};
-let homeDir = '';
+/** host -> that server's home directory, for shortening card paths. */
+const homeDirs = new Map<string, string>();
+// The other servers this one forwards to (src/remotes.ts), in the order they
+// were added, and which of them did not answer the last sync.
+let remoteHosts: RemoteHost[] = [];
+let selfName = '';
+const offlineHosts = new Set<string>();
+
+/** "本地 · mac" or "远程 · 119": which server a session, setting or file view belongs to. */
+function hostLabel(host: string): string {
+  if (!host) return selfName ? `本地 · ${selfName}` : '本地';
+  return `远程 · ${remoteHosts.find(r => r.id === host)?.name ?? host}`;
+}
+
+/** The small 本地 / 远程 tag put in front of a session's name. */
+function hostBadge(host: string): HTMLElement {
+  const badge = document.createElement('span');
+  badge.className = `host-badge ${host ? 'remote' : 'local'}`;
+  badge.textContent = host ? '远程' : '本地';
+  badge.title = hostLabel(host);
+  return badge;
+}
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
@@ -506,7 +529,7 @@ const sidebar = new ProjectSidebar({
     if (s) activateSession(s);
   },
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
-  newFolder: () => void promptNewFolder(),
+  newFolder: host => void promptNewFolder(host),
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
   renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
@@ -572,6 +595,10 @@ class Session {
   // kill command. Renaming a tab never touches this, so × still kills the
   // original session.
   readonly name: string;
+  // Which server it lives on ('' for this one) and its tmux name there. `name`
+  // is the page's key for it, which carries the host (see hosts.ts).
+  readonly host: string;
+  readonly raw: string;
   // Mutable label shown on the tab; defaults to the session name.
   displayName: string;
   readonly term: Terminal;
@@ -651,7 +678,8 @@ class Session {
 
   constructor(name: string, displayName?: string, isMate = false) {
     this.name = name;
-    this.displayName = displayName?.trim() || name;
+    ({ host: this.host, raw: this.raw } = splitKey(name));
+    this.displayName = displayName?.trim() || this.raw;
     this.isMate = isMate;
     this.term = new Terminal({
       cursorBlink: true,
@@ -1515,10 +1543,10 @@ class Session {
   async scrollHistory(action: 'up' | 'down' | 'bottom'): Promise<void> {
     this.stopTouchScroll();
     try {
-      const response = await fetch('/api/sessions/scroll', {
+      const response = await fetch(hostUrl(this.host, '/api/sessions/scroll'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: this.name, action }),
+        body: JSON.stringify({ name: this.raw, action }),
       });
       if (!response.ok) throw new Error('scroll failed');
     } catch {
@@ -1616,7 +1644,7 @@ class Session {
   /** This session is being made on purpose: its first attach may create it. */
   intendCreate(baseSession?: string, directory?: string): void {
     this.createUntil = performance.now() + 60_000;
-    this.createFrom = baseSession ?? null;
+    this.createFrom = baseSession ? splitKey(baseSession).raw : null;
     this.createDirectory = directory ?? null;
   }
 
@@ -1693,10 +1721,10 @@ class Session {
   // Ask the server to kill this tmux session for good (used on tab close).
   // Over HTTP, not this tab's socket: a tab that was never opened has none.
   kill(): void {
-    void fetch('/api/sessions/kill', {
+    void fetch(hostUrl(this.host, '/api/sessions/kill'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: this.name }),
+      body: JSON.stringify({ name: this.raw }),
     }).catch(() => {
       /* ignore — the tab is already gone locally */
     });
@@ -1771,7 +1799,7 @@ class Session {
     // resizes the window for every other client on that session, and a program
     // on the alternate screen loses everything that no longer fits.
     const url =
-      `${wsProto}://${window.location.host}/ws?session=${encodeURIComponent(this.name)}` +
+      `${wsProto}://${window.location.host}${hostUrl(this.host, '/ws')}?session=${encodeURIComponent(this.raw)}` +
       `&cols=${this.term.cols}&rows=${this.term.rows}` +
       (performance.now() < this.createUntil ? '&create=1' +
         (this.createFrom ? `&from=${encodeURIComponent(this.createFrom)}` : '') +
@@ -1810,7 +1838,7 @@ class Session {
       // Re-assert a custom label: the server stores it on the tmux session
       // (@twlabel), which is wiped when the session is killed+recreated by a
       // restart, so a renamed tab would otherwise revert to its raw name.
-      if (this.displayName !== this.name) renameOnServer(this.name, this.displayName);
+      if (this.displayName !== this.raw) renameOnServer(this.name, this.displayName);
       // Re-fit + re-focus so typing resumes smoothly after a reconnect — UNLESS
       // an IME composition is in flight: on iOS these cancel the soft keyboard's
       // active composition, dropping the 注音 candidate bar and turning input
@@ -1974,20 +2002,34 @@ function hasRecentOutput(s: Session): boolean {
 // comes from; in 'legacy' mode — or against a server too old to say — the dots
 // fall back to this page's own output heuristic (output-activity.ts).
 // ---------------------------------------------------------------------------
-let agentMode: 'hooks' | 'screen' | 'legacy' | null = null;
+type AgentMode = 'hooks' | 'screen' | 'legacy';
+/** host -> where that server's statuses come from; missing while it has not said. */
+const agentModes = new Map<string, AgentMode>();
+/** Session key -> status, for every server. */
 let agentStatuses = new Map<string, AgentStatus>();
+const agentSources = new Map<string, EventSource>();
 
-function serverStatusActive(): boolean {
-  return agentMode === 'hooks' || agentMode === 'screen';
+function serverStatusActive(host: string): boolean {
+  const mode = agentModes.get(host);
+  return mode === 'hooks' || mode === 'screen';
 }
 
-function connectAgentStatus(): void {
-  const source = new EventSource('/api/agent-status/events');
+/** Take one server's statuses, leaving the other servers' as they were. */
+function takeAgentStatus(host: string, data: { mode?: unknown; sessions?: Record<string, AgentStatus> }): void {
+  if (data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy') agentModes.set(host, data.mode);
+  else agentModes.delete(host);
+  const next = new Map([...agentStatuses].filter(([key]) => hostOfKey(key) !== host));
+  for (const [name, status] of Object.entries(data.sessions ?? {})) next.set(makeKey(host, name), status);
+  agentStatuses = next;
+}
+
+function connectAgentStatus(host: string): void {
+  if (agentSources.has(host)) return;
+  const source = new EventSource(hostUrl(host, '/api/agent-status/events'));
+  agentSources.set(host, source);
   source.onmessage = (event: MessageEvent) => {
     try {
-      const data = JSON.parse(event.data as string) as { mode?: unknown; sessions?: Record<string, AgentStatus> };
-      agentMode = data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy' ? data.mode : null;
-      agentStatuses = new Map(Object.entries(data.sessions ?? {}));
+      takeAgentStatus(host, JSON.parse(event.data as string));
       refreshStatusModeUI();
       refreshMobileUI();
     } catch {
@@ -1996,6 +2038,17 @@ function connectAgentStatus(): void {
   };
   // EventSource reconnects by itself. A server without the endpoint answers
   // 404, which ends the stream for good: the page stays on the legacy dots.
+  // A remote that is down answers 502 the same way; forget the stream, and the
+  // next sync that reaches the remote opens a new one.
+  source.onerror = () => {
+    if (host && source.readyState === EventSource.CLOSED && agentSources.get(host) === source) agentSources.delete(host);
+  };
+}
+
+function disconnectAgentStatus(host: string): void {
+  agentSources.get(host)?.close();
+  agentSources.delete(host);
+  takeAgentStatus(host, {});
 }
 
 /**
@@ -2005,17 +2058,20 @@ function connectAgentStatus(): void {
 function reportViewed(): void {
   // Touch devices are exempt from the focus test: framed in the iOS launcher,
   // the page often has no focus until it is tapped, though it is plainly seen.
-  if (!serverStatusActive() || fileBrowserOpen || document.visibilityState !== 'visible' ||
+  if (fileBrowserOpen || document.visibilityState !== 'visible' ||
       (!TOUCH_DEVICE && !document.hasFocus())) return;
   const viewed = [activeTab, activeTab?.mate].filter((s): s is Session =>
-    !!s && isActive(s) && !s.el.classList.contains('hidden') && !!agentStatuses.get(s.name)?.unread);
+    !!s && serverStatusActive(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
+    !!agentStatuses.get(s.name)?.unread);
   if (!viewed.length) return;
   for (const s of viewed) agentStatuses.set(s.name, { ...agentStatuses.get(s.name)!, unread: false });
-  void fetch('/api/agent-status/read', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessions: viewed.map(s => s.name) }),
-  }).catch(() => { /* the next view retries */ });
+  for (const host of new Set(viewed.map(s => s.host))) {
+    void fetch(hostUrl(host, '/api/agent-status/read'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions: viewed.filter(s => s.host === host).map(s => s.raw) }),
+    }).catch(() => { /* the next view retries */ });
+  }
 }
 
 /** A tab's statuses: its own and its split half's. */
@@ -2025,57 +2081,42 @@ function statusesOf(s: Session): (AgentStatus | undefined)[] {
 
 /** Sessions asking for you (waiting, or finished unread), for the page title. */
 function attentionCount(): number {
-  if (!serverStatusActive()) return 0;
-  return sessions.filter(s => wantsAttention(combineStatus(statusesOf(s)))).length;
+  return sessions.filter(s => serverStatusActive(s.host) && wantsAttention(combineStatus(statusesOf(s)))).length;
 }
 
 function updateOutputActivity(): void {
   reportViewed(); // before painting, so what is on screen never shows as unread
-  if (serverStatusActive()) {
-    const paintServer = (dot: Element | null | undefined, ...group: (Session | null | undefined)[]): void => {
-      const indicator = combineStatus(group.flatMap(s => s ? statusesOf(s) : []));
-      if (!dot) return;
-      for (const cls of ['working', 'waiting', 'unread', 'done'] as const) dot.classList.toggle(cls, indicator === cls);
-      dot.setAttribute('title', INDICATOR_LABEL[indicator]);
-      dot.setAttribute('aria-label', INDICATOR_LABEL[indicator]);
-    };
-    for (const s of sessions) {
-      paintServer(s.tabDot, s);
-      s.tabEl?.classList.toggle('tab-attention', wantsAttention(combineStatus(statusesOf(s))));
-    }
-    paintServer(mTitleDot, activeTab);
-    for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
-      paintServer(row.querySelector('.tab-dot'), sessions.find(session => session.name === row.dataset.session));
-    }
-    for (const dot of sidebar.dots()) {
-      const names = (dot.dataset.sessions ?? '').split(' ');
-      paintServer(dot, ...sessions.filter(session => names.includes(session.name)));
-    }
-    return;
-  }
-
-  // Legacy: all three surfaces share the same state. A split tab aggregates both panes;
-  // entering a visible pane reads it, while hidden panes may remain unread.
-  // A sidebar directory card speaks for all of its sessions at once.
-  for (const s of sessions) s.tabEl?.classList.remove('tab-attention');
+  // Each server says how its own sessions are tracked: by its agent-status
+  // service, or — in 'legacy' mode, or a server too old to say — by this page's
+  // output heuristic. A split tab aggregates both panes, and a sidebar
+  // directory card speaks for all of its sessions at once.
   const paint = (dot: Element | null | undefined, ...group: (Session | null | undefined)[]): void => {
-    const working = group.some(s => !!s && hasRecentOutput(s));
-    const unread = group.some(s => !!s && (s.readState.unread || !!s.mate?.readState.unread));
-    dot?.classList.toggle('working', working);
-    dot?.classList.toggle('unread', unread);
-    if (dot) {
-      const label = working ? '近期有输出' : unread ? '未读' : '已读';
-      dot.setAttribute('title', label);
-      dot.setAttribute('aria-label', label);
+    const members = group.filter((s): s is Session => !!s);
+    if (!dot) return;
+    let label: string;
+    if (members.length && serverStatusActive(members[0].host)) {
+      const indicator = combineStatus(members.flatMap(s => statusesOf(s)));
+      for (const cls of ['working', 'waiting', 'unread', 'done'] as const) dot.classList.toggle(cls, indicator === cls);
+      label = INDICATOR_LABEL[indicator];
+    } else {
+      const working = members.some(s => hasRecentOutput(s));
+      const unread = members.some(s => s.readState.unread || !!s.mate?.readState.unread);
+      dot.classList.toggle('working', working);
+      dot.classList.toggle('unread', unread);
+      dot.classList.remove('waiting', 'done');
+      label = working ? '近期有输出' : unread ? '未读' : '已读';
     }
+    dot.setAttribute('title', label);
+    dot.setAttribute('aria-label', label);
   };
   for (const s of sessions) {
     paint(s.tabDot, s);
+    s.tabEl?.classList.toggle('tab-attention',
+      serverStatusActive(s.host) && wantsAttention(combineStatus(statusesOf(s))));
   }
   paint(mTitleDot, activeTab);
   for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
-    const s = sessions.find(session => session.name === row.dataset.session);
-    paint(row.querySelector('.tab-dot'), s);
+    paint(row.querySelector('.tab-dot'), sessions.find(session => session.name === row.dataset.session));
   }
   for (const dot of sidebar.dots()) {
     const names = (dot.dataset.sessions ?? '').split(' ');
@@ -2354,10 +2395,10 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     status.textContent = '正在保存…';
     const prior = pendingNoteSaves.get(s.name) ?? Promise.resolve();
     const task = prior.catch(() => {}).then(async () => {
-      const response = await fetch('/api/sessions/note', {
+      const response = await fetch(hostUrl(s.host, '/api/sessions/note'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: s.name, text: snapshot.text,
-          displayName: snapshot.displayName.replace(/[\x00-\x1f\x7f]/g, '').trim() || s.name,
+        body: JSON.stringify({ name: s.raw, text: snapshot.text,
+          displayName: snapshot.displayName.replace(/[\x00-\x1f\x7f]/g, '').trim() || s.raw,
         }),
       });
       if (!response.ok) throw new Error('save failed');
@@ -2396,7 +2437,7 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
     await pendingNoteSaves.get(s.name);
     if (closed) return;
     nameInput.value = s.displayName;
-    const response = await fetch(`/api/sessions/note?session=${encodeURIComponent(s.name)}`, {
+    const response = await fetch(hostUrl(s.host, `/api/sessions/note?session=${encodeURIComponent(s.raw)}`), {
       cache: 'no-store', signal: requests.signal,
     });
     if (!response.ok) throw new Error('load failed');
@@ -2425,7 +2466,9 @@ function buildTab(s: Session): void {
   close.className = 'tab-close';
   close.textContent = '×';
   close.title = '关闭标签并结束会话';
-  tab.append(dot, label, close);
+  // Shown only once there is a remote to tell apart from (CSS: .has-remotes).
+  tab.append(dot, hostBadge(s.host), label, close);
+  tab.classList.toggle('remote', !!s.host);
 
   // Single tap activates. On a tap only (see
   // onTap), and WITHOUT preventDefault, so a sideways drag scrolls the strip
@@ -2572,9 +2615,10 @@ function confirmCloseSession(s: Session): void {
   label.className = 'paste-label';
   const strong = document.createElement('b');
   strong.textContent = s.displayName;
-  const sessionNote = s.displayName === s.name ? '' : `（tmux 会话 "${s.name}"）`;
+  const sessionNote = s.displayName === s.raw ? '' : `（tmux 会话 "${s.raw}"）`;
   label.append(
     '关闭 ',
+    ...(remoteHosts.length ? [hostBadge(s.host), ' '] : []),
     strong,
     `${sessionNote}？这会结束它的 tmux 会话，其中运行的程序也会一并结束。`,
   );
@@ -2815,14 +2859,19 @@ async function promptAddSession(
   base: Session | null = activeSession, startDir?: string, folderId: string = base ? folderOf(base) : '',
   folderName?: string,
 ): Promise<void> {
+  // The folder says which server the session goes on. A base session on some
+  // other server lends it a name, never a directory: paths do not carry over.
+  const host = hostOfKey(folderId);
+  const origin = base && base.host === host ? base : null;
   const suggestion = newSessionName(
     base?.displayName ?? defaultSessionName, sessions.map(s => s.displayName),
   );
   let directory = '';
-  const folderLabel = folderName ?? folders.find(f => f.id === folderId)?.name;
+  const folderLabel = folderName ?? (splitKey(folderId).raw ? folders.find(f => f.id === folderId)?.name : undefined);
+  const where = remoteHosts.length ? `【${hostLabel(host)}】` : '';
   const raw = await domPrompt({
-    label: folderName ? `文件夹「${folderName}」的第一个会话：` :
-      folderLabel ? `在「${folderLabel}」新建会话：` : '新建会话名称：',
+    label: where + (folderName ? `文件夹「${folderName}」的第一个会话：` :
+      folderLabel ? `在「${folderLabel}」新建会话：` : '新建会话名称：'),
     value: suggestion,
     // Select just the name after the timestamp: typing replaces the name and
     // keeps the time in front.
@@ -2830,8 +2879,8 @@ async function promptAddSession(
     okText: '创建',
     directory: async signal => {
       if (startDir) return startDir;
-      if (!base) return '';
-      const response = await fetch(`/api/sessions/cwd?session=${encodeURIComponent(base.name)}`, {
+      if (!origin) return '';
+      const response = await fetch(hostUrl(host, `/api/sessions/cwd?session=${encodeURIComponent(origin.raw)}`), {
         cache: 'no-store', signal,
       });
       if (!response.ok) throw new Error('directory unavailable');
@@ -2843,16 +2892,17 @@ async function promptAddSession(
   });
   if (raw === null) return; // cancelled — and so is a folder waiting on this
   const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
-  const name = await newSessionId(displayName, sessions.map(s => s.name));
+  const id = await newSessionId(displayName, sessions.filter(s => s.host === host).map(s => s.raw));
+  const name = makeKey(host, id);
   const session = addSession(name, false, displayName);
-  session.cwd = directory || startDir || base?.cwd || null;
-  session.intendCreate(base?.name, directory);
+  session.cwd = directory || startDir || origin?.cwd || null;
+  session.intendCreate(origin?.name, directory);
   // Filed before it is shown, so it lands in its folder rather than flickering
   // through "未分组" until the server answers.
   if (folderName) {
-    folderMembers = { ...folderMembers, [name]: '' };
+    folderMembers = { ...folderMembers, [name]: looseKey(host) };
     void editFolders({ action: 'create', name: folderName, session: name });
-  } else if (folderId) {
+  } else if (splitKey(folderId).raw) {
     folderMembers = { ...folderMembers, [name]: folderId };
     void editFolders({ action: 'move', sessions: [name], folder: folderId });
   }
@@ -2865,14 +2915,34 @@ async function promptAddSession(
 // as long as it holds a tab — there is no delete. The strip shows the tabs in
 // the active tab's folder and directory, as long as the sidebar is there to
 // reach the others. On phones, or with it hidden, every tab stays in the strip.
+//
+// Every server keeps its own folders. Here they are all in one set, keyed the
+// way sessions are (hosts.ts); a server's sessions not in any folder are in
+// its loose group, looseKey(host) — '' for this server, as it always was.
 // ---------------------------------------------------------------------------
+function looseKey(host: string): string {
+  return makeKey(host, '');
+}
+
 function folderOf(s: Session): string {
-  return folderMembers[s.name] ?? '';
+  return folderMembers[s.name] ?? looseKey(s.host);
 }
 
 function refreshSidebar(): void {
-  const groups = groupByFolder(sessions, s => s.name, folders, folderMembers);
-  sidebar.render(groups, activeTab?.name ?? null, homeDir, dirNames, cardOrder);
+  const sections: SidebarSection[] = ['', ...remoteHosts.map(r => r.id)].map(host => {
+    const groups = groupByFolder(sessions.filter(s => s.host === host), s => s.name,
+      folders.filter(f => hostOfKey(f.id) === host), folderMembers);
+    for (const group of groups) if (!group.folder) group.key = looseKey(host);
+    return {
+      host,
+      title: host ? remoteHosts.find(r => r.id === host)?.name ?? host : selfName ? `本机 · ${selfName}` : '本机',
+      remote: !!host,
+      online: !offlineHosts.has(host),
+      home: homeDirs.get(host) ?? '',
+      groups,
+    };
+  });
+  sidebar.render(sections, activeTab?.name ?? null, dirNames, cardOrder);
   const filtering = !mobileMQ.matches && !sidebar.isHidden;
   const activeFolder = activeTab ? folderOf(activeTab) : '';
   const activeDir = activeTab?.cwd ?? '';
@@ -2885,32 +2955,52 @@ interface FolderReply {
   folders?: unknown; members?: unknown; dirNames?: unknown; cardOrder?: unknown; emptied?: unknown; home?: unknown; error?: unknown;
 }
 
+/** Entries of `obj` that do not belong to `host`. */
+function otherHosts<T>(obj: Record<string, T>, host: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(obj).filter(([key]) => hostOfKey(key) !== host));
+}
+
+/** A server's own folder-keyed record, keyed for this page. */
+function keyedBy<T>(host: string, obj: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(obj).map(([key, value]) => [makeKey(host, key), value]));
+}
+
 /**
- * Take the server's folders. Folders that were here and are gone now went
+ * Take one server's folders. Folders that were here and are gone now went
  * because their last tab did — closed elsewhere, or its program exited — and
  * nobody was asked; say so, unless this device just removed them itself.
  */
 let expectedEmptied = new Set<string>();
-function setFolders(data: FolderReply): void {
+function setFolders(host: string, data: FolderReply): void {
   if (!Array.isArray(data.folders) || !data.members || typeof data.members !== 'object') return;
+  const mine = (key: string): boolean => hostOfKey(key) === host;
   const next = data.folders.filter((f): f is FolderInfo =>
-    !!f && typeof f.id === 'string' && typeof f.name === 'string');
+    !!f && typeof f.id === 'string' && typeof f.name === 'string').map(f => ({ id: makeKey(host, f.id), name: f.name }));
   const kept = new Set(next.map(f => f.id));
-  const gone = folders.filter(f => !kept.has(f.id) && !expectedEmptied.has(f.id));
-  expectedEmptied = new Set([...expectedEmptied].filter(id => kept.has(id)));
-  folders = next;
-  folderMembers = Object.fromEntries(Object.entries(data.members as Record<string, unknown>)
-    .filter((e): e is [string, string] => typeof e[1] === 'string'));
-  if (data.dirNames && typeof data.dirNames === 'object') dirNames = data.dirNames as typeof dirNames;
-  cardOrder = data.cardOrder && typeof data.cardOrder === 'object' ? data.cardOrder as typeof cardOrder : {};
-  if (typeof data.home === 'string') homeDir = data.home;
+  const gone = folders.filter(f => mine(f.id) && !kept.has(f.id) && !expectedEmptied.has(f.id));
+  expectedEmptied = new Set([...expectedEmptied].filter(id => !mine(id) || kept.has(id)));
+  folders = [...folders.filter(f => !mine(f.id)), ...next];
+  folderMembers = {
+    ...otherHosts(folderMembers, host),
+    ...Object.fromEntries(Object.entries(data.members as Record<string, unknown>)
+      .filter((e): e is [string, string] => typeof e[1] === 'string')
+      .map(([session, folder]) => [makeKey(host, session), makeKey(host, folder)])),
+  };
+  if (data.dirNames && typeof data.dirNames === 'object') {
+    dirNames = { ...otherHosts(dirNames, host), ...keyedBy(host, data.dirNames as typeof dirNames) };
+  }
+  cardOrder = {
+    ...otherHosts(cardOrder, host),
+    ...(data.cardOrder && typeof data.cardOrder === 'object' ? keyedBy(host, data.cardOrder as typeof cardOrder) : {}),
+  };
+  if (typeof data.home === 'string') homeDirs.set(host, data.home);
   if (gone.length) flashStatus(`文件夹「${gone.map(f => f.name).join('」「')}」已无会话，已删除`, 3500);
 }
 
-async function loadFolders(): Promise<void> {
+async function loadFolders(host: string): Promise<void> {
   try {
-    const res = await fetch('/api/folders', { cache: 'no-store' });
-    if (res.ok) setFolders(await res.json());
+    const res = await fetch(hostUrl(host, '/api/folders'), { cache: 'no-store' });
+    if (res.ok) setFolders(host, await res.json());
   } catch {
     /* keep the folders we have */
   }
@@ -2923,20 +3013,35 @@ type FolderEdit =
   | { action: 'renameDir'; folder: string; cwd: string; name: string }
   | { action: 'orderCards'; folder: string; cwds: string[] };
 
+/** An edit goes to the server whose folders it touches, in that server's own names. */
+function forServer(edit: FolderEdit): { host: string; body: FolderEdit } {
+  const raw = (key: string): string => splitKey(key).raw;
+  switch (edit.action) {
+    case 'create': return { host: hostOfKey(edit.session), body: { ...edit, session: raw(edit.session) } };
+    case 'rename': return { host: hostOfKey(edit.id), body: { ...edit, id: raw(edit.id) } };
+    case 'move': return {
+      host: hostOfKey(edit.sessions[0] ?? edit.folder),
+      body: { ...edit, sessions: edit.sessions.map(raw), folder: raw(edit.folder) },
+    };
+    default: return { host: hostOfKey(edit.folder), body: { ...edit, folder: raw(edit.folder) } };
+  }
+}
+
 async function editFolders(edit: FolderEdit): Promise<boolean> {
+  const { host, body } = forServer(edit);
   try {
-    const res = await fetch('/api/folders', {
+    const res = await fetch(hostUrl(host, '/api/folders'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(edit),
+      body: JSON.stringify(body),
     });
     const data = await res.json() as FolderReply;
     if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : 'failed');
-    setFolders(data);
+    setFolders(host, data);
     return true;
   } catch {
     flashStatus('文件夹保存失败，请重试', 2500);
-    await loadFolders(); // put back what the server really has
+    await loadFolders(host); // put back what the server really has
     return false;
   } finally {
     refreshMobileUI();
@@ -2944,18 +3049,19 @@ async function editFolders(edit: FolderEdit): Promise<boolean> {
 }
 
 /** A folder is made together with its first session; cancelling makes neither. */
-async function promptNewFolder(): Promise<void> {
-  const raw = await domPrompt({ label: '新建文件夹名称：', value: '', okText: '下一步' });
+async function promptNewFolder(host: string = activeSession?.host ?? ''): Promise<void> {
+  const where = remoteHosts.length ? `【${hostLabel(host)}】` : '';
+  const raw = await domPrompt({ label: `${where}新建文件夹名称：`, value: '', okText: '下一步' });
   const name = raw?.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64);
   if (!name) return;
-  await promptAddSession(activeSession, undefined, '', name);
+  await promptAddSession(activeSession, undefined, looseKey(host), name);
 }
 
 /**
- * Move tabs into a folder ('' for none), asking first if that empties the
- * folder they leave. A whole card carries its name along, unless the target
- * folder already has a card for that directory: the two merge under the
- * target's name.
+ * Move tabs into a folder (a loose key takes them out of any), asking first if
+ * that empties the folder they leave. A whole card carries its name along,
+ * unless the target folder already has a card for that directory: the two
+ * merge under the target's name.
  */
 function moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): void {
   const from = folderMembers[names[0]] ?? '';
@@ -2971,7 +3077,7 @@ function moveSessions(names: string[], folderId: string, card?: { cwd: string; n
   }
   folderMembers = { ...folderMembers };
   for (const n of names) {
-    if (folderId) folderMembers[n] = folderId;
+    if (splitKey(folderId).raw) folderMembers[n] = folderId;
     else delete folderMembers[n];
   }
   if (card && !dirNames[folderId]?.[card.cwd]) {
@@ -3061,11 +3167,11 @@ const CLOSE_GUARD_MS = 6000;
 
 // Fetch the server's tab list. Returns null (and we keep local state) if the
 // server is unreachable or slow, so a flaky network never blanks the tabs.
-async function fetchServerTabs(timeoutMs = 2500): Promise<SavedTab[] | null> {
+async function fetchServerTabs(host: string, timeoutMs = 2500): Promise<SavedTab[] | null> {
   const ctrl = new AbortController();
   const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch('/api/sessions', { cache: 'no-store', signal: ctrl.signal });
+    const res = await fetch(hostUrl(host, '/api/sessions'), { cache: 'no-store', signal: ctrl.signal });
     if (!res.ok) return null;
     const data = (await res.json()) as { tabs?: unknown };
     if (!Array.isArray(data.tabs)) return null;
@@ -3077,7 +3183,7 @@ async function fetchServerTabs(timeoutMs = 2500): Promise<SavedTab[] | null> {
         const dn = typeof dnRaw === 'string' && dnRaw.trim() ? dnRaw : name;
         const cwdRaw = (item as SavedTab).cwd;
         const cwd = typeof cwdRaw === 'string' && cwdRaw.startsWith('/') ? cwdRaw : undefined;
-        out.push({ name, displayName: dn, cwd });
+        out.push({ name: makeKey(host, name), displayName: dn, cwd });
       }
     }
     return out;
@@ -3098,12 +3204,12 @@ async function fetchServerTabs(timeoutMs = 2500): Promise<SavedTab[] | null> {
  * the list by the next sync. The server only tags ones that really exist, so a
  * tab closed on another device is not resurrected by this device's cache.
  */
-async function adoptOnServer(names: string[]): Promise<void> {
+async function adoptOnServer(host: string, names: string[]): Promise<void> {
   try {
-    await fetch('/api/sessions/adopt', {
+    await fetch(hostUrl(host, '/api/sessions/adopt'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ names }),
+      body: JSON.stringify({ names: names.map(n => splitKey(n).raw) }),
     });
   } catch {
     /* ignore — the next sync will simply show what the server does know */
@@ -3111,10 +3217,11 @@ async function adoptOnServer(names: string[]): Promise<void> {
 }
 
 function postRename(name: string, displayName: string): Promise<unknown> {
-  return fetch('/api/sessions/rename', {
+  const { host, raw } = splitKey(name);
+  return fetch(hostUrl(host, '/api/sessions/rename'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, displayName }),
+    body: JSON.stringify({ name: raw, displayName }),
   }).catch(() => {
     /* ignore — local UI already reflects the change */
   });
@@ -3138,11 +3245,11 @@ function renameOnServer(name: string, displayName: string): void {
  * the tab strip shows: a tab adopted without it comes back named after its
  * session and overwrites the name you gave it.
  */
-async function readoptTabs(tabs: SavedTab[]): Promise<void> {
-  await adoptOnServer(tabs.map((t) => t.name));
+async function readoptTabs(host: string, tabs: SavedTab[]): Promise<void> {
+  await adoptOnServer(host, tabs.map((t) => t.name));
   await Promise.all(
     tabs
-      .filter((t) => t.displayName && t.displayName !== t.name)
+      .filter((t) => t.displayName && t.displayName !== splitKey(t.name).raw)
       .map((t) => postRename(t.name, t.displayName))
   );
 }
@@ -3270,70 +3377,111 @@ async function syncFromServer(): Promise<void> {
   if (syncing) return;
   syncing = true;
   try {
-    const [serverTabs] = await Promise.all([fetchServerTabs(), loadFolders()]);
-    if (!serverTabs) return; // unreachable — keep what we have
-    const byName = new Map(serverTabs.map((t) => [t.name, t]));
-
-    // Expire stale guards first so re-opening a name later still works.
-    const now = performance.now();
-    for (const [name, at] of recentlyClosed) {
-      if (now - at > CLOSE_GUARD_MS) recentlyClosed.delete(name);
-    }
-    for (const [name, at] of recentlyCreated) {
-      if (now - at > CREATE_GUARD_MS) recentlyCreated.delete(name);
-    }
-
-    // Add tabs opened elsewhere; adopt display-name changes from elsewhere.
-    for (const t of serverTabs) {
-      if (recentlyClosed.has(t.name)) continue; // don't resurrect a just-closed tab
-      // The second session of a split belongs to its tab, not in the strip. The
-      // server leaves it out of the list; this is the same rule again, for a
-      // server that has not been updated yet. One whose first session is gone
-      // is nobody's second half any more, and shows up as an ordinary tab.
-      if (isMateName(t.name) && byName.has(primaryNameOf(t.name))) continue;
-      const existing = sessions.find((s) => s.name === t.name);
-      if (!existing) {
-        addSession(t.name, false, t.displayName).cwd = t.cwd ?? null;
-      } else {
-        if (t.cwd) existing.cwd = t.cwd;
-        if (t.displayName && t.displayName !== existing.displayName) setDisplayName(existing, t.displayName);
-      }
-    }
-
-    // Remove tabs closed elsewhere. A tab we built moments ago is exempt: it
-    // may not have attached yet, so the server would not list it either.
-    let missing = sessions.filter(
-      (s) => !byName.has(s.name) && !recentlyCreated.has(s.name) && !recentlyClosed.has(s.name)
-    );
-    // Absent from the list is not the same as gone. The list is built from a
-    // tag the tmux session carries, and a session can lose it while this page
-    // is open — a tmux server that dies and comes back through resurrect brings
-    // every session back bare. While each tab held its own socket that fixed
-    // itself, because attaching is what writes the tag; with tabs attaching
-    // only when opened, the next sweep would take every unopened tab instead,
-    // five seconds later, with nothing to undo it.
-    //
-    // So offer the names back before dropping any of them. Only sessions that
-    // really exist get adopted, which leaves a tab closed on another device
-    // missing from the re-read as well — and it still goes.
-    if (missing.length) {
-      await readoptTabs(missing.map((s) => ({ name: s.name, displayName: s.displayName })));
-      const after = await fetchServerTabs();
-      if (!after) return; // unreachable now — keep every tab we have
-      const listed = new Set(after.map((t) => t.name));
-      missing = missing.filter((s) => !listed.has(s.name));
-    }
-    for (const s of missing) {
-      recentlyClosed.set(s.name, performance.now());
-      removeLocalSession(s);
-    }
-
+    await loadRemotes();
+    await Promise.all(['', ...remoteHosts.map(r => r.id)].map(host => syncHost(host)));
     if (sessions.length === 0) addFallbackTab();
     refreshMobileUI(); // directories or folders may have changed
     saveTabs();
   } finally {
     syncing = false;
   }
+}
+
+/** Reconcile the tabs of one server with what it lists. */
+async function syncHost(host: string): Promise<void> {
+  const [serverTabs] = await Promise.all([fetchServerTabs(host), loadFolders(host)]);
+  if (!serverTabs) { // unreachable — keep what we have
+    if (host) offlineHosts.add(host);
+    return;
+  }
+  offlineHosts.delete(host);
+  connectAgentStatus(host); // a remote that was down has its stream back
+  const byName = new Map(serverTabs.map((t) => [t.name, t]));
+
+  // Expire stale guards first so re-opening a name later still works.
+  const now = performance.now();
+  for (const [name, at] of recentlyClosed) {
+    if (now - at > CLOSE_GUARD_MS) recentlyClosed.delete(name);
+  }
+  for (const [name, at] of recentlyCreated) {
+    if (now - at > CREATE_GUARD_MS) recentlyCreated.delete(name);
+  }
+
+  // Add tabs opened elsewhere; adopt display-name changes from elsewhere.
+  for (const t of serverTabs) {
+    if (recentlyClosed.has(t.name)) continue; // don't resurrect a just-closed tab
+    // The second session of a split belongs to its tab, not in the strip. The
+    // server leaves it out of the list; this is the same rule again, for a
+    // server that has not been updated yet. One whose first session is gone
+    // is nobody's second half any more, and shows up as an ordinary tab.
+    if (isMateName(t.name) && byName.has(primaryNameOf(t.name))) continue;
+    const existing = sessions.find((s) => s.name === t.name);
+    if (!existing) {
+      addSession(t.name, false, t.displayName).cwd = t.cwd ?? null;
+    } else {
+      if (t.cwd) existing.cwd = t.cwd;
+      if (t.displayName && t.displayName !== existing.displayName) setDisplayName(existing, t.displayName);
+    }
+  }
+
+  // Remove tabs closed elsewhere. A tab we built moments ago is exempt: it
+  // may not have attached yet, so the server would not list it either.
+  let missing = sessions.filter(
+    (s) => s.host === host && !byName.has(s.name) && !recentlyCreated.has(s.name) && !recentlyClosed.has(s.name)
+  );
+  // Absent from the list is not the same as gone. The list is built from a
+  // tag the tmux session carries, and a session can lose it while this page
+  // is open — a tmux server that dies and comes back through resurrect brings
+  // every session back bare. While each tab held its own socket that fixed
+  // itself, because attaching is what writes the tag; with tabs attaching
+  // only when opened, the next sweep would take every unopened tab instead,
+  // five seconds later, with nothing to undo it.
+  //
+  // So offer the names back before dropping any of them. Only sessions that
+  // really exist get adopted, which leaves a tab closed on another device
+  // missing from the re-read as well — and it still goes.
+  if (missing.length) {
+    await readoptTabs(host, missing.map((s) => ({ name: s.name, displayName: s.displayName })));
+    const after = await fetchServerTabs(host);
+    if (!after) return; // unreachable now — keep every tab we have
+    const listed = new Set(after.map((t) => t.name));
+    missing = missing.filter((s) => !listed.has(s.name));
+  }
+  for (const s of missing) {
+    recentlyClosed.set(s.name, performance.now());
+    removeLocalSession(s);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remote hosts: the servers this one forwards to. Their list lives on this
+// server (see src/remotes.ts); a remote's sessions come and go with it.
+// ---------------------------------------------------------------------------
+async function loadRemotes(): Promise<void> {
+  try {
+    const res = await fetch('/api/remotes', { cache: 'no-store' });
+    if (!res.ok) return; // an older server: no remotes
+    takeRemotes(await res.json());
+  } catch {
+    /* keep the list we have */
+  }
+}
+
+let selfToken = '';
+function takeRemotes(data: { remotes?: unknown; self?: { name?: unknown; token?: unknown } }): void {
+  if (!Array.isArray(data.remotes)) return;
+  if (typeof data.self?.name === 'string') selfName = data.self.name;
+  if (typeof data.self?.token === 'string') selfToken = data.self.token;
+  const next = data.remotes.filter((r): r is RemoteHost =>
+    !!r && typeof r.id === 'string' && typeof r.name === 'string' && typeof r.url === 'string');
+  const kept = new Set(next.map(r => r.id));
+  // A remote taken off the list takes its tabs off this page; its sessions
+  // themselves are left running over there.
+  for (const s of sessions.filter(x => x.host && !kept.has(x.host))) removeLocalSession(s);
+  for (const r of remoteHosts) if (!kept.has(r.id)) { disconnectAgentStatus(r.id); offlineHosts.delete(r.id); }
+  remoteHosts = next;
+  document.documentElement.classList.toggle('has-remotes', next.length > 0);
+  renderRemoteList();
 }
 
 // ---------------------------------------------------------------------------
@@ -3643,7 +3791,7 @@ fileInput.addEventListener('change', () => {
 // The desktop toolbar, mobile bar and ⋯ sheet share this file picker.
 
 function openQuickCommandPanel(): void {
-  showQuickCommands(text => {
+  showQuickCommands(hostUrl(settingsHost(), '/api/quick-commands'), remoteHosts.length ? hostLabel(settingsHost()) : '', text => {
     const target = activeSession;
     if (!target?.connected) return false;
     target.pasteText(text);
@@ -3905,7 +4053,8 @@ mTitleLabel.className = 'm-title-label';
 const mCaret = document.createElement('span');
 mCaret.className = 'm-caret';
 mCaret.textContent = '▾';
-mTitle.append(mTitleDot, mTitleLabel, mCaret);
+const mTitleHost = document.createElement('span');
+mTitle.append(mTitleDot, mTitleHost, mTitleLabel, mCaret);
 bindIntentionalClick(mTitle, openDrawer);
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
@@ -3994,13 +4143,15 @@ function renderDrawer(): void {
     body.setAttribute('role', 'button');
     body.tabIndex = 0;
     body.setAttribute('aria-pressed', String(s === drawerSelected));
-    body.setAttribute('aria-label', `选中会话：${s.displayName}`);
+    body.setAttribute('aria-label', `选中会话：${remoteHosts.length ? `${hostLabel(s.host)} · ` : ''}${s.displayName}`);
     const dot = document.createElement('span');
     dot.className = 'tab-dot' + (s.connected ? ' connected' : '') + (hasRecentOutput(s) ? ' working' : '');
     const name = document.createElement('span');
     name.className = 'drawer-name';
     name.textContent = s.displayName;
-    body.append(dot, name);
+    // With a remote added, every row says which server it runs on.
+    if (remoteHosts.length) body.append(dot, hostBadge(s.host), name);
+    else body.append(dot, name);
     // Taps only: this list scrolls, and a swipe through it must not pick the
     // session it started on (it used to, on pointerdown).
     onTap(body, () => {
@@ -4160,7 +4311,7 @@ async function updateColorPolicy(enabled?: boolean): Promise<void> {
   colorRequest = true;
   for (const button of colorButtons.values()) button.disabled = true;
   try {
-    const response = await fetch('/api/terminal-colors', enabled === undefined
+    const response = await fetch(hostUrl(settingsHost(), '/api/terminal-colors'), enabled === undefined
       ? { cache: 'no-store' }
       : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
     if (!response.ok) throw new Error('request failed');
@@ -4211,6 +4362,7 @@ statusModeHint.setAttribute('role', 'status');
 const statusModeButtons = new Map<string, HTMLButtonElement>();
 let statusModeError = '';
 function refreshStatusModeUI(): void {
+  const agentMode = agentModes.get(settingsHost()) ?? null;
   for (const [mode, button] of statusModeButtons) {
     button.classList.toggle('active', mode === agentMode);
     button.setAttribute('aria-pressed', String(mode === agentMode));
@@ -4222,13 +4374,12 @@ function refreshStatusModeUI(): void {
 async function setStatusMode(mode: string): Promise<void> {
   for (const button of statusModeButtons.values()) button.disabled = true;
   try {
-    const response = await fetch('/api/agent-status/mode', {
+    const host = settingsHost();
+    const response = await fetch(hostUrl(host, '/api/agent-status/mode'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
     });
     if (!response.ok) throw new Error('request failed');
-    const data = await response.json() as { mode?: unknown; sessions?: Record<string, AgentStatus> };
-    if (data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy') agentMode = data.mode;
-    agentStatuses = new Map(Object.entries(data.sessions ?? {}));
+    takeAgentStatus(host, await response.json() as { mode?: unknown; sessions?: Record<string, AgentStatus> });
     statusModeError = '';
   } catch {
     statusModeError = '保存失败，请重试。';
@@ -4352,6 +4503,148 @@ const uploadSheetButton = sheetRow('', '上传文件', () => {
   fileInput.click();
 });
 uploadSheetButton.querySelector('.sheet-ico')!.append(desktopUploadButton.firstElementChild!.cloneNode(true));
+// ---------------------------------------------------------------------------
+// Which server the settings are for. Font, theme and the key bar belong to this
+// device; terminal colours, the status source and quick commands belong to a
+// server, and that is the one the open session runs on. The banner at the top
+// of the panel says which, in that server's colour.
+// ---------------------------------------------------------------------------
+function settingsHost(): string {
+  return activeSession?.host ?? '';
+}
+
+const settingsTarget = document.createElement('div');
+settingsTarget.className = 'settings-target';
+function refreshSettingsTarget(): void {
+  const host = settingsHost();
+  settingsTarget.hidden = !remoteHosts.length;
+  settingsTarget.classList.toggle('remote', !!host);
+  settingsTarget.replaceChildren(hostBadge(host), `当前设置对象：${hostLabel(host)}`);
+  const hint = document.createElement('small');
+  hint.textContent = '「设置」组与快捷命令作用于该主机；字号、主题等只作用于本设备。';
+  settingsTarget.append(hint);
+}
+
+// Remote hosts: add another WebTerminal server by its address and token. Its
+// sessions then show up here as their own folder; this server forwards to it.
+const remoteGroup = document.createElement('div');
+remoteGroup.className = 'remote-hosts';
+const remoteList = document.createElement('div');
+remoteList.className = 'remote-list';
+const remoteForm = document.createElement('form');
+remoteForm.className = 'remote-form';
+remoteForm.hidden = true;
+const remoteInputs = {
+  name: Object.assign(document.createElement('input'), { placeholder: '名称，如 119 桌面', maxLength: 32 }),
+  url: Object.assign(document.createElement('input'), { placeholder: 'http://192.168.88.119:8090' }),
+  token: Object.assign(document.createElement('input'), { placeholder: '远程的访问 Token', type: 'password' }),
+};
+for (const input of Object.values(remoteInputs)) {
+  input.autocapitalize = 'off';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.className = 'prompt-input';
+  input.addEventListener('keydown', e => e.stopPropagation());
+}
+const remoteStatus = document.createElement('div');
+remoteStatus.className = 'sheet-hint';
+remoteStatus.setAttribute('role', 'status');
+const remoteSave = Object.assign(document.createElement('button'), { type: 'submit', className: 'tb-btn primary', textContent: '测试并添加' });
+const remoteCancel = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '取消' });
+const remoteFormRow = document.createElement('div');
+remoteFormRow.className = 'paste-row';
+remoteFormRow.append(remoteCancel, remoteSave);
+remoteForm.append(remoteInputs.name, remoteInputs.url, remoteInputs.token, remoteFormRow);
+let remoteEditing: string | null = null; // id being edited, '' for a new one
+
+function openRemoteForm(remote?: RemoteHost): void {
+  remoteEditing = remote?.id ?? '';
+  remoteInputs.name.value = remote?.name ?? '';
+  remoteInputs.url.value = remote?.url ?? '';
+  remoteInputs.token.value = '';
+  remoteInputs.token.placeholder = remote ? '留空则不修改 Token' : '远程的访问 Token';
+  remoteSave.textContent = remote ? '测试并保存' : '测试并添加';
+  remoteForm.hidden = false;
+  remoteStatus.textContent = '';
+  remoteInputs[remote ? 'token' : 'name'].focus();
+}
+remoteCancel.addEventListener('click', () => { remoteForm.hidden = true; remoteStatus.textContent = ''; });
+
+async function editRemotes(body: Record<string, unknown>, busy: string): Promise<boolean> {
+  remoteStatus.textContent = busy;
+  remoteSave.disabled = true;
+  try {
+    const res = await fetch('/api/remotes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json() as Parameters<typeof takeRemotes>[0] & { error?: unknown };
+    if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : `保存失败（${res.status}）`);
+    takeRemotes(data);
+    remoteStatus.textContent = '';
+    void syncFromServer();
+    return true;
+  } catch (err) {
+    remoteStatus.textContent = (err as Error).message || '保存失败，请重试';
+    return false;
+  } finally {
+    remoteSave.disabled = false;
+  }
+}
+remoteForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const editing = remoteEditing;
+  const body = {
+    action: editing ? 'update' : 'add', id: editing || undefined,
+    name: remoteInputs.name.value, url: remoteInputs.url.value, token: remoteInputs.token.value,
+  };
+  void editRemotes(body, '正在连接远程主机…').then(ok => {
+    if (ok) { remoteForm.hidden = true; flashStatus(editing ? '远程主机已更新' : '远程主机已添加，会话已并入侧栏', 2500); }
+  });
+});
+
+function renderRemoteList(): void {
+  remoteList.replaceChildren();
+  const self = document.createElement('div');
+  self.className = 'remote-row self';
+  const selfText = document.createElement('span');
+  selfText.className = 'remote-row-text';
+  selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机');
+  const copy = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '复制本机 Token' });
+  copy.title = '在另一台主机的「远程主机」里添加本机时使用';
+  copy.disabled = !selfToken;
+  copy.addEventListener('click', () => {
+    void copyText(selfToken).then(ok => flashStatus(ok ? '本机 Token 已复制' : '复制失败', 1800));
+  });
+  self.append(selfText, copy);
+  remoteList.append(self);
+  for (const remote of remoteHosts) {
+    const row = document.createElement('div');
+    row.className = 'remote-row';
+    row.classList.toggle('offline', offlineHosts.has(remote.id));
+    const text = document.createElement('span');
+    text.className = 'remote-row-text';
+    const name = document.createElement('b');
+    name.textContent = remote.name;
+    const url = document.createElement('small');
+    url.textContent = `${remote.url}${offlineHosts.has(remote.id) ? ' · 无法连接' : ''}`;
+    text.append(hostBadge(remote.id), name, url);
+    const edit = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '编辑' });
+    edit.addEventListener('click', () => openRemoteForm(remote));
+    const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn danger', textContent: '移除' });
+    remove.addEventListener('click', () => {
+      if (!window.confirm(`移除远程主机「${remote.name}」？只是不再在这里显示，远程上的会话不会结束。`)) return;
+      void editRemotes({ action: 'remove', id: remote.id }, '正在移除…');
+    });
+    row.append(text, edit, remove);
+    remoteList.append(row);
+  }
+  const add = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn remote-add', textContent: '＋ 添加远程主机' });
+  add.addEventListener('click', () => openRemoteForm());
+  remoteList.append(add);
+}
+remoteGroup.append(remoteList, remoteForm, remoteStatus);
+renderRemoteList();
+
 // Ordered by how often each is reached for: everyday actions first, then the
 // view, then settings that are set once, then the account. Small headings mark
 // the groups so the list scans quickly.
@@ -4364,6 +4657,7 @@ function sheetGroup(title: string): HTMLElement {
 sheet.append(
   sheetGrip,
   sheetTitle,
+  settingsTarget,
   sheetGroup('常用'),
   sheetRow('▤', '文件管理', () => { closeSheet(); openFileBrowser(); }),
   uploadSheetButton,
@@ -4410,6 +4704,8 @@ sheet.append(
   colorHint,
   keyboardLockButton,
   selectBtn,
+  sheetGroup('远程主机'),
+  remoteGroup,
   sheetGroup('其他'),
   sheetRow('?', '帮助：复制 / 粘贴 / 文件', () => {
     closeSheet();
@@ -4424,6 +4720,9 @@ bindIntentionalClick(sheetOverlay, (e) => {
 }, sheet);
 
 function openSheet(): void {
+  refreshSettingsTarget();
+  refreshStatusModeUI();
+  renderRemoteList();
   void updateColorPolicy();
   for (const session of sessions) session.stopTouchScroll();
   if (drawerOpen) closeDrawer();
@@ -4444,6 +4743,8 @@ function refreshMobileUI(): void {
   document.title = (attention ? `(${attention}) ` : '') +
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
   mTitleLabel.textContent = s ? s.displayName : '—';
+  mTitleHost.replaceChildren(...(s && remoteHosts.length ? [hostBadge(s.host)] : []));
+  if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); }
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();
   updateOutputActivity();
@@ -4555,7 +4856,8 @@ function uploadFile(file: Blob, name?: string): Promise<void> {
     showStatus(`uploading ${label}… 0%`);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload' + (name ? `?name=${encodeURIComponent(name)}` : ''));
+    // The file goes to the server the terminal runs on, so the path it types is real there.
+    xhr.open('POST', hostUrl(target?.host ?? '', '/upload') + (name ? `?name=${encodeURIComponent(name)}` : ''));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
 
     xhr.upload.onprogress = (e): void => {
@@ -4624,9 +4926,9 @@ async function downloadFromHost(rawPath: string): Promise<void> {
   if (!p) return;
   // Pass the active session so the server can resolve a relative path against
   // that terminal's current working directory (no absolute path needed).
-  const sess = activeSession?.name;
-  const url =
-    '/api/download?path=' + encodeURIComponent(p) + (sess ? '&session=' + encodeURIComponent(sess) : '');
+  const sess = activeSession?.raw;
+  const url = hostUrl(activeSession?.host ?? '', '/api/download') +
+    '?path=' + encodeURIComponent(p) + (sess ? '&session=' + encodeURIComponent(sess) : '');
   showStatus(`preparing ${p}…`);
   let head: Response;
   try {
@@ -4786,34 +5088,45 @@ async function init(): Promise<void> {
   // Both server round-trips start together; the prefs one is awaited further
   // down, just before the tabs are built.
   const prefsPromise = fetchServerPrefs();
-  const foldersPromise = loadFolders();
+  await loadRemotes();
+  const hosts = ['', ...remoteHosts.map(r => r.id)];
+  const foldersPromise = Promise.all(hosts.map(host => loadFolders(host)));
   // The server's list is authoritative; fall back to the local cache, then to
-  // a single default session when both are empty.
-  let server = await fetchServerTabs();
-  // Any tab this device remembers that the server does not list: hand over the
-  // names and let it re-adopt the ones whose sessions really exist. That is
-  // what a tmux-resurrect restore leaves behind — resurrect brings the sessions
-  // back but not their @twtab option, and with tabs only attaching when opened,
-  // nothing else would ever re-tag them. It happens for a partial restore too,
-  // where the server lists the sessions that survived and none of the rest, so
-  // this is not conditional on the list being empty.
-  const listed = new Set((server ?? []).map((t) => t.name));
-  const unlisted = cached.tabs.filter((t) => !listed.has(t.name));
-  if (unlisted.length) {
-    await readoptTabs(unlisted);
-    server = await fetchServerTabs();
-  }
+  // a single default session when both are empty. Each server answers for its
+  // own tabs: one that does not answer keeps what this device cached of it.
+  const lists = await Promise.all(hosts.map(async host => {
+    let list = await fetchServerTabs(host);
+    // Any tab this device remembers that the server does not list: hand over the
+    // names and let it re-adopt the ones whose sessions really exist. That is
+    // what a tmux-resurrect restore leaves behind — resurrect brings the sessions
+    // back but not their @twtab option, and with tabs only attaching when opened,
+    // nothing else would ever re-tag them. It happens for a partial restore too,
+    // where the server lists the sessions that survived and none of the rest, so
+    // this is not conditional on the list being empty.
+    const listed = new Set((list ?? []).map((t) => t.name));
+    const unlisted = cached.tabs.filter((t) => hostOfKey(t.name) === host && !listed.has(t.name));
+    if (list && unlisted.length) {
+      await readoptTabs(host, unlisted);
+      list = await fetchServerTabs(host);
+    }
+    if (!list && host) offlineHosts.add(host);
+    return list ?? (host ? cached.tabs.filter(t => hostOfKey(t.name) === host) : null);
+  }));
+  const server = lists[0];
+  const remoteTabs = lists.slice(1).flatMap(list => list ?? []);
   let initialTabs: SavedTab[] =
     server && server.length
       ? server
       : cached.tabs.length
-        ? cached.tabs.slice()
-        : [{ name: defaultSessionName, displayName: defaultSessionName }];
+        ? cached.tabs.filter(t => !hostOfKey(t.name))
+        : [];
+  if (!initialTabs.length && !remoteTabs.length) initialTabs = [{ name: defaultSessionName, displayName: defaultSessionName }];
+  initialTabs = [...initialTabs, ...remoteTabs];
   if (urlSession && !initialTabs.some((t) => t.name === urlSession)) {
     initialTabs = [{ name: urlSession, displayName: urlSession }, ...initialTabs];
   }
   if (!TOUCH_DEVICE) initialTabs = restoreTabOrder(initialTabs, cached.tabs.map(tab => tab.name));
-  defaultSessionName = urlSession ?? initialTabs[0]?.name ?? 'web';
+  defaultSessionName = urlSession ?? initialTabs.find(t => !hostOfKey(t.name))?.name ?? 'web';
 
   // The stored prefs land before any tab is built, so a pane is created at the
   // font it will keep and nothing has to be re-fitted afterwards. A device that
@@ -4857,7 +5170,7 @@ async function init(): Promise<void> {
     s.view = cachedViews.get(t.name) ?? 'one';
     // Asked for by name in the URL, or the default on a first visit: both are
     // tabs being made, not remembered, so they may create their session.
-    if (t.name === urlSession || (!server?.length && !cached.tabs.length)) s.intendCreate();
+    if (t.name === urlSession || (!hostOfKey(t.name) && !server?.length && !cached.tabs.length)) s.intendCreate();
   }
 
   // This device's own last focus first, then what the server remembers for its
@@ -4874,8 +5187,8 @@ async function init(): Promise<void> {
   if (keyboardLockChanged) savePrefs({ keyboardLocked });
 }
 
-void init();
-connectAgentStatus();
+connectAgentStatus('');
+void init().then(() => { for (const r of remoteHosts) if (!offlineHosts.has(r.id)) connectAgentStatus(r.id); });
 
 // Keep the tab list in sync with the server: when the page regains focus /
 // visibility, and on a light interval while visible.
@@ -4925,13 +5238,16 @@ function openFileBrowser(): void {
   }
   if (fileBrowserSession !== session.name) {
     fileBrowserSession = session.name;
-    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams({ session: session.name, label: session.displayName, theme: currentTheme })}`;
+    const query: Record<string, string> = { session: session.raw, label: session.displayName, theme: currentTheme };
+    if (session.host) { query.host = session.host; query.hostLabel = hostLabel(session.host); }
+    else if (remoteHosts.length) query.hostLabel = hostLabel('');
+    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams(query)}`;
   }
   fileBrowserOpen = true;
   document.body.classList.add('file-browser-open');
   fileBrowserFrame.hidden = false;
   sizeFileBrowser();
-  document.title = `文件管理 · ${session.displayName}`;
+  document.title = `文件管理 · ${remoteHosts.length ? `${hostLabel(session.host)} · ` : ''}${session.displayName}`;
 }
 function sizeFileBrowser(): void {
   if (!fileBrowserOpen || !fileBrowserFrame) return;
@@ -4963,7 +5279,9 @@ window.addEventListener('message', event => {
   if (data?.type === 'files-auth-expired') location.reload();
   if (data?.type === 'files-open-terminal' && typeof data.name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(data.name)) {
     closeFileBrowser();
-    addSession(data.name, true, typeof data.displayName === 'string' ? data.displayName : data.name);
+    // The terminal opens on the server whose files were being browsed.
+    const host = sessions.find(s => s.name === fileBrowserSession)?.host ?? hostOfKey(fileBrowserSession);
+    addSession(makeKey(host, data.name), true, typeof data.displayName === 'string' ? data.displayName : data.name);
   }
 });
 window.addEventListener('resize', sizeFileBrowser);

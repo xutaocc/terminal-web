@@ -36,6 +36,7 @@ import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
+import { RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
@@ -951,7 +952,9 @@ async function handleSetPrefs(
   // Only the fields actually present change; everything else is left alone, so
   // a client that knows about one pref can't blank the ones it doesn't.
   if (typeof obj.activeTab === "string" && obj.activeTab.trim()) {
-    next.activeTab = sanitizeSession(obj.activeTab);
+    // A tab on a remote host is remembered by its page key, "@<host>/<name>".
+    const remote = /^(@[a-z0-9]{1,16}\/)(.+)$/.exec(obj.activeTab.trim());
+    next.activeTab = remote ? remote[1] + sanitizeSession(remote[2]) : sanitizeSession(obj.activeTab);
   }
   if (typeof obj.fontSize === "number" && Number.isFinite(obj.fontSize)) {
     next.fontSize = Math.min(28, Math.max(8, Math.round(obj.fontSize)));
@@ -1186,6 +1189,29 @@ async function handleDownload(
 }
 
 // ---------------------------------------------------------------------------
+// Remote hosts (src/remotes.ts): other terminal-web servers driven from here.
+// The list and the remotes' tokens stay on this server; the browser sees names
+// and addresses, plus this server's own token so it can be added over there.
+// ---------------------------------------------------------------------------
+
+const remotes = new RemoteStore(process.env.REMOTES_FILE || path.join(os.homedir(), ".terminal-web", "remotes.json"));
+
+async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  res.setHeader("Cache-Control", "no-store");
+  const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
+    remotes: RemoteStore.view(await remotes.list()),
+    self: { name: os.hostname(), token: config.authToken },
+  });
+  if (req.method === "GET") { await reply(); return; }
+  let body: Record<string, unknown>;
+  try { body = JSON.parse((await readBody(req, 4096)).toString("utf8")); }
+  catch { sendJsonHttp(res, 400, { error: "invalid body" }); return; }
+  try { await remotes.edit(body ?? {}); }
+  catch (err) { sendJsonHttp(res, 400, { error: (err as Error).message }); return; }
+  await reply();
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 
@@ -1215,6 +1241,17 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
+      const viaRemote = remoteRoute(requestUrl.pathname);
+      if (viaRemote) {
+        const remote = await remotes.get(viaRemote.id);
+        if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
+        proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search);
+        return;
+      }
+      if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/remotes') {
+        await handleRemotes(req, res);
+        return;
+      }
       if (await handleSite(req, res, requestUrl)) return;
       if (await handleFileApi(req, res, requestUrl, { maxUpload: config.uploadMaxBytes, tmuxConf: config.tmuxConfPath })) return;
 
@@ -1867,7 +1904,8 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
 
-  if (pathname !== "/ws") {
+  const viaRemote = remoteRoute(pathname);
+  if (pathname !== "/ws" && viaRemote?.rest !== "/ws") {
     socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
     socket.destroy();
     return;
@@ -1884,6 +1922,20 @@ server.on("upgrade", (req, socket, head) => {
   if (!isAuthed(req, config.authToken)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
+    return;
+  }
+
+  if (viaRemote) {
+    void remotes.get(viaRemote.id).then((remote) => {
+      if (!remote) {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      let search = "";
+      try { search = new URL(req.url ?? "/", "http://localhost").search; } catch { /* checked above */ }
+      proxyUpgrade(req, socket, head, remote, viaRemote.rest, search);
+    });
     return;
   }
 

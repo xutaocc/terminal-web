@@ -1812,3 +1812,73 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   color: #fff;
 }
 .prompt-box .paste-row .tb-btn.primary:hover { background: #2f80d8; }
+
+/* ---------------------------------------------------------------------------
+   Remote hosts. Badges come from web/hosts.css; everything here only shows
+   once a remote has been added (:root.has-remotes), so a single-server page
+   looks exactly as before.
+   --------------------------------------------------------------------------- */
+.tab .host-badge { display: none; margin-right: -2px; padding: 0 3px; font-size: 9px; line-height: 13px; }
+.has-remotes .tab .host-badge { display: inline-flex; }
+.has-remotes .tab.remote { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--host-remote) 70%, transparent); }
+.m-title .host-badge { margin-right: 2px; }
+.drawer-body .host-badge { margin-right: -2px; }
+
+/* PC sidebar: one top-level folder per server. */
+.ps-host + .ps-host { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--ui-border, #333); }
+.ps-host-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ps-host-head:hover { background: var(--ui-hover, #2c2c2f); }
+.ps-host.folded .ps-host-head .ps-chevron { transform: rotate(-90deg); }
+.ps-host-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.ps-host-state { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--host-local); }
+.ps-host.offline .ps-host-state { background: var(--ui-danger-text, #f14c4c); }
+.ps-host.offline .ps-host-body { opacity: 0.55; }
+.ps-host-head:hover .ps-group-actions { opacity: 1; }
+.ps-host-head:hover .ps-group-count { visibility: hidden; }
+.ps-host-body { padding-left: 8px; }
+.ps-host.remote .ps-host-body { border-left: 2px solid color-mix(in srgb, var(--host-remote) 45%, transparent); margin-left: 9px; padding-left: 2px; }
+.ps-host-empty { padding: 6px 8px 8px 22px; font-size: 12px; color: var(--ui-subtle, #777); }
+
+/* Settings: which server the server-side settings apply to. */
+.settings-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--host-local) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--host-local) 8%, transparent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.settings-target.remote {
+  border-color: color-mix(in srgb, var(--host-remote) 55%, transparent);
+  background: color-mix(in srgb, var(--host-remote) 10%, transparent);
+}
+.settings-target small { flex-basis: 100%; font-weight: 400; font-size: 11px; color: var(--ui-muted, #9a9a9a); }
+.settings-target[hidden] { display: none; }
+
+.remote-hosts { padding: 0 12px 8px; }
+.remote-list { display: flex; flex-direction: column; gap: 6px; }
+.remote-row { display: flex; align-items: center; gap: 6px; }
+.remote-row .tb-btn { flex: none; padding: 4px 8px; font-size: 12px; }
+.remote-row-text { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; }
+.remote-row-text small { overflow: hidden; text-overflow: ellipsis; color: var(--ui-muted, #9a9a9a); font-size: 11px; }
+.remote-row.offline small { color: var(--ui-danger-text, #f14c4c); }
+.remote-add { align-self: flex-start; }
+.remote-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.remote-form[hidden] { display: none; }
+.remote-form .prompt-input { width: 100%; box-sizing: border-box; }
+.actions-sheet .remote-hosts { padding: 0 8px 6px; }
+.actions-sheet .settings-target { margin: 2px 8px 6px; }

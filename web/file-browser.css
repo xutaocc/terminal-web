@@ -177,3 +177,5 @@ footer{padding:6px 14px max(6px,env(safe-area-inset-bottom));gap:6px}
   .fb-brand .brand-glyph svg{width:8px;height:8px}
   .fb-brand .brand-owner{font-size:9px}
 }
+.heading .host-badge{margin-right:-6px}
+body.remote-files header{box-shadow:inset 0 -2px 0 color-mix(in srgb,var(--host-remote) 70%,transparent)}

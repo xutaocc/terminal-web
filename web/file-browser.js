@@ -1,12 +1,17 @@
 import './file-browser.css';
 import './theme.css';
+import './hosts.css';
 import { applyDocumentTheme, isTheme } from './theme.js';
 import { brandMark } from './brand-mark.js';
 
 // Runs in a same-origin embedded page; cookies and all APIs belong to the terminal server.
 const $ = selector => document.querySelector(selector);
-const apiBase = '/api/files/';
 const query = new URLSearchParams(location.search);
+// A remote session's files are that remote's: every request goes through this
+// server's /remote/<id>/ forwarder (src/remotes.ts), so the page stays same-origin.
+const host = /^[a-z0-9]{1,16}$/.test(query.get('host') || '') ? query.get('host') : '';
+const hostBase = host ? `/remote/${host}` : '';
+const apiBase = `${hostBase}/api/files/`;
 let theme = query.get('theme');
 if (!isTheme(theme)) {
   try { theme = localStorage.getItem(`tw.theme.${navigator.maxTouchPoints > 0 ? 'touch' : 'desktop'}`); } catch { /* default dark */ }
@@ -385,7 +390,7 @@ const audioExtensions = /\.(mp3|ogg|wav)$/i;
 const htmlExtensions = /\.html?$/i;
 const markdownExtensions = /\.(md|markdown)$/i;
 // 后端 /site/<绝对路径> 把文件当静态网站提供，页面里的相对路径资源按所在目录解析。
-function siteUrl(p) { return '/site' + p.split('/').map(encodeURIComponent).join('/'); }
+function siteUrl(p) { return `${hostBase}/site` + p.split('/').map(encodeURIComponent).join('/'); }
 // 指定窗口尺寸让桌面浏览器开独立窗口而非新标签；移动端浏览器会忽略尺寸并以新标签打开。
 // 只读查看源码：与预览相同的行号视图，但隐藏编辑入口。
 async function viewSource(item) { await preview(item); if (previewItem === item) $('#edit').hidden = true; }
@@ -479,12 +484,22 @@ click($('#collapse'), async () => {
 });
 click($('#sort'), () => { const body = sheet('排序', '每一级目录独立排序，文件夹优先'); const grid = el('div', 'menu-grid'); [['name', '名称'], ['modified', '修改时间'], ['size', '大小']].forEach(([key, text]) => grid.append(button(text, () => { sortKey = key; render(); closeDialog($('#sheet')); }, key === sortKey ? 'primary' : ''))); body.append(grid, button(descending ? '降序 ↓ · 点击切换' : '升序 ↑ · 点击切换', () => { descending = !descending; render(); closeDialog($('#sheet')); })); });
 async function requestSessionPath() {
-  const response = await fetch(`/api/sessions/cwd?${new URLSearchParams({ session })}`, { cache: 'no-store' });
+  const response = await fetch(`${hostBase}/api/sessions/cwd?${new URLSearchParams({ session })}`, { cache: 'no-store' });
   if (!response.ok) throw new Error(response.status === 401 ? '登录已失效' : '无法取得当前终端目录，请刷新或返回终端重试');
   const result = await response.json(); sessionPath = result.path; return sessionPath;
 }
 $('#tree').append(el('p', 'tree-error', '正在读取当前会话目录…'));
 $('#session-label').textContent = query.get('label') || session || '当前会话';
+// Which server these files are on, when there is more than one to choose from.
+if (query.get('hostLabel')) {
+  const badge = el('span', `host-badge ${host ? 'remote' : 'local'}`, host ? '远程' : '本地');
+  badge.title = query.get('hostLabel');
+  $('#session-label').before(badge);
+  $('#session-label').title = `${query.get('hostLabel')} · ${$('#session-label').textContent}`;
+  document.body.classList.toggle('remote-files', !!host);
+  document.title = `文件管理 · ${query.get('hostLabel')}`;
+  $('.demo-note').prepend(`文件位于：${query.get('hostLabel')}`, el('br'));
+}
 $('#brand-slot').append(brandMark('fb-brand'));
 // The badge yields to the session name: shown only while the name fits whole.
 function fitBrand() {

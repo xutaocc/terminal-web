@@ -2,7 +2,8 @@ import type { QuickCommand, QuickCommandData } from '../src/quick-commands.js';
 import { moveTab } from './tab-order.js';
 import { bindIntentionalClick } from './intentional-click.js';
 
-export function showQuickCommands(send: (text: string) => boolean): void {
+/** `url` is the quick-commands API of the server they belong to; `where` names it, when there are several. */
+export function showQuickCommands(url: string, where: string, send: (text: string) => boolean): void {
   if (document.querySelector('.quick-command-overlay')) return;
   const overlay = document.createElement('div');
   overlay.className = 'paste-overlay quick-command-overlay';
@@ -12,7 +13,7 @@ export function showQuickCommands(send: (text: string) => boolean): void {
   box.setAttribute('aria-modal', 'true');
   box.setAttribute('aria-label', '快捷命令');
   const title = document.createElement('h2');
-  title.textContent = '快捷命令';
+  title.textContent = where ? `快捷命令 · ${where}` : '快捷命令';
   const hint = document.createElement('p');
   hint.className = 'qc-hint';
   hint.textContent = '发送不追加回车；按住左侧手柄拖动排序。';
@@ -91,7 +92,7 @@ export function showQuickCommands(send: (text: string) => boolean): void {
     nameInput.disabled = textInput.disabled = true;
     status.textContent = '正在保存…';
     try {
-      const response = await fetch('/api/quick-commands', {
+      const response = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ revision: data.revision, commands }), signal: requests.signal,
       });
@@ -234,7 +235,7 @@ export function showQuickCommands(send: (text: string) => boolean): void {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }
   });
-  void fetch('/api/quick-commands', { cache: 'no-store', signal: requests.signal }).then(async response => {
+  void fetch(url, { cache: 'no-store', signal: requests.signal }).then(async response => {
     if (!response.ok) throw new Error('load');
     data = await response.json(); add.disabled = false; status.textContent = ''; render();
   }).catch(() => { if (!requests.signal.aborted) status.textContent = '读取失败，请关闭后重试。'; });

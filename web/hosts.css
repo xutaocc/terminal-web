@@ -1,0 +1,23 @@
+/* Local / remote badges (web/hosts.ts). Imported by the terminal page and the
+   file manager alike, so a session, its settings and its files all carry the
+   same mark. Local is green, remote amber — the remote colour also tints the
+   settings banner and the remote section of the sidebar. */
+:root { --host-local: #3fa66b; --host-remote: #d9902a; }
+:root[data-theme="light"] { --host-local: #1f7a45; --host-remote: #a8640b; }
+.host-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: 600 10px/14px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--host-local);
+  background: color-mix(in srgb, var(--host-local) 12%, transparent);
+}
+.host-badge.remote {
+  color: var(--host-remote);
+  background: color-mix(in srgb, var(--host-remote) 14%, transparent);
+}
