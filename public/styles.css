@@ -2127,7 +2127,8 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 }
 .pager-jump svg { width: 19px; height: 19px; }
 .pager-jump:active { background: color-mix(in srgb, #3b8eea 35%, transparent); color: #fff; }
-.pager-bottom[hidden] { display: none; }
+/* ⤓ is always there; lit while the session is scrolled back from its live end. */
+.pager-bottom.lit { border-color: #3b8eea; color: #8fbfff; }
 #pager.dragging .pager-pair { border-color: #3b8eea; }
 /* Scroll pair, and the page pair beside it; ⤒ / ⤓ centred over the scroll pair. */
 #pager { align-items: flex-start; }

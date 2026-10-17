@@ -6,8 +6,8 @@
  * a few lines at a time, quicker the longer it is held. To their right, a
  * second pair turns real pages (上页 / 下页, as on the key bar) for when a
  * whole screen at once is what you want. Dragging any of them moves the group
- * up or down (remembered). ⤒ above jumps to the start of the history; after
- * scrolling up, ⤓ below appears to go back to the live output.
+ * up or down (remembered). ⤒ above jumps to the start of the history and ⤓
+ * below back to the live output; both are always there.
  */
 export interface PagerHooks {
   /**
@@ -64,7 +64,6 @@ export class FloatingPager {
       '<path d="m6 9 6 6 6-6"/>');
     this.bottomBtn = this.button('pager-bottom', '回到底部（最新输出）',
       '<path d="M12 5v11m-5-5 5 5 5-5"/><path d="M6 20h12"/>');
-    this.bottomBtn.hidden = true;
     const topBtn = this.button('pager-top pager-jump', '回到顶部（最早的输出）',
       '<path d="M6 4h12"/><path d="M12 20V9m-5 5 5-5 5 5"/>');
     topBtn.addEventListener('pointerdown', e => e.preventDefault());
@@ -108,17 +107,16 @@ export class FloatingPager {
     this.place();
   }
 
-  /** Whether the open session has been paged back from its live end. */
+  /** Whether the open session has been paged back from its live end (⤓ is lit then). */
   setPagedUp(on: boolean): void {
     if (this.pagedUp === on) return;
     this.pagedUp = on;
-    this.bottomBtn.hidden = !on;
-    this.place();
+    this.bottomBtn.classList.toggle('lit', on);
   }
 
   place(): void {
     const { top, bottom } = this.hooks.visibleRange();
-    const height = this.el.hidden ? 160 + (this.pagedUp ? 58 : 0) : this.el.offsetHeight;
+    const height = this.el.hidden ? 218 : this.el.offsetHeight;
     const room = bottom - top - height - 16;
     // No room beside a raised keyboard: step aside rather than cover the prompt.
     this.el.hidden = !this.shown || room < 8;

@@ -46,7 +46,7 @@ const KEYBAR_HEIGHT = 48; // px when shown
 // scrolled off. A session found sitting at 11x6 on this machine is what that
 // looks like afterwards. Below this floor we keep the last good size.
 // A tap on the floating scroll buttons: this much of a screen, over this long.
-const GLIDE_PAGE = 0.8;
+const GLIDE_PAGE = 0.4;
 const GLIDE_MS = 350;
 // Lines a full-screen program (Claude Code, Codex) scrolls per wheel notch —
 // measured, in effect: at 5 a tap moved only a quarter of a screen in Claude
@@ -1654,9 +1654,9 @@ class Session {
   }
 
   /**
-   * About 80% of a screen, as a run of wheel notches over ~0.35 s rather than
-   * one jump: a fifth of what was on screen stays in view, and the text is
-   * seen moving, so the eye keeps its place.
+   * About 40% of a screen, as a run of wheel notches over ~0.35 s rather than
+   * one jump: more than half of what was on screen stays in view, and the text
+   * is seen moving, so the eye keeps its place.
    *
    * How far a notch goes depends on who takes it. tmux's history moves 5 lines
    * (tmux/web.tmux.conf); a full-screen program that reads the mouse itself —
