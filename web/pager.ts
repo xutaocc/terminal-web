@@ -4,8 +4,9 @@
  * thumb rests. They scroll the way a finger or a mouse wheel does, a few lines
  * at a time, so the eye can follow where it was reading: a tap nudges a few
  * lines, holding scrolls on at a steady pace that picks up the longer it is
- * held. Dragging moves the pair up or down (remembered). After scrolling up,
- * ⤓ appears to go back to the live output.
+ * held. Dragging moves the pair up or down (remembered). ⤒ above them jumps
+ * to the start of the history; after scrolling up, ⤓ below appears to go back
+ * to the live output.
  */
 export interface PagerHooks {
   /**
@@ -14,6 +15,8 @@ export interface PagerHooks {
    */
   scroll(notches: number): void;
   bottom(): void;
+  /** Go to the oldest line of the history. */
+  top(): void;
   /** The part of the screen the terminal is visible in, in client pixels. */
   visibleRange(): { top: number; bottom: number };
 }
@@ -52,6 +55,15 @@ export class FloatingPager {
     this.bottomBtn = this.button('pager-bottom', '回到底部（最新输出）',
       '<path d="M12 5v11m-5-5 5 5 5-5"/><path d="M6 20h12"/>');
     this.bottomBtn.hidden = true;
+    const topBtn = this.button('pager-top pager-jump', '回到顶部（最早的输出）',
+      '<path d="M6 4h12"/><path d="M12 20V9m-5 5 5-5 5 5"/>');
+    topBtn.addEventListener('pointerdown', e => e.preventDefault());
+    topBtn.addEventListener('click', () => {
+      this.buzz();
+      this.setPagedUp(true);
+      this.hooks.top();
+    });
+    this.bottomBtn.classList.add('pager-jump');
     this.bindPaging(up, 'up');
     this.bindPaging(down, 'down');
     this.bottomBtn.addEventListener('pointerdown', e => e.preventDefault());
@@ -63,7 +75,7 @@ export class FloatingPager {
     const pair = document.createElement('div');
     pair.className = 'pager-pair';
     pair.append(up, down);
-    this.el.append(pair, this.bottomBtn);
+    this.el.append(topBtn, pair, this.bottomBtn);
     this.el.hidden = true;
   }
 
@@ -83,7 +95,7 @@ export class FloatingPager {
 
   place(): void {
     const { top, bottom } = this.hooks.visibleRange();
-    const height = this.el.hidden ? 96 + (this.pagedUp ? 46 : 0) : this.el.offsetHeight;
+    const height = this.el.hidden ? 160 + (this.pagedUp ? 58 : 0) : this.el.offsetHeight;
     const room = bottom - top - height - 16;
     // No room beside a raised keyboard: step aside rather than cover the prompt.
     this.el.hidden = !this.shown || room < 8;

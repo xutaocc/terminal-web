@@ -615,6 +615,7 @@ document.body.prepend(sidebar.el);
 const pager = new FloatingPager({
   scroll: notches => activeSession?.wheel(notches),
   bottom: () => { void activeSession?.scrollHistory('bottom'); },
+  top: () => { void activeSession?.scrollHistory('top'); },
   // The terminal's visible part: below the bars, above the key bar and the
   // soft keyboard (#terminal slides up behind the bar while typing).
   visibleRange: () => {
@@ -1646,7 +1647,7 @@ class Session {
 
   stopTouchScroll: () => void = () => {};
 
-  async scrollHistory(action: 'up' | 'down' | 'bottom'): Promise<void> {
+  async scrollHistory(action: 'up' | 'down' | 'top' | 'bottom'): Promise<void> {
     this.stopTouchScroll();
     if (action === 'bottom' && activeSession === this) pager.setPagedUp(false);
     try {

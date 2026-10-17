@@ -691,7 +691,7 @@ async function handleScrollSession(
   }
   const obj = body as { name?: unknown; action?: unknown } | null;
   if (typeof obj?.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(obj.name) ||
-      !['up', 'down', 'bottom'].includes(String(obj.action))) {
+      !['up', 'down', 'top', 'bottom'].includes(String(obj.action))) {
     sendJsonHttp(res, 400, { error: 'invalid scroll action' });
     return;
   }
@@ -710,6 +710,11 @@ async function handleScrollSession(
     if (inMode || appMouse !== '1') {
       if (obj.action === 'bottom') {
         if (inMode) await run(['send-keys', '-t', target, '-X', 'cancel']);
+      } else if (obj.action === 'top') {
+        // The oldest line of the history, staying in copy-mode to read on from there.
+        if (inMode || Number(history) > 0) {
+          await run([...(inMode ? [] : ['copy-mode', '-t', target, ';']), 'send-keys', '-t', target, '-X', 'history-top']);
+        }
       } else if (inMode || (obj.action === 'up' && Number(history) > 0)) {
         const args = inMode ? [] : ['copy-mode', '-t', target, ';'];
         await run([...args, 'send-keys', '-t', target, '-X',
@@ -721,7 +726,7 @@ async function handleScrollSession(
     } else {
       // A mouse-aware TUI owns its scrollback; let it interpret paging keys.
       await run(['send-keys', '-t', target,
-        obj.action === 'up' ? 'PPage' : obj.action === 'down' ? 'NPage' : 'C-End']);
+        obj.action === 'up' ? 'PPage' : obj.action === 'down' ? 'NPage' : obj.action === 'top' ? 'C-Home' : 'C-End']);
     }
     sendJsonHttp(res, 200, { ok: true });
   } catch {

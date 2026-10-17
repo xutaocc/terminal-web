@@ -2076,7 +2076,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 16px;
   opacity: 0.55;
   transition: opacity 0.15s;
   touch-action: none;
@@ -2114,16 +2114,19 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 }
 .pager-pair .pager-btn + .pager-btn { border-top: 1px solid var(--ui-border, #333); }
 .pager-btn.pressed { background: color-mix(in srgb, #3b8eea 35%, transparent); color: #fff; }
-.pager-bottom {
-  width: 40px;
-  height: 40px;
-  border: 1px solid #3b8eea;
+/* ⤒ / ⤓: single round buttons in the same frosted style as the pair. */
+.pager-jump {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
   border-radius: 50%;
-  background: color-mix(in srgb, #2472c8 85%, transparent);
-  color: #fff;
+  background: color-mix(in srgb, var(--ui-raised, #2d2d2d) 88%, transparent);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
-.pager-bottom svg { width: 18px; height: 18px; }
+.pager-jump svg { width: 19px; height: 19px; }
+.pager-jump:active { background: color-mix(in srgb, #3b8eea 35%, transparent); color: #fff; }
 .pager-bottom[hidden] { display: none; }
 #pager.dragging .pager-pair { border-color: #3b8eea; }
 /* The setting only means something on a touch screen. */
