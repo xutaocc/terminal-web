@@ -20,6 +20,7 @@ import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js'
 import { ICONS, ProjectSidebar, type SidebarSection, type SidebarSession } from './project-sidebar.js';
 import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
+import { FloatingPager } from './pager.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 
@@ -609,6 +610,30 @@ const sidebar = new ProjectSidebar({
   },
 });
 document.body.prepend(sidebar.el);
+
+// Floating page buttons; shown by refreshPager() once everything is set up.
+const pager = new FloatingPager({
+  page: direction => { void activeSession?.scrollHistory(direction); },
+  bottom: () => { void activeSession?.scrollHistory('bottom'); },
+  // The terminal's visible part: below the bars, above the key bar and the
+  // soft keyboard (#terminal slides up behind the bar while typing).
+  visibleRange: () => {
+    const rect = termArea.getBoundingClientRect();
+    const barBottom = Math.max(topbar.getBoundingClientRect().bottom,
+      document.getElementById('mobilebar')?.getBoundingClientRect().bottom ?? 0);
+    const keybarTop = keybarEl.classList.contains('hidden') ? Infinity : keybarEl.getBoundingClientRect().top;
+    return { top: Math.max(rect.top, barBottom), bottom: Math.min(rect.bottom, keybarTop, visibleBottom()) };
+  },
+});
+document.body.append(pager.el);
+let pagerReady = false;
+
+/** Show the page buttons only over a terminal you are looking at, with nothing on top of it. */
+function refreshPager(): void {
+  if (!pagerReady) return;
+  pager.update(pagerEnabled && mobileMQ.matches && !!activeSession && !fileBrowserOpen && !drawerOpen &&
+    sheetOverlay.classList.contains('hidden') && !touchSelectMode && !document.querySelector('.paste-overlay'));
+}
 sidebarOpenBtn.addEventListener('click', () => sidebar.setHidden(false));
 
 async function logoutBrowser(): Promise<void> {
@@ -1277,6 +1302,7 @@ class Session {
     }
 
     this.term.onData((data: string) => {
+      if (activeSession === this) pager.setPagedUp(false); // typing goes back to the live screen
       this.debug('onData', data);
       // xterm emits just one mouse report per wheel event, regardless of
       // scrollSensitivity. Repeat only the report produced by a desktop wheel.
@@ -1612,6 +1638,7 @@ class Session {
 
   async scrollHistory(action: 'up' | 'down' | 'bottom'): Promise<void> {
     this.stopTouchScroll();
+    if (action === 'bottom' && activeSession === this) pager.setPagedUp(false);
     try {
       const response = await fetch(hostUrl(this.host, '/api/sessions/scroll'), {
         method: 'POST',
@@ -2880,6 +2907,7 @@ function addSession(name: string, makeActive: boolean, displayName?: string): Se
 }
 
 function activateSession(s: Session): void {
+  if (s !== activeTab) pager.setPagedUp(false); // another session: its own scroll state
   if (activeTab && activeTab !== s) {
     activeTab.setShown(false);
     activeTab.mate?.setShown(false);
@@ -3621,6 +3649,7 @@ interface UiPrefs {
   fontSize?: number;
   keybar?: boolean;
   keyboardLocked?: boolean;
+  pager?: boolean;
 }
 
 async function fetchServerPrefs(timeoutMs = 2500): Promise<UiPrefs | null> {
@@ -4117,6 +4146,7 @@ function updateKeyboardOffset(): void {
         `covered=${Math.round(covered)} off=${offset} typing=${typing ? 1 : 0}`,
     );
   }
+  pager.place(); // keep the page buttons beside what is still visible
   // Deliberately no fit() here: the keyboard slides the terminal, it never
   // resizes it. A change to --term-h is a real size change and reaches fit()
   // through the ResizeObserver on #terminal.
@@ -4297,6 +4327,7 @@ function hideSelectionBar(): void {
 
 /** Turn touch-select mode on or off, keeping the key and the bar in step. */
 function setTouchSelectMode(on: boolean): void {
+  queueMicrotask(refreshPager);
   touchSelectMode = on;
   selectBtn?.classList.toggle('armed', on);
   if (!on) {
@@ -4701,12 +4732,14 @@ function renderDrawer(): void {
 }
 
 function openDrawer(): void {
+  queueMicrotask(refreshPager);
   drawerSelected = activeTab;
   renderDrawer();
   drawerOverlay.classList.remove('hidden');
   drawerOpen = true;
 }
 function closeDrawer(): void {
+  queueMicrotask(refreshPager);
   drawerOverlay.classList.add('hidden');
   drawerOpen = false;
   // Don't focus the terminal on touch: this runs inside the tap gesture that
@@ -4992,6 +5025,33 @@ keybarSettingsButton = sheetRow('⌨', isKeybarVisible() ? '隐藏底部键盘�
 });
 keybarSettingsButton.setAttribute('role', 'checkbox');
 keybarSettingsButton.setAttribute('aria-checked', String(isKeybarVisible()));
+
+// Floating ⌃ / ⌄ page buttons (web/pager.ts): on by default on touch devices,
+// where swiping through history is the slow way. Not offered with a mouse.
+let pagerEnabled = (() => {
+  try {
+    const v = localStorage.getItem('tw.pager');
+    if (v !== null) return v === '1';
+  } catch { /* default */ }
+  return TOUCH_DEVICE;
+})();
+let pagerChanged = false;
+const pagerButton = sheetRow('⇕', '悬浮翻页按钮', () => {
+  pagerChanged = true;
+  setPagerEnabled(!pagerEnabled);
+});
+pagerButton.setAttribute('role', 'checkbox');
+pagerButton.classList.add('touch-only-setting');
+function setPagerEnabled(on: boolean): void {
+  pagerEnabled = on;
+  pagerButton.setAttribute('aria-checked', String(on));
+  const icon = pagerButton.querySelector('.sheet-ico');
+  if (icon) icon.textContent = on ? '☑' : '☐';
+  try { localStorage.setItem('tw.pager', on ? '1' : '0'); } catch { /* server prefs keep it */ }
+  savePrefs({ pager: on });
+  refreshPager();
+}
+setPagerEnabled(pagerEnabled);
 
 selectBtn = sheetRow('↔', '拖动选择文字', () => {
   closeSheet();
@@ -5318,6 +5378,7 @@ sheet.append(
   themeRow,
   fullscreenButton,
   keybarSettingsButton,
+  pagerButton,
   sheetGroup('设置'),
   statusModeRow,
   statusModeHint,
@@ -5341,6 +5402,7 @@ bindIntentionalClick(sheetOverlay, (e) => {
 }, sheet);
 
 function openSheet(): void {
+  queueMicrotask(refreshPager);
   refreshSettingsTarget();
   refreshStatusModeUI();
   renderRemoteList();
@@ -5353,12 +5415,14 @@ function openSheet(): void {
   sheetOverlay.classList.remove('hidden');
 }
 function closeSheet(): void {
+  queueMicrotask(refreshPager);
   sheetOverlay.classList.add('hidden');
 }
 
 // Keep the browser title and mobile bar in sync with the active tab, and
 // re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
+  refreshPager();
   const s = activeTab;
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
@@ -5372,6 +5436,7 @@ function refreshMobileUI(): void {
   updateOutputActivity();
   if (drawerOpen) renderDrawer();
 }
+pagerReady = true;
 refreshMobileUI();
 
 // ---------------------------------------------------------------------------
@@ -5769,6 +5834,9 @@ async function init(): Promise<void> {
   }
   if (typeof prefs.keybar === 'boolean' && prefs.keybar !== isKeybarVisible()) {
     setKeybarVisible(prefs.keybar);
+  }
+  if (!pagerChanged && typeof prefs.pager === 'boolean' && prefs.pager !== pagerEnabled) {
+    setPagerEnabled(prefs.pager);
   }
   if (!keyboardLockChanged && typeof prefs.keyboardLocked === 'boolean') {
     setKeyboardLocked(prefs.keyboardLocked);

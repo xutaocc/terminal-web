@@ -884,6 +884,8 @@ interface UiPrefs {
   keybar?: boolean;
   /** Explicit keyboard activation on touch devices; defaults to false. */
   keyboardLocked?: boolean;
+  /** Floating page buttons on touch devices; defaults to on there. */
+  pager?: boolean;
 }
 
 /** device class ("touch" | "desktop") -> that class's prefs. */
@@ -965,6 +967,7 @@ async function handleSetPrefs(
   }
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
+  if (typeof obj.pager === "boolean") next.pager = obj.pager;
   if (obj.theme === "dark" || obj.theme === "light") next.theme = obj.theme;
   all[scope] = next;
   prefsCache = all;
