@@ -2274,18 +2274,60 @@ function attentionList(host: string): { s: Session; kind: Attention }[] {
   return [...list.filter(x => x.kind === 'waiting'), ...list.filter(x => x.kind === 'unread')];
 }
 
+/** "1 待确认 · 2 未读" for one server, and whether any of it is a question. */
+function attentionSummary(host: string): { text: string; waiting: number; total: number } {
+  const list = attentionList(host);
+  const waiting = list.filter(x => x.kind === 'waiting').length;
+  const unread = list.length - waiting;
+  const text = [waiting ? `${waiting} 待确认` : '', unread ? `${unread} 未读` : ''].filter(Boolean).join(' · ');
+  return { text, waiting, total: list.length };
+}
+
 function paintHostAttention(): void {
   for (const pill of sidebar.attention()) {
-    const list = attentionList(pill.dataset.host ?? '');
-    const waiting = list.filter(x => x.kind === 'waiting').length;
-    const unread = list.length - waiting;
-    const text = [waiting ? `${waiting} 待确认` : '', unread ? `${unread} 未读` : ''].filter(Boolean).join(' · ');
+    const { text, waiting } = attentionSummary(pill.dataset.host ?? '');
     if (pill.textContent === text && pill.hidden === !text) continue;
     pill.textContent = text;
     pill.hidden = !text;
     pill.classList.toggle('waiting', waiting > 0);
     pill.title = text ? `${text}：点击跳到${waiting ? '等待确认' : '未读'}的会话` : '';
   }
+  paintMobileAttention();
+}
+
+// The phone has no server folders, so the same pills sit at the top of its
+// session list, one per server ("本地 · 2 未读", "119 桌面 · 1 待确认"), and
+// the ☰ button carries their total so it shows without opening the list.
+function paintMobileAttention(): void {
+  const hosts = ['', ...remoteHosts.map(r => r.id)];
+  const pills: HTMLElement[] = [];
+  let total = 0;
+  let waitingAny = false;
+  for (const host of hosts) {
+    const { text, waiting, total: n } = attentionSummary(host);
+    total += n;
+    waitingAny ||= waiting > 0;
+    if (!text) continue;
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'ps-host-attention drawer-attention';
+    pill.classList.toggle('waiting', waiting > 0);
+    const where = remoteHosts.length ? (host ? remoteHosts.find(r => r.id === host)?.name ?? host : '本地') : '';
+    pill.textContent = where ? `${where} · ${text}` : text;
+    pill.setAttribute('aria-label', `${pill.textContent}，点击进入${waiting ? '等待确认' : '未读'}的会话`);
+    onTap(pill, () => { closeDrawer(); attendHost(host); }, drawer);
+    pills.push(pill);
+  }
+  const signature = pills.map(p => `${p.className}|${p.textContent}`).join('\n');
+  if (drawerAttention.dataset.signature !== signature) {
+    drawerAttention.dataset.signature = signature;
+    drawerAttention.replaceChildren(...pills);
+    drawerAttention.hidden = !pills.length;
+  }
+  mMenuBadge.textContent = total ? String(total > 99 ? '99+' : total) : '';
+  mMenuBadge.hidden = !total;
+  mMenuBadge.classList.toggle('waiting', waitingAny);
+  mMenuBtn.setAttribute('aria-label', total ? `会话列表，${total} 个需要处理` : '会话列表');
 }
 
 /**
@@ -2300,6 +2342,7 @@ function attendHost(host: string): void {
   const next = list[at >= 0 ? (at + 1) % list.length : 0].s;
   activateSession(next);
   requestAnimationFrame(() => sidebar.reveal(next.name));
+  if (mobileMQ.matches) flashStatus(`已切换到：${next.displayName}`, 1400);
 }
 
 /**
@@ -4463,6 +4506,11 @@ function mBtn(label: string, title: string, onTap: () => void): HTMLButtonElemen
 }
 
 const mMenuBtn = mBtn('☰', '会话列表', () => openDrawer());
+mMenuBtn.classList.add('m-menu');
+const mMenuBadge = document.createElement('span');
+mMenuBadge.className = 'm-menu-badge';
+mMenuBadge.hidden = true;
+mMenuBtn.append(mMenuBadge);
 const mTitle = document.createElement('button');
 mTitle.className = 'm-title';
 mTitle.type = 'button';
@@ -4533,7 +4581,10 @@ bindIntentionalClick(drawerNew, () => {
   closeDrawer();
   void promptAddSession(base);
 }, drawer);
-drawer.append(drawerGrip, drawerTitle, drawerHint, drawerList, drawerNew);
+const drawerAttention = document.createElement('div');
+drawerAttention.className = 'drawer-attention-row';
+drawerAttention.hidden = true;
+drawer.append(drawerGrip, drawerTitle, drawerAttention, drawerHint, drawerList, drawerNew);
 drawerOverlay.append(drawer);
 document.body.append(drawerOverlay);
 bindIntentionalClick(drawerOverlay, (e) => {

@@ -2033,3 +2033,31 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-host-head:hover .ps-host-attention { visibility: visible; }
 @keyframes ps-attention { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .ps-host-attention.waiting::before { animation: none; } }
+
+/* Phone: the servers' attention pills head the session list, and the ☰
+   button carries their total. Same colours as the sidebar pills. */
+.drawer-attention-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.drawer-attention-row[hidden] { display: none; }
+.drawer-attention { height: 26px; padding: 0 10px 0 8px; font-size: 12px; touch-action: manipulation; }
+.m-menu { position: relative; }
+.m-menu-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--st-blue);
+  color: #fff;
+  font: 700 9.5px/15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: center;
+  pointer-events: none;
+}
+.m-menu-badge.waiting { background: var(--st-wait); color: var(--st-wait-ink); }
+.m-menu-badge[hidden] { display: none; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer-attention { height: 22px; font-size: 10.5px; }
+  .m-menu-badge { top: 1px; right: 1px; }
+}
