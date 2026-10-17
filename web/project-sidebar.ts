@@ -41,6 +41,8 @@ export interface SidebarHooks {
   orderCards(folderId: string, cwds: string[]): void;
   /** Pin a session to the top of its directory card, or unpin it. */
   pinSession(name: string, pinned: boolean): void;
+  /** A host's attention pill was clicked: show the session that wants you most. */
+  attend(host: string): void;
   openSettings(): void;
   openHelp(): void;
   /** The sidebar's width changed (shown, hidden or dragged). */
@@ -259,6 +261,18 @@ export class ProjectSidebar {
     ip.textContent = section.ip;
     ip.hidden = !section.ip;
     head.title = `${section.remote ? '远程主机' : '本机'}：${section.title}${section.ip ? `（${section.ip}）` : ''}`;
+    // What on this server is waiting for you, painted by the page as statuses
+    // change (see attention()); empty, and so hidden, when nothing is.
+    const attention = document.createElement('button');
+    attention.type = 'button';
+    attention.className = 'ps-host-attention';
+    attention.dataset.host = section.host;
+    attention.hidden = true;
+    attention.addEventListener('click', e => {
+      e.stopPropagation();
+      if (this.folded.delete(key)) { this.saveFolded(); this.rerender(); }
+      this.hooks.attend(section.host);
+    });
     const state = document.createElement('span');
     state.className = 'ps-host-state';
     state.title = section.online ? '已连接' : '无法连接';
@@ -272,7 +286,7 @@ export class ProjectSidebar {
       iconButton(ICONS.plus, `在「${section.title}」新建会话`, () =>
         this.hooks.newSession(section.groups.find(g => !g.folder)?.key ?? (section.host ? `@${section.host}/` : ''), '')),
     );
-    head.append(chevron, badge, name, ip, state, count, actions);
+    head.append(chevron, badge, name, ip, attention, state, count, actions);
     head.addEventListener('click', () => {
       if (this.folded.has(key)) this.folded.delete(key);
       else this.folded.add(key);
@@ -286,6 +300,23 @@ export class ProjectSidebar {
     body.className = 'ps-host-body';
     el.append(body);
     return body;
+  }
+
+  /** Each server's attention pill (data-host), for the caller to paint. */
+  attention(): NodeListOf<HTMLElement> {
+    return this.list.querySelectorAll<HTMLElement>('.ps-host-attention');
+  }
+
+  /** Scroll a session's chip into view and flash it. */
+  reveal(name: string): void {
+    const chip = Array.from(this.list.querySelectorAll<HTMLElement>('.ps-chip .tab-dot'))
+      .find(dot => dot.dataset.sessions === name)?.closest<HTMLElement>('.ps-chip');
+    const target = chip?.closest<HTMLElement>('.ps-card') ?? chip;
+    if (!target) return;
+    target.scrollIntoView({ block: 'nearest' });
+    target.classList.remove('flash');
+    void target.offsetWidth; // restart the animation
+    target.classList.add('flash');
   }
 
   /** The status dots of every card, for the caller to paint. */

@@ -593,6 +593,7 @@ const sidebar = new ProjectSidebar({
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
   pinSession: (name, pinned) => pinSession(name, pinned),
+  attend: host => attendHost(host),
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
   renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
@@ -2244,6 +2245,61 @@ function updateOutputActivity(): void {
     const names = (dot.dataset.sessions ?? '').split(' ');
     paint(dot, ...sessions.filter(session => names.includes(session.name)));
   }
+  paintHostAttention();
+}
+
+// ---------------------------------------------------------------------------
+// Each server's folder head says what in it is waiting for you — a question
+// (等待确认) or a finished, unread result (未读) — so a folded folder still
+// tells you. Running, read and idle sessions are left to their own dots.
+// ---------------------------------------------------------------------------
+type Attention = 'waiting' | 'unread';
+
+/** What a tab wants of you, if anything: its own and its split half's, as its dot shows. */
+function attentionOf(s: Session): Attention | null {
+  if (serverStatusActive(s.host)) {
+    const indicator = combineStatus(statusesOf(s));
+    return indicator === 'waiting' || indicator === 'unread' ? indicator : null;
+  }
+  // 'legacy' mode: only unread exists, and only for tabs this page has opened.
+  return !hasRecentOutput(s) && (s.readState.unread || !!s.mate?.readState.unread) ? 'unread' : null;
+}
+
+/** The sessions on `host` that want you, questions first, in the sidebar's order. */
+function attentionList(host: string): { s: Session; kind: Attention }[] {
+  if (host && offlineHosts.has(host)) return []; // its statuses are stale
+  const list = pinnedFirst(sessions.filter(s => s.host === host))
+    .map(s => ({ s, kind: attentionOf(s) }))
+    .filter((x): x is { s: Session; kind: Attention } => !!x.kind);
+  return [...list.filter(x => x.kind === 'waiting'), ...list.filter(x => x.kind === 'unread')];
+}
+
+function paintHostAttention(): void {
+  for (const pill of sidebar.attention()) {
+    const list = attentionList(pill.dataset.host ?? '');
+    const waiting = list.filter(x => x.kind === 'waiting').length;
+    const unread = list.length - waiting;
+    const text = [waiting ? `${waiting} 待确认` : '', unread ? `${unread} 未读` : ''].filter(Boolean).join(' · ');
+    if (pill.textContent === text && pill.hidden === !text) continue;
+    pill.textContent = text;
+    pill.hidden = !text;
+    pill.classList.toggle('waiting', waiting > 0);
+    pill.title = text ? `${text}：点击跳到${waiting ? '等待确认' : '未读'}的会话` : '';
+  }
+}
+
+/**
+ * Go to what wants you on that server: the first question, else the first
+ * unread result. Clicked again, it moves on to the next one, so a run of them
+ * can be worked through from the same place.
+ */
+function attendHost(host: string): void {
+  const list = attentionList(host);
+  if (!list.length) return;
+  const at = list.findIndex(x => x.s === activeTab);
+  const next = list[at >= 0 ? (at + 1) % list.length : 0].s;
+  activateSession(next);
+  requestAnimationFrame(() => sidebar.reveal(next.name));
 }
 
 /**

@@ -1994,3 +1994,42 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .access-btn:active { filter: brightness(0.92); }
 .access-link .sheet-hint { padding: 0; }
 .access-link.remote { border-color: color-mix(in srgb, var(--host-remote) 45%, transparent); background: color-mix(in srgb, var(--host-remote) 6%, transparent); }
+
+/* A server folder's attention pill: what in it waits for you. Blue for unread
+   results, amber once anything is blocked on a question. Hidden when nothing is. */
+.ps-host-attention {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--st-blue) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-blue) 14%, transparent);
+  color: var(--st-blue);
+  font: 600 10.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ps-host-attention::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ps-host-attention.waiting {
+  border-color: color-mix(in srgb, var(--st-wait) 65%, transparent);
+  background: color-mix(in srgb, var(--st-wait) 16%, transparent);
+  color: var(--st-wait);
+}
+.ps-host-attention.waiting::before { animation: ps-attention 1.6s ease-in-out infinite; }
+.ps-host-attention:hover { filter: brightness(1.15); }
+.ps-host-attention[hidden] { display: none; }
+/* The pill stays put on hover; only the count makes room for the buttons. */
+.ps-host-head:hover .ps-host-attention { visibility: visible; }
+@keyframes ps-attention { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .ps-host-attention.waiting::before { animation: none; } }
