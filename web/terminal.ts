@@ -623,6 +623,7 @@ document.body.prepend(sidebar.el);
 const pager = new FloatingPager({
   scroll: notches => activeSession?.wheel(notches),
   glidePage: direction => activeSession?.glidePage(direction),
+  page: direction => { void activeSession?.scrollHistory(direction); },
   bottom: () => { void activeSession?.scrollHistory('bottom'); },
   top: () => { void activeSession?.scrollHistory('top'); },
   // The terminal's visible part: below the bars, above the key bar and the

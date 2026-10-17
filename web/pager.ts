@@ -3,9 +3,11 @@
  * from the edge, about a third of the way down the terminal — where a right
  * thumb rests. A tap moves most of a screen as one quick scroll (a page
  * you can still follow); holding scrolls on the way a finger or a wheel does,
- * a few lines at a time, quicker the longer it is held. Dragging moves the pair up or down (remembered). ⤒ above them jumps
- * to the start of the history; after scrolling up, ⤓ below appears to go back
- * to the live output.
+ * a few lines at a time, quicker the longer it is held. To their right, a
+ * second pair turns real pages (上页 / 下页, as on the key bar) for when a
+ * whole screen at once is what you want. Dragging any of them moves the group
+ * up or down (remembered). ⤒ above jumps to the start of the history; after
+ * scrolling up, ⤓ below appears to go back to the live output.
  */
 export interface PagerHooks {
   /**
@@ -18,6 +20,8 @@ export interface PagerHooks {
    * sees where the text went (positive: toward the live end).
    */
   glidePage(direction: 1 | -1): void;
+  /** A whole page at once, as the key bar's 上页 / 下页 do. */
+  page(direction: 'up' | 'down'): void;
   bottom(): void;
   /** Go to the oldest line of the history. */
   top(): void;
@@ -32,6 +36,8 @@ const HOLD_MS = 280;
 function stepAfter(ms: number): number {
   return ms < 1200 ? 220 : ms < 3000 ? 140 : 90;
 }
+// Held, the page buttons turn a page this often.
+const PAGE_REPEAT_MS = 450;
 const DRAG_PX = 8;
 const DEFAULT_AT = 0.35;
 const STORE_KEY = 'tw.pager.at';
@@ -68,8 +74,14 @@ export class FloatingPager {
       this.hooks.top();
     });
     this.bottomBtn.classList.add('pager-jump');
-    this.bindPaging(up, 'up');
-    this.bindPaging(down, 'down');
+    const pageUp = this.button('pager-page-up', '上一页（整页翻，按住连续翻）',
+      '<path d="m7 12 5-5 5 5"/><path d="m7 18 5-5 5 5"/>');
+    const pageDown = this.button('pager-page-down', '下一页（整页翻，按住连续翻）',
+      '<path d="m7 6 5 5 5-5"/><path d="m7 12 5 5 5-5"/>');
+    this.bindPaging(up, 'up', 'scroll');
+    this.bindPaging(down, 'down', 'scroll');
+    this.bindPaging(pageUp, 'up', 'page');
+    this.bindPaging(pageDown, 'down', 'page');
     this.bottomBtn.addEventListener('pointerdown', e => e.preventDefault());
     this.bottomBtn.addEventListener('click', () => {
       this.buzz();
@@ -79,7 +91,14 @@ export class FloatingPager {
     const pair = document.createElement('div');
     pair.className = 'pager-pair';
     pair.append(up, down);
-    this.el.append(topBtn, pair, this.bottomBtn);
+    const pages = document.createElement('div');
+    pages.className = 'pager-pair pager-pages';
+    pages.append(pageUp, pageDown);
+    // ⤒ and ⤓ sit over and under the scroll pair; the page pair beside it.
+    const row = document.createElement('div');
+    row.className = 'pager-row';
+    row.append(pair, pages);
+    this.el.append(topBtn, row, this.bottomBtn);
     this.el.hidden = true;
   }
 
@@ -130,7 +149,7 @@ export class FloatingPager {
    * preventDefault on pointerdown keeps the soft keyboard and the terminal's
    * focus exactly as they were.
    */
-  private bindPaging(button: HTMLButtonElement, direction: 'up' | 'down'): void {
+  private bindPaging(button: HTMLButtonElement, direction: 'up' | 'down', mode: 'scroll' | 'page'): void {
     const sign = direction === 'up' ? -1 : 1;
     let pointer: number | null = null;
     let startY = 0;
@@ -143,7 +162,16 @@ export class FloatingPager {
       if (direction === 'up') this.setPagedUp(true);
       this.hooks.scroll(sign);
     };
+    const turnPage = (): void => {
+      if (direction === 'up') this.setPagedUp(true);
+      this.hooks.page(direction);
+    };
     const glideOn = (): void => {
+      if (mode === 'page') {
+        turnPage();
+        hold = window.setTimeout(glideOn, PAGE_REPEAT_MS);
+        return;
+      }
       scroll();
       hold = window.setTimeout(glideOn, stepAfter(performance.now() - heldAt));
     };
@@ -193,6 +221,7 @@ export class FloatingPager {
       stop();
       if (tapped) {
         this.buzz();
+        if (mode === 'page') { turnPage(); return; }
         if (direction === 'up') this.setPagedUp(true);
         this.hooks.glidePage(sign as 1 | -1);
       }
