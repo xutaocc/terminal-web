@@ -1935,12 +1935,32 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   background: color-mix(in srgb, var(--ui-text, #e5e5e5) 3%, transparent);
 }
 .access-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
-.access-ips { display: flex; flex-wrap: wrap; gap: 4px; }
-.access-ips .sf-btn {
-  flex: none;
+.access-ips { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 6px; }
+.access-ip {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  padding: 3px 8px;
-  font: 500 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
+  border-radius: 6px;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.access-ip.active { border-color: #3b8eea; background: color-mix(in srgb, #3b8eea 22%, var(--ui-hover, #3a3a3c)); }
+.access-ip-kind { flex: none; font-size: 10.5px; color: var(--ui-muted, #9a9a9a); }
+.access-ip.active .access-ip-kind { color: #8fbfff; }
+.access-ip-addr {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 11.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .access-url {
   display: block;
@@ -1950,10 +1970,26 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   border: 1px solid var(--ui-border, #333);
   font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--ui-text, #e5e5e5);
-  overflow-wrap: anywhere;
+  word-break: break-all;
   user-select: none;
   -webkit-user-select: none;
 }
-.access-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.access-actions .tb-btn { padding: 5px 10px; font-size: 12px; }
+/* Two equal buttons side by side, the main one in the accent colour. */
+.access-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.access-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--ui-border-strong, #4a4a4c);
+  border-radius: 6px;
+  background: var(--ui-hover, #3a3a3c);
+  color: var(--ui-text, #e5e5e5);
+  font: 500 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.access-btn.primary { background: #2472c8; border-color: #3b8eea; color: #fff; }
+.access-btn:active { filter: brightness(0.92); }
 .access-link .sheet-hint { padding: 0; }

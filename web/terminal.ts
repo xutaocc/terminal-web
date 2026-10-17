@@ -4975,8 +4975,8 @@ const accessBox = document.createElement('div');
 accessBox.className = 'access-link';
 let accessIp = '';
 
-function accessUrl(ip: string, token: string): string {
-  return `http://${ip}${selfPort && selfPort !== 80 ? `:${selfPort}` : ''}/?token=${encodeURIComponent(token)}`;
+function accessUrl(ip: string, token: string, encode = true): string {
+  return `http://${ip}${selfPort && selfPort !== 80 ? `:${selfPort}` : ''}/?token=${encode ? encodeURIComponent(token) : token}`;
 }
 
 function renderAccessLink(): void {
@@ -4998,11 +4998,23 @@ function renderAccessLink(): void {
   if (ips.length > 1) {
     const pick = document.createElement('div');
     pick.className = 'access-ips';
+    pick.setAttribute('role', 'radiogroup');
+    pick.setAttribute('aria-label', '链接使用的地址');
     for (const ip of ips) {
-      const b = Object.assign(document.createElement('button'), { type: 'button', className: 'sf-btn', textContent: ip });
+      const kind = ip.startsWith('10.144.') ? '组网' : ip.startsWith('192.168.') ? '局域网' : '其他';
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'access-ip';
       b.classList.toggle('active', ip === accessIp);
-      b.setAttribute('aria-pressed', String(ip === accessIp));
-      b.title = ip.startsWith('10.144.') ? '异地组网地址' : ip.startsWith('192.168.') ? '局域网地址' : '其他地址';
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(ip === accessIp));
+      const k = document.createElement('span');
+      k.className = 'access-ip-kind';
+      k.textContent = kind;
+      const v = document.createElement('span');
+      v.className = 'access-ip-addr';
+      v.textContent = ip;
+      b.append(k, v);
       b.addEventListener('click', () => { accessIp = ip; renderAccessLink(); });
       pick.append(b);
     }
@@ -5010,16 +5022,16 @@ function renderAccessLink(): void {
   }
   const shown = document.createElement('code');
   shown.className = 'access-url';
-  shown.textContent = accessUrl(accessIp, `${selfToken.slice(0, 4)}••••${selfToken.slice(-4)}`);
+  shown.textContent = accessUrl(accessIp, `${selfToken.slice(0, 4)}••••${selfToken.slice(-4)}`, false);
   shown.title = '链接中含访问 Token（已遮挡显示），复制得到完整链接';
   const row = document.createElement('div');
   row.className = 'access-actions';
-  const copyLink = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn primary', textContent: '复制访问链接' });
+  const copyLink = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn primary', textContent: '复制访问链接' });
   copyLink.addEventListener('click', () => {
     void copyText(accessUrl(accessIp, selfToken)).then(ok =>
       flashStatus(ok ? '访问链接已复制（含 Token，请勿外传）' : '复制失败', 2200));
   });
-  const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '仅复制 Token' });
+  const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn', textContent: '仅复制 Token' });
   copyToken.title = '在另一台主机的「远程主机」里添加本机时使用';
   copyToken.addEventListener('click', () => {
     void copyText(selfToken).then(ok => flashStatus(ok ? '本机 Token 已复制' : '复制失败', 1800));
