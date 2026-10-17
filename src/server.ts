@@ -36,7 +36,7 @@ import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
-import { RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
+import { RemoteMonitor, RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
@@ -1195,20 +1195,56 @@ async function handleDownload(
 // ---------------------------------------------------------------------------
 
 const remotes = new RemoteStore(process.env.REMOTES_FILE || path.join(os.homedir(), ".terminal-web", "remotes.json"));
+// Which addresses this machine has, as one string: it changes when Wi-Fi drops,
+// a new network is joined or the Tailscale tunnel comes back up.
+function interfaceSignature(): string {
+  return Object.entries(os.networkInterfaces())
+    .flatMap(([name, list]) => (list ?? []).filter((a) => !a.internal).map((a) => `${name}=${a.address}`))
+    .sort().join(",");
+}
+const remoteMonitor = new RemoteMonitor(remotes, interfaceSignature);
+remoteMonitor.start();
 
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   res.setHeader("Cache-Control", "no-store");
   const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
     remotes: RemoteStore.view(await remotes.list()),
+    health: remoteMonitor.snapshot(),
     self: { name: os.hostname(), token: config.authToken },
   });
   if (req.method === "GET") { await reply(); return; }
   let body: Record<string, unknown>;
   try { body = JSON.parse((await readBody(req, 4096)).toString("utf8")); }
   catch { sendJsonHttp(res, 400, { error: "invalid body" }); return; }
+  // "Reconnect now", from a page that just came back online or was woken up.
+  if (body?.action === "check") {
+    if (typeof body.id === "string") await remoteMonitor.check(body.id);
+    else await remoteMonitor.checkAll();
+    await reply();
+    return;
+  }
   try { await remotes.edit(body ?? {}); }
   catch (err) { sendJsonHttp(res, 400, { error: (err as Error).message }); return; }
+  await remoteMonitor.sync();
   await reply();
+}
+
+/** Remote reachability as it changes (see RemoteMonitor), for the pages. */
+function handleRemoteEvents(req: http.IncomingMessage, res: http.ServerResponse): void {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no",
+  });
+  const send = (health: unknown): void => { res.write(`data: ${JSON.stringify(health)}\n\n`); };
+  send(remoteMonitor.snapshot());
+  const unsubscribe = remoteMonitor.subscribe(send);
+  // Frequent enough that a page notices a dead link to this server quickly.
+  const keepAlive = setInterval(() => res.write(": ping\n\n"), 15_000);
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,7 +1281,11 @@ const server = http.createServer((req, res) => {
       if (viaRemote) {
         const remote = await remotes.get(viaRemote.id);
         if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
-        proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search);
+        proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search, remoteMonitor);
+        return;
+      }
+      if (method === 'GET' && requestUrl.pathname === '/api/remotes/events') {
+        handleRemoteEvents(req, res);
         return;
       }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/remotes') {
@@ -1934,7 +1974,7 @@ server.on("upgrade", (req, socket, head) => {
       }
       let search = "";
       try { search = new URL(req.url ?? "/", "http://localhost").search; } catch { /* checked above */ }
-      proxyUpgrade(req, socket, head, remote, viaRemote.rest, search);
+      proxyUpgrade(req, socket, head, remote, viaRemote.rest, search, remoteMonitor);
     });
     return;
   }
@@ -2261,6 +2301,7 @@ function shutdown(signal: string): void {
   console.log(`\n[server] received ${signal}, shutting down...`);
 
   clearInterval(heartbeat);
+  remoteMonitor.stop();
 
   // Close all websockets (detaches their tmux clients; sessions persist).
   for (const client of wss.clients) {

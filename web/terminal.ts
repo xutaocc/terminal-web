@@ -629,6 +629,11 @@ class Session {
   private reconnectDelay = MIN_DELAY;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  // When the socket last brought anything in. The server answers every ping,
+  // so a socket that has said nothing for a while is dead even though the
+  // browser still calls it OPEN — what a laptop waking up on another network
+  // has, for every tab, until TCP gives up minutes later.
+  private lastHeard = 0;
   private disposed = false;
   private keyboardLock: TerminalKeyboardLock | null = null;
   // Until when a connect may create this session if it is not there. The
@@ -1734,7 +1739,9 @@ class Session {
     this.stopPing();
     this.pingTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
+        // Two pings unanswered: the path is gone, whatever the socket says.
+        if (performance.now() - this.lastHeard > 45_000) { this.dropSocket(this.ws); return; }
+        this.probeAlive(10_000);
       }
     }, 20000);
   }
@@ -1776,10 +1783,56 @@ class Session {
     }
   }
 
+  /**
+   * Reconnect at once: the network or the server just came back. A socket that
+   * still looks open is checked first — a ping it cannot answer within a few
+   * seconds means it died with the old network, and it is replaced.
+   */
+  reconnectNow(): void {
+    if (this.disposed || !this.started) return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.probeAlive(4000);
+      return;
+    }
+    if (this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectDelay = MIN_DELAY;
+    this.connect();
+  }
+
+  /** Ping, and drop the socket if nothing comes back within `ms`. */
+  private probeAlive(ms: number): void {
+    const socket = this.ws;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const asked = performance.now();
+    try { socket.send(JSON.stringify({ type: 'ping' })); } catch { /* closing anyway */ }
+    window.setTimeout(() => {
+      if (this.ws === socket && this.lastHeard < asked) this.dropSocket(socket);
+    }, ms);
+  }
+
+  /** Give up on a socket that is silently dead, and reconnect straight away. */
+  private dropSocket(socket: WebSocket): void {
+    if (this.ws !== socket) return;
+    this.ws = null;
+    socket.onclose = socket.onmessage = socket.onerror = null;
+    try { socket.close(); } catch { /* ignore */ }
+    this.stopPing();
+    this.setConnected(false);
+    this.reconnectDelay = MIN_DELAY;
+    this.scheduleReconnect();
+  }
+
   private scheduleReconnect(): void {
     if (this.disposed) return;
     if (this.reconnectTimer !== null) return;
-    if (isActive(this)) showStatus('reconnecting…');
+    if (isActive(this)) reflectActiveStatus();
+    // The server already knows this remote is unreachable and will say when it
+    // is back (see watchRemoteHealth): wait for that instead of knocking.
+    if (this.host && offlineHosts.has(this.host)) return;
     const base = this.reconnectDelay;
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_DELAY);
     // Jitter ±50%: when several sessions drop together (e.g. a server restart)
@@ -1810,6 +1863,7 @@ class Session {
     let outputTracker: OutputActivityTracker | null = null;
 
     socket.onopen = () => {
+      this.lastHeard = performance.now();
       outputTracker = new OutputActivityTracker(performance.now());
       this.outputTracker = outputTracker;
       this.clearOutputActivity();
@@ -1853,6 +1907,7 @@ class Session {
     };
 
     socket.onmessage = (ev: MessageEvent) => {
+      this.lastHeard = performance.now();
       if (ev.data instanceof ArrayBuffer) {
         this.term.write(new Uint8Array(ev.data), () => {
           if (this.disposed || this.ws !== socket || !outputTracker) return;
@@ -1979,7 +2034,10 @@ function reflectActiveStatus(): void {
   // A terminal being opened for the first time is attaching, not reconnecting;
   // its socket opens on the next frame (see setShown).
   else if (!activeSession.started) hideStatus();
-  else showStatus('reconnecting…');
+  else if (!navigator.onLine) showStatus('网络已断开，恢复后自动重连…');
+  else if (activeSession.host && offlineHosts.has(activeSession.host)) {
+    showStatus(`${hostLabel(activeSession.host)} 暂时无法连接，恢复后自动重连…`);
+  } else showStatus('reconnecting…');
 }
 
 function updateTabDot(s: Session): void {
@@ -3390,11 +3448,8 @@ async function syncFromServer(): Promise<void> {
 /** Reconcile the tabs of one server with what it lists. */
 async function syncHost(host: string): Promise<void> {
   const [serverTabs] = await Promise.all([fetchServerTabs(host), loadFolders(host)]);
-  if (!serverTabs) { // unreachable — keep what we have
-    if (host) offlineHosts.add(host);
-    return;
-  }
-  offlineHosts.delete(host);
+  if (!serverTabs) return; // unreachable — keep what we have; the health stream says why
+  if (host && offlineHosts.has(host)) setHostOnline(host, true); // the stream may lag a sync
   connectAgentStatus(host); // a remote that was down has its stream back
   const byName = new Map(serverTabs.map((t) => [t.name, t]));
 
@@ -3454,6 +3509,112 @@ async function syncHost(host: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Getting back after the network drops. A laptop carried to a meeting sleeps,
+// loses Wi-Fi, joins another network and gets its Tailscale route back, in any
+// order. Two links can break: this page to its server, and the server to each
+// remote. The server watches the second (RemoteMonitor in src/remotes.ts) and
+// streams what it sees; this page watches the first, and on every sign of the
+// network coming back — online, wake, the tab shown again, the stream to its
+// own server reopening — re-checks everything at once rather than waiting out
+// the backoff of each socket.
+// ---------------------------------------------------------------------------
+interface RemoteHealth { online: boolean; since: number; error?: string }
+const hostErrors = new Map<string, string>();
+
+function setHostOnline(host: string, online: boolean): void {
+  if (online === !offlineHosts.has(host)) return;
+  if (online) offlineHosts.delete(host);
+  else offlineHosts.add(host);
+  refreshMobileUI();
+  renderRemoteList();
+  if (activeSession?.host === host) reflectActiveStatus();
+  if (!online) return;
+  // Back: reattach its terminals, reopen its status stream, take its tabs.
+  flashStatus(`${hostLabel(host)} 已恢复连接`, 2000);
+  connectAgentStatus(host);
+  for (const s of sessions) if (s.host === host) { s.reconnectNow(); s.mate?.reconnectNow(); }
+  void syncFromServer();
+}
+
+function takeHealth(health: Record<string, RemoteHealth>): void {
+  for (const r of remoteHosts) {
+    const h = health[r.id];
+    if (!h) continue;
+    if (h.error) hostErrors.set(r.id, h.error);
+    else hostErrors.delete(r.id);
+    setHostOnline(r.id, h.online);
+  }
+}
+
+let healthSource: EventSource | null = null;
+let lastHealthAt = 0;
+function watchRemoteHealth(): void {
+  healthSource?.close();
+  const source = new EventSource('/api/remotes/events');
+  healthSource = source;
+  let opened = false;
+  source.onopen = () => {
+    lastHealthAt = performance.now();
+    // Reopened after a drop: this page's own link to its server is back.
+    if (opened) recoverNow('server');
+    opened = true;
+  };
+  source.onmessage = (event: MessageEvent) => {
+    lastHealthAt = performance.now();
+    try { takeHealth(JSON.parse(event.data as string)); } catch { /* ignore a bad frame */ }
+  };
+  // EventSource retries on its own while the server is merely unreachable; a
+  // server that answers 404 (too old for this) ends it, and nothing is lost.
+}
+// The server pings the stream every 15 s. Silence for 40 s is a link that died
+// without saying so (the usual way after sleep): reopen it, which also shows
+// whether the server is reachable at all.
+setInterval(() => {
+  if (healthSource && healthSource.readyState !== EventSource.CLOSED && lastHealthAt &&
+      performance.now() - lastHealthAt > 40_000) {
+    lastHealthAt = performance.now();
+    watchRemoteHealth();
+  }
+}, 10_000);
+
+let recovering = 0;
+/**
+ * Everything back, now: ask the server to re-check every remote, re-sync the
+ * tabs, and reconnect (or verify) every terminal that has been opened.
+ * Coalesced — wake, online and visibility often fire together.
+ */
+function recoverNow(_why: string): void {
+  if (!navigator.onLine) { reflectActiveStatus(); return; }
+  const now = performance.now();
+  if (now - recovering < 1500) return;
+  recovering = now;
+  for (const s of sessions) { s.reconnectNow(); s.mate?.reconnectNow(); }
+  void (async () => {
+    try {
+      const res = await fetch('/api/remotes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'check' }),
+      });
+      if (res.ok) takeRemotes(await res.json());
+    } catch { /* this server itself is not back yet; its stream will say when */ }
+    void syncFromServer();
+  })();
+}
+
+window.addEventListener('online', () => recoverNow('online'));
+window.addEventListener('offline', () => reflectActiveStatus());
+window.addEventListener('pageshow', e => { if (e.persisted) recoverNow('bfcache'); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recoverNow('visible');
+});
+// Sleep shows up as a timer that fires far later than it was set for.
+let tickAt = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  if (now - tickAt > 15_000) recoverNow('wake');
+  tickAt = now;
+}, 5_000);
+
+// ---------------------------------------------------------------------------
 // Remote hosts: the servers this one forwards to. Their list lives on this
 // server (see src/remotes.ts); a remote's sessions come and go with it.
 // ---------------------------------------------------------------------------
@@ -3468,8 +3629,9 @@ async function loadRemotes(): Promise<void> {
 }
 
 let selfToken = '';
-function takeRemotes(data: { remotes?: unknown; self?: { name?: unknown; token?: unknown } }): void {
+function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?: unknown; token?: unknown } }): void {
   if (!Array.isArray(data.remotes)) return;
+  if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
   if (typeof data.self?.token === 'string') selfToken = data.self.token;
   const next = data.remotes.filter((r): r is RemoteHost =>
@@ -4625,8 +4787,17 @@ function renderRemoteList(): void {
     text.className = 'remote-row-text';
     const name = document.createElement('b');
     name.textContent = remote.name;
+    let retryButton: HTMLButtonElement | null = null;
     const url = document.createElement('small');
-    url.textContent = `${remote.url}${offlineHosts.has(remote.id) ? ' · 无法连接' : ''}`;
+    url.textContent = `${remote.url}${offlineHosts.has(remote.id) ? ` · 无法连接${hostErrors.get(remote.id) ? `（${hostErrors.get(remote.id)}）` : ''}` : ''}`;
+    if (offlineHosts.has(remote.id)) {
+      const retry = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '重连' });
+      retry.addEventListener('click', () => {
+        retry.disabled = true;
+        void editRemotes({ action: 'check', id: remote.id }, '正在重新连接…').then(() => { retry.disabled = false; });
+      });
+      retryButton = retry;
+    }
     text.append(hostBadge(remote.id), name, url);
     const edit = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '编辑' });
     edit.addEventListener('click', () => openRemoteForm(remote));
@@ -4635,7 +4806,7 @@ function renderRemoteList(): void {
       if (!window.confirm(`移除远程主机「${remote.name}」？只是不再在这里显示，远程上的会话不会结束。`)) return;
       void editRemotes({ action: 'remove', id: remote.id }, '正在移除…');
     });
-    row.append(text, edit, remove);
+    row.append(text, ...(retryButton ? [retryButton] : []), edit, remove);
     remoteList.append(row);
   }
   const add = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn remote-add', textContent: '＋ 添加远程主机' });
@@ -5109,7 +5280,7 @@ async function init(): Promise<void> {
       await readoptTabs(host, unlisted);
       list = await fetchServerTabs(host);
     }
-    if (!list && host) offlineHosts.add(host);
+    if (!list && host && !offlineHosts.has(host)) offlineHosts.add(host);
     return list ?? (host ? cached.tabs.filter(t => hostOfKey(t.name) === host) : null);
   }));
   const server = lists[0];
@@ -5188,6 +5359,7 @@ async function init(): Promise<void> {
 }
 
 connectAgentStatus('');
+watchRemoteHealth();
 void init().then(() => { for (const r of remoteHosts) if (!offlineHosts.has(r.id)) connectAgentStatus(r.id); });
 
 // Keep the tab list in sync with the server: when the page regains focus /

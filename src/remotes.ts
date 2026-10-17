@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import type net from 'node:net';
 import type { Duplex } from 'node:stream';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -24,8 +25,136 @@ const HOP_HEADER = 'x-tw-hops';
 const DROP = new Set(['host', 'cookie', 'origin', 'referer', 'connection', 'keep-alive', 'proxy-connection',
   'transfer-encoding', 'upgrade', 'x-forwarded-proto', 'x-forwarded-for', 'x-forwarded-host', HOP_HEADER]);
 
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
+// Pooled sockets are dropped after a short idle: one that sat through a
+// network change (a laptop moved to another room, Tailscale re-routed) is dead,
+// and reusing it would cost a request its first attempt.
+const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 10_000, maxSockets: 64, timeout: 30_000 });
+const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 10_000, maxSockets: 64, timeout: 30_000 });
+const agents = [httpAgent, httpsAgent];
+
+// How long a remote may take to answer the headers of an ordinary request.
+// Streams (agent status, downloads) are exempt once they have started.
+const CONNECT_TIMEOUT_MS = 8_000;
+// Idle limit on a forwarded terminal: the browser pings every 20 s and the
+// remote pings every 20 s, so a minute of silence means the path is gone.
+const WS_IDLE_MS = 60_000;
+
+/**
+ * Whether each remote is reachable, checked from the server. While one is up it
+ * is checked every 30 s; once it stops answering, every 3 s at first, backing
+ * off to 15 s, so it is seen again within seconds of the network coming back.
+ * A network change on this machine (an interface going up or down) restarts
+ * every check at once. Pages are told through /api/remotes/events and so do
+ * not have to find out by timing out themselves.
+ */
+export interface RemoteHealth { online: boolean; since: number; error?: string; latencyMs?: number }
+
+const UP_INTERVAL_MS = 30_000;
+const DOWN_MIN_MS = 3_000;
+const DOWN_MAX_MS = 15_000;
+
+export class RemoteMonitor {
+  private readonly state = new Map<string, RemoteHealth>();
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly delays = new Map<string, number>();
+  private readonly listeners = new Set<(health: Record<string, RemoteHealth>) => void>();
+  private netSignature = '';
+  private netTimer: NodeJS.Timeout | null = null;
+
+  constructor(private readonly store: RemoteStore, private readonly interfaces: () => string) {}
+
+  start(): void {
+    void this.sync();
+    this.netSignature = this.interfaces();
+    // Polled rather than evented: Node has no interface-change event. Cheap,
+    // and a moved laptop is noticed within 2 s rather than at the next probe.
+    this.netTimer = setInterval(() => {
+      const signature = this.interfaces();
+      if (signature === this.netSignature) return;
+      this.netSignature = signature;
+      console.log('[remotes] network changed; re-checking remotes now');
+      for (const agent of agents) agent.destroy(); // pooled sockets died with the old route
+      void this.checkAll();
+    }, 2_000);
+    this.netTimer.unref();
+  }
+
+  stop(): void {
+    if (this.netTimer) clearInterval(this.netTimer);
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+  }
+
+  snapshot(): Record<string, RemoteHealth> {
+    return Object.fromEntries(this.state);
+  }
+
+  subscribe(fn: (health: Record<string, RemoteHealth>) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  isOnline(id: string): boolean {
+    return this.state.get(id)?.online !== false;
+  }
+
+  /** Follow the remote list: start checking new ones, forget removed ones. */
+  async sync(): Promise<void> {
+    const remotes = await this.store.list();
+    const ids = new Set(remotes.map(r => r.id));
+    for (const id of [...this.state.keys()]) {
+      if (ids.has(id)) continue;
+      clearTimeout(this.timers.get(id));
+      this.timers.delete(id);
+      this.state.delete(id);
+      this.delays.delete(id);
+    }
+    for (const r of remotes) if (!this.timers.has(r.id)) void this.check(r.id);
+    this.emit();
+  }
+
+  /** Check every remote now (network change, or a page asking for a retry). */
+  async checkAll(): Promise<void> {
+    await Promise.all((await this.store.list()).map(r => this.check(r.id)));
+  }
+
+  /** A forwarded request just failed to connect: check it now rather than at the next tick. */
+  reportFailure(id: string): void {
+    if (this.state.get(id)?.online === false) return;
+    void this.check(id);
+  }
+
+  async check(id: string): Promise<void> {
+    clearTimeout(this.timers.get(id));
+    this.timers.delete(id);
+    const remote = await this.store.get(id);
+    if (!remote) return;
+    const started = Date.now();
+    const result = await probeRemote(remote.url, remote.token);
+    const online = result === 'ok';
+    const before = this.state.get(id);
+    const health: RemoteHealth = {
+      online,
+      since: before && before.online === online ? before.since : Date.now(),
+      ...(online ? { latencyMs: Date.now() - started } : { error: result }),
+    };
+    this.state.set(id, health);
+    if (!before || before.online !== online || before.error !== health.error) {
+      console.log(`[remotes] ${remote.name} (${remote.url}) ${online ? 'online' : `offline: ${result}`}`);
+      this.emit();
+    }
+    const delay = online ? UP_INTERVAL_MS : Math.min(DOWN_MAX_MS, Math.max(DOWN_MIN_MS, (this.delays.get(id) ?? 0) * 1.6));
+    this.delays.set(id, online ? 0 : delay);
+    const timer = setTimeout(() => void this.check(id), delay);
+    timer.unref();
+    this.timers.set(id, timer);
+  }
+
+  private emit(): void {
+    const snap = this.snapshot();
+    for (const fn of this.listeners) fn(snap);
+  }
+}
 
 export function validRemoteUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -137,7 +266,9 @@ export async function probeRemote(url: string, token: string): Promise<string> {
   const to = new URL(url + '/api/sessions');
   return new Promise(resolve => {
     const request = (to.protocol === 'https:' ? https : http).request(to, {
-      method: 'GET', timeout: 5000,
+      // A fresh connection every time: the point is whether the path works now,
+      // which a pooled socket from before a network change says nothing about.
+      method: 'GET', timeout: 5000, agent: false,
       headers: { cookie: `tw_auth=${encodeURIComponent(token)}`, accept: 'application/json' },
     }, res => {
       res.resume();
@@ -163,14 +294,23 @@ export function remoteRoute(pathname: string): { id: string; rest: string } | nu
  * reported as a gateway error, never as a 401: the browser reads a 401 as its
  * own sign-in having lapsed, and would reload into our login page.
  */
-export function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse, remote: Remote, rest: string, search: string): void {
+export function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse, remote: Remote, rest: string, search: string,
+                          monitor?: RemoteMonitor): void {
   if (hops(req) >= MAX_HOPS) { res.writeHead(508).end('Loop detected'); return; }
+  // Known to be down: answer at once instead of making the page wait out a
+  // connect timeout for every request while the network is gone.
+  if (monitor && !monitor.isOnline(remote.id)) {
+    res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '3', 'X-Remote-Offline': '1' });
+    res.end(JSON.stringify({ error: `远程主机「${remote.name}」暂时无法连接，恢复后自动重连` }));
+    return;
+  }
   const to = target(remote, rest + search);
   const lib = to.protocol === 'https:' ? https : http;
   const upstream = lib.request(to, {
     method: req.method, headers: forwardHeaders(req, remote, to),
     agent: to.protocol === 'https:' ? httpsAgent : httpAgent,
   }, answer => {
+    clearTimeout(headerTimer);
     const status = answer.statusCode ?? 502;
     if (status === 401) {
       answer.resume();
@@ -190,13 +330,21 @@ export function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse, r
     res.flushHeaders();
     answer.pipe(res);
   });
+  // Until the remote starts answering; a stream that has started may then be
+  // as quiet as it likes (the agent-status stream pings every 25 s anyway).
+  const headerTimer = setTimeout(() => upstream.destroy(new Error('连接超时')), CONNECT_TIMEOUT_MS);
+  upstream.on('socket', socket => socket.setKeepAlive(true, 10_000));
   upstream.on('error', err => {
+    clearTimeout(headerTimer);
+    if (!answered) monitor?.reportFailure(remote.id);
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: `远程主机「${remote.name}」无法连接：${err.message}` }));
     } else res.destroy();
   });
-  res.on('close', () => { if (!res.writableFinished) upstream.destroy(); });
+  let answered = false;
+  upstream.on('response', () => { answered = true; });
+  res.on('close', () => { clearTimeout(headerTimer); if (!res.writableFinished) upstream.destroy(); });
   req.pipe(upstream);
 }
 
@@ -205,15 +353,19 @@ export function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse, r
  * frame is read or rewritten on the way: terminal output goes through as the
  * bytes it arrived as, so the only cost over a direct connection is one LAN hop.
  */
-export function proxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer, remote: Remote, rest: string, search: string): void {
+export function proxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer, remote: Remote, rest: string, search: string,
+                             monitor?: RemoteMonitor): void {
   const refuse = (line: string): void => { socket.write(`HTTP/1.1 ${line}\r\n\r\n`); socket.destroy(); };
   if (hops(req) >= MAX_HOPS) { refuse('508 Loop Detected'); return; }
+  if (monitor && !monitor.isOnline(remote.id)) { refuse('503 Remote Offline'); return; }
   const to = target(remote, rest + search);
   const headers = forwardHeaders(req, remote, to);
   headers.connection = 'Upgrade';
   headers.upgrade = req.headers.upgrade ?? 'websocket';
-  const upstream = (to.protocol === 'https:' ? https : http).request(to, { method: 'GET', headers });
+  const upstream = (to.protocol === 'https:' ? https : http).request(to, { method: 'GET', headers, agent: false });
+  const connectTimer = setTimeout(() => upstream.destroy(new Error('timeout')), CONNECT_TIMEOUT_MS);
   upstream.on('upgrade', (answer, remoteSocket, remoteHead) => {
+    clearTimeout(connectTimer);
     const lines = [`HTTP/1.1 ${answer.statusCode ?? 101} ${answer.statusMessage ?? 'Switching Protocols'}`];
     for (let i = 0; i < answer.rawHeaders.length; i += 2) {
       if (answer.rawHeaders[i].toLowerCase() !== 'set-cookie') lines.push(`${answer.rawHeaders[i]}: ${answer.rawHeaders[i + 1]}`);
@@ -221,8 +373,14 @@ export function proxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Bu
     socket.write(lines.join('\r\n') + '\r\n\r\n');
     if (remoteHead.length) socket.write(remoteHead);
     if (head.length) remoteSocket.write(head);
-    for (const s of [socket, remoteSocket]) {
-      (s as { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
+    for (const s of [socket, remoteSocket] as (Duplex & Partial<net.Socket>)[]) {
+      s.setNoDelay?.(true);
+      // TCP keepalive notices a dead path even with nobody typing; the idle
+      // limit catches the case where keepalive is not enough (a sleeping NAT
+      // that still ACKs). Either way both ends close, so the browser's own
+      // reconnect starts at once instead of after the OS gives up minutes later.
+      s.setKeepAlive?.(true, 10_000);
+      s.setTimeout?.(WS_IDLE_MS, () => { socket.destroy(); remoteSocket.destroy(); });
       s.on('error', () => { socket.destroy(); remoteSocket.destroy(); });
     }
     remoteSocket.pipe(socket);
@@ -231,10 +389,15 @@ export function proxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Bu
     remoteSocket.on('close', () => socket.destroy());
   });
   upstream.on('response', answer => {
+    clearTimeout(connectTimer);
     answer.resume();
     refuse(answer.statusCode === 401 ? '502 Remote Token Rejected' : `${answer.statusCode ?? 502} Remote Refused`);
   });
-  upstream.on('error', () => refuse('502 Bad Gateway'));
+  upstream.on('error', () => {
+    clearTimeout(connectTimer);
+    monitor?.reportFailure(remote.id);
+    refuse('502 Bad Gateway');
+  });
   socket.on('error', () => upstream.destroy());
   upstream.end();
 }
