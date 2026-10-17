@@ -159,3 +159,21 @@ footer{padding:6px 14px max(6px,env(safe-area-inset-bottom));gap:6px}
 
 :root[data-theme="light"] .primary { color: #fff; }
 .markdown-body{padding:10px 18px 24px;font:14px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);overflow-wrap:anywhere}.markdown-body>:first-child{margin-top:0}.markdown-body h1,.markdown-body h2{padding-bottom:.3em;border-bottom:1px solid var(--line)}.markdown-body h1{font-size:1.7em}.markdown-body h2{font-size:1.4em}.markdown-body h3{font-size:1.2em}.markdown-body a{color:var(--accent)}.markdown-body img{max-width:100%}.markdown-body code{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--ui-panel, #1d2026);border-radius:4px;padding:2px 5px}.markdown-body pre{background:var(--ui-panel, #1d2026);border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow:auto}.markdown-body pre code{padding:0;background:none;color:var(--ui-code-text, #c3d7ef)}.markdown-body blockquote{margin:0;padding:0 12px;border-left:3px solid var(--line);color:var(--muted)}.markdown-body table{border-collapse:collapse;display:block;overflow:auto;max-width:100%}.markdown-body th,.markdown-body td{border:1px solid var(--line);padding:5px 10px}.markdown-body hr{border:0;border-top:1px solid var(--line)}.markdown-body ul,.markdown-body ol{padding-left:1.6em}
+/* Header: "‹ 终端", then the product badge where the "文件管理" title used to
+   be, then the session name. The title stays for screen readers only. The
+   session name comes first: file-browser.js hides the badge the moment the
+   name would no longer fit whole beside it — decided by the real space left,
+   not a fixed screen width. */
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.heading{min-width:0;gap:10px}
+#session-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brand-slot{flex:none;display:flex;align-items:center}
+.brand-slot[hidden]{display:none}
+@media(max-width:700px){
+  .heading{gap:7px}
+  /* The mini badge: same mark, smaller. */
+  .fb-brand{gap:4px;padding:2px 6px 2px 3px;font-size:10px}
+  .fb-brand .brand-glyph{width:13px;height:13px}
+  .fb-brand .brand-glyph svg{width:8px;height:8px}
+  .fb-brand .brand-owner{font-size:9px}
+}

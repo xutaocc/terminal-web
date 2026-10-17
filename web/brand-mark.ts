@@ -1,3 +1,5 @@
+import './brand-mark.css';
+
 /**
  * The product mark: a small prompt glyph, WebTerminal in bold and the owner in
  * grey, in a quiet pill. Shared by the PC sidebar's top-left corner and the

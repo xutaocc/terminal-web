@@ -8,7 +8,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { mouseWheelReports } from './mouse-wheel.js';
 import { bindIntentionalClick } from './intentional-click.js';
-import { newSessionName, newSessionId } from './session-name.js';
+import { nameStart, newSessionName, newSessionId } from './session-name.js';
 import { NoteHover, NoteDismiss } from './note-hover.js';
 import { moveTab, restoreTabOrder } from './tab-order.js';
 import { TerminalKeyboardLock } from './keyboard-lock.js';
@@ -2682,6 +2682,8 @@ function nextSessionName(): string {
 function domPrompt(opts: {
   label: string;
   value?: string;
+  /** Where to start the initial selection in `value` (default: select all). */
+  selectFrom?: number;
   okText?: string;
   directory?: (signal: AbortSignal) => Promise<string>;
   onDirectoryChange?: (directory: string) => void;
@@ -2729,7 +2731,11 @@ function domPrompt(opts: {
     document.body.append(overlay);
     window.setTimeout(() => {
       input.focus();
-      input.select();
+      if (opts.selectFrom && opts.selectFrom < input.value.length) {
+        input.setSelectionRange(opts.selectFrom, input.value.length);
+      } else {
+        input.select();
+      }
     }, 0);
 
     let done = false;
@@ -2818,6 +2824,9 @@ async function promptAddSession(
     label: folderName ? `文件夹「${folderName}」的第一个会话：` :
       folderLabel ? `在「${folderLabel}」新建会话：` : '新建会话名称：',
     value: suggestion,
+    // Select just the name after the timestamp: typing replaces the name and
+    // keeps the time in front.
+    selectFrom: nameStart(suggestion),
     okText: '创建',
     directory: async signal => {
       if (startDir) return startDir;

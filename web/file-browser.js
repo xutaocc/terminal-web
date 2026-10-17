@@ -1,6 +1,7 @@
 import './file-browser.css';
 import './theme.css';
 import { applyDocumentTheme, isTheme } from './theme.js';
+import { brandMark } from './brand-mark.js';
 
 // Runs in a same-origin embedded page; cookies and all APIs belong to the terminal server.
 const $ = selector => document.querySelector(selector);
@@ -484,4 +485,13 @@ async function requestSessionPath() {
 }
 $('#tree').append(el('p', 'tree-error', '正在读取当前会话目录…'));
 $('#session-label').textContent = query.get('label') || session || '当前会话';
+$('#brand-slot').append(brandMark('fb-brand'));
+// The badge yields to the session name: shown only while the name fits whole.
+function fitBrand() {
+  const slot = $('#brand-slot'), label = $('#session-label');
+  slot.hidden = false;
+  if (label.scrollWidth > label.clientWidth + 1) slot.hidden = true;
+}
+new ResizeObserver(fitBrand).observe($('header'));
+fitBrand();
 (async () => { try { const p = await requestSessionPath(); await navigate(p, false); } catch (error) { toast(error.message); $('#tree').append(el('p', 'tree-error', error.message)); } })();

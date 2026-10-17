@@ -7,7 +7,7 @@
 </head>
 <body>
 <div class="app">
-<header><button id="back" class="quiet">‹ <span>终端</span></button><div class="heading"><strong>文件管理</strong><small id="session-label"><i></i>当前会话</small></div><button id="refresh" class="quiet" aria-label="刷新目录">⟳</button></header>
+<header><button id="back" class="quiet">‹ <span>终端</span></button><div class="heading"><strong class="sr-only">文件管理</strong><span id="brand-slot" class="brand-slot"></span><small id="session-label"><i></i>当前会话</small></div><button id="refresh" class="quiet" aria-label="刷新目录">⟳</button></header>
 <section class="location"><div class="location-label"><button id="directory-back" class="link" disabled>‹ 返回</button><span id="location-label">当前会话目录</span><button id="up" class="link">↑ 上一级</button><button id="go-root" class="link">/ 根目录</button><button id="locate" class="link">会话目录 ↗</button></div><div class="path"><nav id="breadcrumbs" aria-label="目录路径"></nav><button id="copy-path" class="quiet" aria-label="复制当前路径">⧉</button></div></section>
 <div class="workspace"><main>
 <div class="toolbar"><label class="toggle"><input id="hidden" type="checkbox" aria-label="显示隐藏文件和文件夹"><span class="switch"></span>显示隐藏项</label><div class="tools"><button id="collapse" title="收起或展开目录">收起</button><button id="sort">排序 ↕</button><button id="select">多选</button></div></div>
