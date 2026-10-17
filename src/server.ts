@@ -1245,8 +1245,8 @@ function lanAddress(): string {
 }
 
 /** Who this server is: name and addresses, for the page and for servers that list it as a remote. */
-function hostInfo(): { name: string; ip: string; ips: string[] } {
-  return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses() };
+function hostInfo(): { name: string; ip: string; ips: string[]; port: number } {
+  return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses(), port: config.port };
 }
 
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

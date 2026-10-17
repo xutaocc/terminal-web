@@ -3793,12 +3793,19 @@ async function loadRemotes(): Promise<void> {
 }
 
 let selfToken = '';
-function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?: unknown; token?: unknown; ip?: unknown } }): void {
+let selfIps: string[] = [];
+let selfPort = 0;
+function takeRemotes(data: {
+  remotes?: unknown; health?: unknown;
+  self?: { name?: unknown; token?: unknown; ip?: unknown; ips?: unknown; port?: unknown };
+}): void {
   if (!Array.isArray(data.remotes)) return;
   if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
   if (typeof data.self?.token === 'string') selfToken = data.self.token;
   if (typeof data.self?.ip === 'string' && data.self.ip !== selfIp) { selfIp = data.self.ip; ipTails = shortIps(); }
+  if (Array.isArray(data.self?.ips)) selfIps = data.self.ips.filter((ip): ip is string => typeof ip === 'string');
+  if (typeof data.self?.port === 'number') selfPort = data.self.port;
   const next = data.remotes.filter((r): r is RemoteHost =>
     !!r && typeof r.id === 'string' && typeof r.name === 'string' && typeof r.url === 'string');
   const kept = new Set(next.map(r => r.id));
@@ -4959,20 +4966,80 @@ remoteForm.addEventListener('submit', e => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Access link: this server's address with its token, to open on another device
+// (or paste into another browser) and be signed in at once. The token is in
+// it, so the panel shows it masked; only the copy carries the real one.
+// ---------------------------------------------------------------------------
+const accessBox = document.createElement('div');
+accessBox.className = 'access-link';
+let accessIp = '';
+
+function accessUrl(ip: string, token: string): string {
+  return `http://${ip}${selfPort && selfPort !== 80 ? `:${selfPort}` : ''}/?token=${encodeURIComponent(token)}`;
+}
+
+function renderAccessLink(): void {
+  accessBox.replaceChildren();
+  const ips = selfIps.length ? selfIps : selfIp ? [selfIp] : [];
+  if (!ips.includes(accessIp)) accessIp = ips[0] ?? '';
+  const head = document.createElement('div');
+  head.className = 'access-head';
+  head.append(hostBadge(''), '本机访问链接');
+  accessBox.append(head);
+  if (!accessIp || !selfToken) {
+    const none = document.createElement('div');
+    none.className = 'sheet-hint';
+    none.textContent = '读取本机地址中…';
+    accessBox.append(none);
+    return;
+  }
+  // Several addresses: pick which one the link uses (overlay network first).
+  if (ips.length > 1) {
+    const pick = document.createElement('div');
+    pick.className = 'access-ips';
+    for (const ip of ips) {
+      const b = Object.assign(document.createElement('button'), { type: 'button', className: 'sf-btn', textContent: ip });
+      b.classList.toggle('active', ip === accessIp);
+      b.setAttribute('aria-pressed', String(ip === accessIp));
+      b.title = ip.startsWith('10.144.') ? '异地组网地址' : ip.startsWith('192.168.') ? '局域网地址' : '其他地址';
+      b.addEventListener('click', () => { accessIp = ip; renderAccessLink(); });
+      pick.append(b);
+    }
+    accessBox.append(pick);
+  }
+  const shown = document.createElement('code');
+  shown.className = 'access-url';
+  shown.textContent = accessUrl(accessIp, `${selfToken.slice(0, 4)}••••${selfToken.slice(-4)}`);
+  shown.title = '链接中含访问 Token（已遮挡显示），复制得到完整链接';
+  const row = document.createElement('div');
+  row.className = 'access-actions';
+  const copyLink = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn primary', textContent: '复制访问链接' });
+  copyLink.addEventListener('click', () => {
+    void copyText(accessUrl(accessIp, selfToken)).then(ok =>
+      flashStatus(ok ? '访问链接已复制（含 Token，请勿外传）' : '复制失败', 2200));
+  });
+  const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '仅复制 Token' });
+  copyToken.title = '在另一台主机的「远程主机」里添加本机时使用';
+  copyToken.addEventListener('click', () => {
+    void copyText(selfToken).then(ok => flashStatus(ok ? '本机 Token 已复制' : '复制失败', 1800));
+  });
+  row.append(copyLink, copyToken);
+  const hint = document.createElement('div');
+  hint.className = 'sheet-hint';
+  hint.textContent = '在其他设备的浏览器打开即自动登录；链接含 Token，等同于密码，请勿发给他人。';
+  accessBox.append(shown, row, hint);
+}
+
 function renderRemoteList(): void {
+  renderAccessLink();
   remoteList.replaceChildren();
   const self = document.createElement('div');
   self.className = 'remote-row self';
   const selfText = document.createElement('span');
   selfText.className = 'remote-row-text';
   selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机', ipSuffix('', true));
-  const copy = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '复制本机 Token' });
-  copy.title = '在另一台主机的「远程主机」里添加本机时使用';
-  copy.disabled = !selfToken;
-  copy.addEventListener('click', () => {
-    void copyText(selfToken).then(ok => flashStatus(ok ? '本机 Token 已复制' : '复制失败', 1800));
-  });
-  self.append(selfText, copy);
+  self.append(selfText);
   remoteList.append(self);
   for (const remote of remoteHosts) {
     const row = document.createElement('div');
@@ -5008,7 +5075,7 @@ function renderRemoteList(): void {
   add.addEventListener('click', () => openRemoteForm());
   remoteList.append(add);
 }
-remoteGroup.append(remoteList, remoteForm, remoteStatus);
+remoteGroup.append(accessBox, remoteList, remoteForm, remoteStatus);
 renderRemoteList();
 
 // Ordered by how often each is reached for: everyday actions first, then the
