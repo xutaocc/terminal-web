@@ -3,11 +3,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
-import { terminalEnvironment, tmuxColorArgs } from './terminal-env.js';
+import { spawn } from 'node:child_process';
 
-const exec = promisify(execFile);
 const TEXT_LIMIT = 2 * 1024 * 1024;
 const WALK_LIMIT = 50000;
 class FileError extends Error {
@@ -167,13 +164,6 @@ async function writeText(p: string, text: string, version: unknown): Promise<voi
     try { await handle.writeFile(text, 'utf8'); await handle.truncate(Buffer.byteLength(text)); } finally { await handle.close(); }
   } finally { writeLocks.delete(real); }
 }
-export function directorySessionLabel(directoryPath: string, date = new Date()): string {
-  const prefix = Array.from(path.basename(directoryPath) || 'root').slice(0, 10).join('').replace(/[\x00-\x1f\x7f]/g, '');
-  const stamp = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds()].map((n, i) => String(n).padStart(i === 0 ? 4 : 2, '0')).join('') + String(date.getMilliseconds()).padStart(3, '0');
-  return prefix + stamp;
-}
-let lastSessionTime = 0;
-
 // /site/<绝对路径>：把服务器上的文件当作静态网站提供，供浏览器新标签直接打开 HTML。
 export async function handleSite(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
   if (url.pathname !== '/site' && !url.pathname.startsWith('/site/')) return false;
@@ -223,14 +213,10 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
     else if (route === 'rename') { const source = absolute(obj.path); mutable(source); const dest = path.join(path.dirname(source), basename(obj.name)); await unused(dest); await fsp.rename(source, dest); json(res, 200, await fileEntry(dest)); }
     else if (route === 'cancel') { const job = jobs.get(String(obj.id)); if (!job) throw new FileError('任务不存在', 404); job.cancelled = true; job.cancel?.(); json(res, 200, { ok: true }); }
     else if (route === 'open-terminal') {
-      const p = absolute(obj.path); await directory(p); lastSessionTime = Math.max(Date.now(), lastSessionTime + 1); const displayName = directorySessionLabel(p, new Date(lastSessionTime));
-      // Keep the existing ASCII tmux protocol; Unicode directory names remain intact in the tab label.
-      const prefix = displayName.slice(0, -17).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10) || 'dir' + crypto.createHash('sha256').update(p).digest('hex').slice(0, 6);
-      const name = prefix + displayName.slice(-17);
-      await exec('tmux', ['-u', '-f', options.tmuxConf, ...tmuxColorArgs(), 'new-session', '-d', '-s', name, '-c', p], { timeout: 10000, env: terminalEnvironment(process.env) });
-      try { await exec('tmux', ['set-option', '-t', `=${name}:`, '@twtab', '1']); await exec('tmux', ['set-option', '-t', `=${name}:`, '@twlabel', displayName]); }
-      catch (error) { await exec('tmux', ['kill-session', '-t', `=${name}`]).catch(() => {}); throw error; }
-      json(res, 200, { name, displayName, path: p });
+      // Only checks the directory. The page names and creates the session the
+      // same way as its own "新建会话" (web/session-name.ts), on first attach.
+      const p = absolute(obj.path); await directory(p);
+      json(res, 200, { path: p, name: path.basename(p) || '/' });
     }
     else if (['copy', 'move', 'remove', 'chmod', 'scan', 'compression-plan'].includes(route)) {
       const inputs = paths(obj.paths); if (route !== 'scan' && route !== 'compression-plan') inputs.forEach(mutable);

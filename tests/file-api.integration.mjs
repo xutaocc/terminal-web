@@ -65,10 +65,10 @@ try {
   const archive = execFileSync('unzip', ['-Z1', zipped.path], { encoding: 'utf8' }); assert.ok(archive.includes('nested/keep.txt')); assert.ok(!archive.includes('exclude.txt'));
   assert.equal((await post('compress', { planId: plan.planId, name: 'again.zip' })).status, 409);
   const linkPlan = await success('compression-plan', { paths: [path.join(src, 'outside-link')] }); const linkZip = await success('compress', { planId: linkPlan.planId, name: 'link.zip' }); assert.ok(!execFileSync('unzip', ['-Z1', linkZip.path], { encoding: 'utf8' }).includes('keep-safe'));
-  const opened = await ok(post('open-terminal', { path: src })); sessions.push(opened.name);
-  assert.match(opened.name, /^[A-Za-z0-9_-]{1,64}$/); assert.match(opened.displayName, /^中文 folder\d{17}$/);
-  assert.equal(execFileSync('tmux', ['display-message', '-p', '-t', `=${opened.name}:`, '#{pane_current_path}'], { encoding: 'utf8' }).trim(), src);
-  const tabs = await (await fetch(`${base}/api/sessions`, { headers })).json(); assert.ok(tabs.tabs.some(tab => tab.name === opened.name && tab.displayName === opened.displayName));
+  // Only checks the directory now; the page names and creates the session.
+  const opened = await ok(post('open-terminal', { path: src }));
+  assert.equal(opened.path, src); assert.equal(opened.name, path.basename(src));
+  assert.equal((await post('open-terminal', { path: path.join(src, 'missing') })).status >= 400, true);
   await success('remove', { paths: [path.join(src, 'outside-link')] }); assert.equal(await readFile(path.join(outside, 'keep-safe'), 'utf8'), 'safe');
   assert.equal((await post('remove', { paths: ['/'] })).status, 400);
   await success('remove', { paths: [path.join(src, 'new'), path.join(src, 'new.txt')] });

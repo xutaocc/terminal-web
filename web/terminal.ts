@@ -3115,6 +3115,29 @@ async function promptAddSession(
   activateSession(session);
 }
 
+/**
+ * "立即打开对应终端目录" from the file manager: a new session in that directory,
+ * named exactly as "新建会话" names one ("10171411-目录名"; see session-name.ts)
+ * but without asking. It goes on the server whose files were being browsed, in
+ * the folder of the session the file manager was opened from.
+ */
+async function openTerminalIn(directory: string, dirName: string): Promise<void> {
+  const from = sessions.find(s => s.name === fileBrowserSession) ?? null;
+  const host = from?.host ?? hostOfKey(fileBrowserSession);
+  const label = dirName.replace(/[\x00-\x1f\x7f]/g, '').trim() || directory.split('/').filter(Boolean).pop() || 'root';
+  const displayName = newSessionName(label, sessions.map(s => s.displayName));
+  const name = makeKey(host, await newSessionId(displayName, sessions.filter(s => s.host === host).map(s => s.raw)));
+  const session = addSession(name, false, displayName);
+  session.cwd = directory;
+  session.intendCreate(undefined, directory);
+  const folderId = from && from.host === host ? folderOf(from) : looseKey(host);
+  if (splitKey(folderId).raw) {
+    folderMembers = { ...folderMembers, [name]: folderId };
+    void editFolders({ action: 'move', sessions: [name], folder: folderId });
+  }
+  activateSession(session);
+}
+
 // ---------------------------------------------------------------------------
 // Folders: the user puts tabs in named folders; inside one, tabs are grouped by
 // directory. A folder never collects anything by itself, and it lives exactly
@@ -5769,14 +5792,12 @@ document.addEventListener('visibilitychange', markVisibleSessionsRead);
 // 同时校验来源域与 iframe 实例，只有当前文件视图可以触发终端会话切换。
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== fileBrowserFrame?.contentWindow) return;
-  const data = event.data as { type?: string; name?: string; displayName?: string } | null;
+  const data = event.data as { type?: string; name?: string; path?: string } | null;
   if (data?.type === 'files-close') closeFileBrowser();
   if (data?.type === 'files-auth-expired') location.reload();
-  if (data?.type === 'files-open-terminal' && typeof data.name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(data.name)) {
+  if (data?.type === 'files-open-terminal' && typeof data.path === 'string' && data.path.startsWith('/')) {
     closeFileBrowser();
-    // The terminal opens on the server whose files were being browsed.
-    const host = sessions.find(s => s.name === fileBrowserSession)?.host ?? hostOfKey(fileBrowserSession);
-    addSession(makeKey(host, data.name), true, typeof data.displayName === 'string' ? data.displayName : data.name);
+    void openTerminalIn(data.path, typeof data.name === 'string' ? data.name : '');
   }
 });
 window.addEventListener('resize', sizeFileBrowser);

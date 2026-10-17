@@ -263,8 +263,10 @@ async function menuAction(label, item) {
   const paths = currentSelection(item); if (!paths.length) return toast('请先选择条目');
   if (label === '进入') { closeDialog($('#sheet')); return navigate(item.path); }
   if (label === '立即打开对应终端目录') {
+    // The server only confirms the directory; the terminal page names and opens
+    // the session, the same way as its own "新建会话".
     const result = await request('open-terminal', { path: item.path }); closeDialog($('#sheet'));
-    window.parent.postMessage({ type: 'files-open-terminal', ...result }, location.origin); return;
+    window.parent.postMessage({ type: 'files-open-terminal', path: result.path, name: result.name }, location.origin); return;
   }
   if (label === '预览' || label === '编辑') { closeDialog($('#sheet')); return preview(item, label === '编辑'); }
   if (label === '浏览器打开') { closeDialog($('#sheet')); return openSite(item); }
