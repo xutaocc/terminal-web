@@ -1209,11 +1209,15 @@ function interfaceSignature(): string {
 const remoteMonitor = new RemoteMonitor(remotes, interfaceSignature);
 
 /**
- * This machine's IPv4 addresses, the likeliest LAN address first: physical
- * interfaces (en*, eth*, wl*, ens*…) before tunnels, private ranges before
- * others. VM / container bridges and proxy fake-IP tunnels (198.18.0.0/15)
- * are left out — they are nobody's idea of "this machine's IP".
+ * This machine's IPv4 addresses, in the order they are preferred for display.
+ * Fixed priority first: the overlay network (10.144.x.x, the remote-office
+ * mesh) is how these machines reach each other from anywhere, then the local
+ * LAN (192.168.x.x). Anything else after them: physical interfaces (en*, eth*,
+ * wl*, ens*…) before tunnels, private ranges before public ones. VM /
+ * container bridges and proxy fake-IP tunnels (198.18.0.0/15) never count.
  */
+const PREFERRED_PREFIXES = ["10.144.", "192.168."];
+
 function lanAddresses(): string[] {
   const virtual = /^(bridge|docker|br-|veth|vmnet|vboxnet|virbr|lo)/;
   const physical = /^(en|eth|wl|wlan|ens|enp|eno)/;
@@ -1224,23 +1228,25 @@ function lanAddresses(): string[] {
       if (a.family !== "IPv4" || a.internal) continue;
       const ip = a.address;
       if (ip.startsWith("169.254.") || /^198\.1[89]\./.test(ip)) continue;
-      const privateRange = /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
-      found.push({ ip, score: (physical.test(name) ? 0 : 2) + (privateRange ? 0 : 1) });
+      const preferred = PREFERRED_PREFIXES.findIndex((prefix) => ip.startsWith(prefix));
+      const privateRange = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
+      const score = preferred >= 0
+        ? preferred * 10 + (physical.test(name) ? 0 : 1)
+        : 100 + (physical.test(name) ? 0 : 2) + (privateRange ? 0 : 1);
+      found.push({ ip, score });
     }
   }
   return [...new Set(found.sort((x, y) => x.score - y.score).map((f) => f.ip))];
 }
 
-/**
- * The address to show for this machine: LAN_IP if set, else the address the
- * server is bound to, else the likeliest LAN address. It follows the machine:
- * a laptop on another network shows its new address at the next sync.
- */
+/** The address this machine is shown by. It follows the machine: a laptop on another network shows its new one. */
 function lanAddress(): string {
-  const configured = process.env.LAN_IP?.trim();
-  if (configured) return configured;
-  if (config.host && config.host !== "0.0.0.0" && config.host !== "127.0.0.1") return config.host;
   return lanAddresses()[0] ?? "";
+}
+
+/** Who this server is: name and addresses, for the page and for servers that list it as a remote. */
+function hostInfo(): { name: string; ip: string; ips: string[] } {
+  return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses() };
 }
 
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1248,7 +1254,7 @@ async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse
   const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
     remotes: RemoteStore.view(await remotes.list()),
     health: remoteMonitor.snapshot(),
-    self: { name: os.hostname(), token: config.authToken, ip: lanAddress(), ips: lanAddresses() },
+    self: { ...hostInfo(), token: config.authToken },
   });
   if (req.method === "GET") { await reply(); return; }
   let body: Record<string, unknown>;
@@ -1322,6 +1328,11 @@ const server = http.createServer((req, res) => {
         // A remote's remote list carries its own token; this page has no use for it.
         if (viaRemote.rest.startsWith('/api/remotes')) { sendJsonHttp(res, 404, { error: 'not available through a remote' }); return; }
         proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search, remoteMonitor);
+        return;
+      }
+      if (method === 'GET' && requestUrl.pathname === '/api/host-info') {
+        res.setHeader('Cache-Control', 'no-store');
+        sendJsonHttp(res, 200, hostInfo());
         return;
       }
       if (method === 'GET' && requestUrl.pathname === '/api/remotes/events') {

@@ -518,11 +518,35 @@ function hostBadge(host: string): HTMLElement {
 }
 
 let selfIp = '';
-/** The address a server is known by: this one's LAN address, a remote's as it was added. */
+/** host -> the address that server says it goes by (GET /api/host-info). */
+const remoteIps = new Map<string, string>();
+/**
+ * The address a server is shown by: the one it picks for itself (overlay
+ * 10.144.x.x first, then 192.168.x.x — see lanAddresses in server.ts), or for a
+ * remote too old to say, the address it was added under.
+ */
 function hostIp(host: string): string {
   if (!host) return selfIp;
+  const own = remoteIps.get(host);
+  if (own) return own;
   const url = remoteHosts.find(r => r.id === host)?.url;
   try { return url ? new URL(url).hostname : ''; } catch { return ''; }
+}
+
+/** Ask a remote which address it goes by; redraw if that changed. */
+async function loadHostInfo(host: string): Promise<void> {
+  try {
+    const res = await fetch(hostUrl(host, '/api/host-info'), { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json() as { ip?: unknown };
+    const ip = typeof data.ip === 'string' ? data.ip : '';
+    if (ip === (remoteIps.get(host) ?? '')) return;
+    if (ip) remoteIps.set(host, ip);
+    else remoteIps.delete(host);
+    ipTails = shortIps();
+    renderRemoteList();
+    refreshMobileUI();
+  } catch { /* keep the address it was added under */ }
 }
 
 /** "远程 · 119 桌面 · 192.168.88.119", for tooltips. */
@@ -3589,6 +3613,7 @@ async function syncHost(host: string): Promise<void> {
   const [serverTabs] = await Promise.all([fetchServerTabs(host), loadFolders(host)]);
   if (!serverTabs) return; // unreachable — keep what we have; the health stream says why
   if (host && offlineHosts.has(host)) setHostOnline(host, true); // the stream may lag a sync
+  if (host) void loadHostInfo(host); // its address may have moved with it
   connectAgentStatus(host); // a remote that was down has its stream back
   const byName = new Map(serverTabs.map((t) => [t.name, t]));
 
@@ -3773,14 +3798,14 @@ function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?
   if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
   if (typeof data.self?.token === 'string') selfToken = data.self.token;
-  if (typeof data.self?.ip === 'string') selfIp = data.self.ip;
+  if (typeof data.self?.ip === 'string' && data.self.ip !== selfIp) { selfIp = data.self.ip; ipTails = shortIps(); }
   const next = data.remotes.filter((r): r is RemoteHost =>
     !!r && typeof r.id === 'string' && typeof r.name === 'string' && typeof r.url === 'string');
   const kept = new Set(next.map(r => r.id));
   // A remote taken off the list takes its tabs off this page; its sessions
   // themselves are left running over there.
   for (const s of sessions.filter(x => x.host && !kept.has(x.host))) removeLocalSession(s);
-  for (const r of remoteHosts) if (!kept.has(r.id)) { disconnectAgentStatus(r.id); offlineHosts.delete(r.id); }
+  for (const r of remoteHosts) if (!kept.has(r.id)) { disconnectAgentStatus(r.id); offlineHosts.delete(r.id); remoteIps.delete(r.id); }
   remoteHosts = next;
   ipTails = shortIps();
   document.documentElement.classList.toggle('has-remotes', next.length > 0);
