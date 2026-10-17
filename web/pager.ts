@@ -1,10 +1,9 @@
 /**
  * Floating scroll buttons for phones: ⌃ / ⌄ stacked at the right, a little in
  * from the edge, about a third of the way down the terminal — where a right
- * thumb rests. They scroll the way a finger or a mouse wheel does, a few lines
- * at a time, so the eye can follow where it was reading: a tap nudges a few
- * lines, holding scrolls on at a steady pace that picks up the longer it is
- * held. Dragging moves the pair up or down (remembered). ⤒ above them jumps
+ * thumb rests. A tap moves most of a screen as one quick scroll (a page
+ * you can still follow); holding scrolls on the way a finger or a wheel does,
+ * a few lines at a time, quicker the longer it is held. Dragging moves the pair up or down (remembered). ⤒ above them jumps
  * to the start of the history; after scrolling up, ⤓ below appears to go back
  * to the live output.
  */
@@ -14,6 +13,11 @@ export interface PagerHooks {
    * finger swipe sends too. tmux moves a few lines per notch.
    */
   scroll(notches: number): void;
+  /**
+   * A tap: most of a screen, as a quick scroll rather than a jump, so the eye
+   * sees where the text went (positive: toward the live end).
+   */
+  glidePage(direction: 1 | -1): void;
   bottom(): void;
   /** Go to the oldest line of the history. */
   top(): void;
@@ -115,13 +119,14 @@ export class FloatingPager {
     return b;
   }
 
-  private buzz(): void {
-    try { navigator.vibrate?.(8); } catch { /* not supported */ }
+  /** A short tick for a tap; a longer one when a hold turns into scrolling. */
+  private buzz(ms = 8): void {
+    try { navigator.vibrate?.(ms); } catch { /* not supported */ }
   }
 
   /**
-   * Tap: one notch. Hold: a notch per step, quicker the longer it is held,
-   * until released. Move the finger first: drag the pair instead.
+   * Tap: most of a screen, scrolled rather than jumped. Hold: a notch per
+   * step, quicker the longer it is held, until released. Move the finger first: drag the pair instead.
    * preventDefault on pointerdown keeps the soft keyboard and the terminal's
    * focus exactly as they were.
    */
@@ -160,7 +165,7 @@ export class FloatingPager {
       hold = window.setTimeout(() => {
         holding = true;
         heldAt = performance.now();
-        this.buzz();
+        this.buzz(20);
         glideOn();
       }, HOLD_MS);
     });
@@ -188,7 +193,8 @@ export class FloatingPager {
       stop();
       if (tapped) {
         this.buzz();
-        scroll();
+        if (direction === 'up') this.setPagedUp(true);
+        this.hooks.glidePage(sign as 1 | -1);
       }
     };
     button.addEventListener('pointerup', e => end(e, false));

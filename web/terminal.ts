@@ -614,6 +614,7 @@ document.body.prepend(sidebar.el);
 // Floating page buttons; shown by refreshPager() once everything is set up.
 const pager = new FloatingPager({
   scroll: notches => activeSession?.wheel(notches),
+  glidePage: direction => activeSession?.glidePage(direction),
   bottom: () => { void activeSession?.scrollHistory('bottom'); },
   top: () => { void activeSession?.scrollHistory('top'); },
   // The terminal's visible part: below the bars, above the key bar and the
@@ -1633,7 +1634,35 @@ class Session {
   wheel(notches: number): void {
     if (!notches) return;
     this.stopTouchScroll();
+    this.stopGlide();
     this.sendWheel(-notches, Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
+  }
+
+  private glideTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopGlide(): void {
+    if (this.glideTimer !== null) clearTimeout(this.glideTimer);
+    this.glideTimer = null;
+  }
+
+  /**
+   * About 80% of a screen, as a run of wheel notches over ~0.3 s rather than
+   * one jump: a fifth of what was on screen stays in view, and the text is
+   * seen moving, so the eye keeps its place. tmux moves 5 lines per notch in
+   * copy-mode (tmux/web.tmux.conf); a full-screen program moves its own amount.
+   */
+  glidePage(direction: 1 | -1): void {
+    this.stopTouchScroll();
+    this.stopGlide();
+    let left = Math.max(1, Math.round(this.term.rows * 0.8 / 5));
+    const step = Math.max(16, Math.round(300 / left));
+    const next = (): void => {
+      this.glideTimer = null;
+      if (this.disposed || left <= 0) return;
+      left--;
+      this.sendWheel(-direction, Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
+      if (left > 0) this.glideTimer = setTimeout(next, step);
+    };
+    next();
   }
 
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).
