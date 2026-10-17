@@ -2143,3 +2143,19 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
    not claim the drag. The terminal handles every touch itself (wireTouchScroll),
    so it claims them all from the first pixel. */
 @media (hover: none) and (pointer: coarse) { #terminal, .term-pane { touch-action: none; } }
+
+/* Settings kept per layout (key bar, keyboard lock): a switch for 手机端 and
+   one for PC 端; the one for the layout on screen is underlined. */
+.layout-setting .layout-switch {
+  width: auto;
+  min-width: 0;
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.layout-setting .layout-switch.current { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; }
+.actions-sheet .layout-setting .layout-switch { width: auto; padding: 0 8px; font-size: 12px; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .layout-setting .layout-switch { padding: 0 8px; font-size: 12px; }
+}

@@ -154,10 +154,40 @@ const SEL_DEBUG = (params.get('debug') ?? '').includes('sel');
 // be asking.)
 const TOUCH_DEVICE = navigator.maxTouchPoints > 0;
 const ANDROID_DEVICE = /Android/i.test(navigator.userAgent);
-let keyboardLocked = (() => {
-  try { return localStorage.getItem('tw.keyboardLocked') === '1'; }
-  catch { return false; }
-})();
+// The key bar and keyboard lock are set separately for the phone layout and the
+// PC layout, and each applies only in its own: a PC wants no key bar and no
+// lock, a phone usually wants both, and one shared value made every switch
+// between them undo the other. Which one is in force follows the layout on
+// screen (mobileMQ), so a narrowed desktop window acts as a phone would.
+type LayoutKind = 'mobile' | 'desktop';
+const LAYOUT_LABEL: Record<LayoutKind, string> = { mobile: '手机端', desktop: 'PC 端' };
+const LAYOUT_DEFAULTS = {
+  keybar: { mobile: true, desktop: false },
+  keyboardLocked: { mobile: false, desktop: false },
+} as const;
+type LayoutSetting = keyof typeof LAYOUT_DEFAULTS;
+
+function readLayoutSetting(name: LayoutSetting, kind: LayoutKind): boolean {
+  try {
+    const v = localStorage.getItem(`tw.${name}.${kind}`);
+    if (v !== null) return v === '1';
+    // Before the split there was one value for both: it belonged to whichever
+    // kind of device this is, and the other starts from its default.
+    const legacy = localStorage.getItem(name === 'keybar' ? 'tw.keybar' : 'tw.keyboardLocked');
+    if (legacy !== null && kind === (TOUCH_DEVICE ? 'mobile' : 'desktop')) return legacy === '1';
+  } catch { /* defaults */ }
+  return LAYOUT_DEFAULTS[name][kind];
+}
+
+const layoutSettings: Record<LayoutSetting, Record<LayoutKind, boolean>> = {
+  keybar: { mobile: readLayoutSetting('keybar', 'mobile'), desktop: readLayoutSetting('keybar', 'desktop') },
+  keyboardLocked: {
+    mobile: readLayoutSetting('keyboardLocked', 'mobile'),
+    desktop: readLayoutSetting('keyboardLocked', 'desktop'),
+  },
+};
+
+let keyboardLocked = false; // the value in force; set by applyLayoutSettings()
 let keyboardLockChanged = false;
 
 const encoder = new TextEncoder();
@@ -445,6 +475,10 @@ function openHelp(): void {
 }
 
 const mobileMQ = window.matchMedia('(max-width: 640px), (hover: none) and (pointer: coarse)');
+function currentLayout(): LayoutKind {
+  return mobileMQ.matches ? 'mobile' : 'desktop';
+}
+keyboardLocked = layoutSettings.keyboardLocked[currentLayout()];
 const THEME_STORAGE_KEY = `tw.theme.${TOUCH_DEVICE ? 'touch' : 'desktop'}`;
 let currentTheme: ThemeName = 'dark';
 try {
@@ -659,7 +693,6 @@ async function logoutBrowser(): Promise<void> {
 window.addEventListener('storage', event => {
   if (event.key === 'tw.logout') window.location.replace('/');
 });
-let keybarSettingsButton: HTMLButtonElement | null = null;
 
 let currentFont = (() => {
   try {
@@ -3708,6 +3741,10 @@ interface UiPrefs {
   keybar?: boolean;
   keyboardLocked?: boolean;
   pager?: boolean;
+  keybarMobile?: boolean;
+  keybarDesktop?: boolean;
+  keyboardLockedMobile?: boolean;
+  keyboardLockedDesktop?: boolean;
 }
 
 async function fetchServerPrefs(timeoutMs = 2500): Promise<UiPrefs | null> {
@@ -4090,26 +4127,24 @@ function updateKeybarHeight(): void {
   updateKeyboardOffset();
 }
 
-function isKeybarVisible(): boolean {
-  return !keybarEl.classList.contains('hidden');
-}
-
-function setKeybarVisible(visible: boolean): void {
+/** Show or hide the key bar for one layout (the one on screen by default). */
+function setKeybarVisible(visible: boolean, kind: LayoutKind = currentLayout(), save = true): void {
+  layoutSettings.keybar[kind] = visible;
+  if (save) storeLayoutSetting('keybar', kind, visible);
+  refreshLayoutSettingsUI();
+  if (kind !== currentLayout()) return;
   keybarEl.classList.toggle('hidden', !visible);
-  keybarSettingsButton?.setAttribute('aria-checked', String(visible));
-  const keybarLabel = keybarSettingsButton?.querySelector('span:last-child');
-  if (keybarLabel) keybarLabel.textContent = visible ? '隐藏底部键盘栏' : '显示底部键盘栏';
   refreshMobileUI();
-  try {
-    localStorage.setItem('tw.keybar', visible ? '1' : '0');
-  } catch {
-    /* ignore */
-  }
-  savePrefs({ keybar: visible });
   requestAnimationFrame(() => {
     updateKeybarHeight();
     fitActive();
   });
+}
+
+function storeLayoutSetting(name: LayoutSetting, kind: LayoutKind, value: boolean): void {
+  try { localStorage.setItem(`tw.${name}.${kind}`, value ? '1' : '0'); }
+  catch { /* server prefs keep it */ }
+  savePrefs({ [`${name}${kind === 'mobile' ? 'Mobile' : 'Desktop'}`]: value } as UiPrefs);
 }
 
 // Where the bottom of what you can actually see sits, in the coordinate space
@@ -4627,7 +4662,7 @@ mAttachBtn.setAttribute('aria-label', '上传文件');
 bindIntentionalClick(mAttachBtn, () => fileInput.click());
 const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
   keyboardLockChanged = true;
-  setKeyboardLocked(!keyboardLocked);
+  setKeyboardLocked(!layoutSettings.keyboardLocked.mobile, 'mobile');
 });
 mKeyboardLockBtn.classList.add('m-keyboard-lock');
 mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/></svg>';
@@ -5031,31 +5066,82 @@ function sheetRow(
   return b;
 }
 
-const keyboardLockButton = sheetRow('☐', '键盘锁定', () => {
-  keyboardLockChanged = true;
-  setKeyboardLocked(!keyboardLocked);
-});
-keyboardLockButton.setAttribute('role', 'checkbox');
-keyboardLockButton.classList.add('desktop-keyboard-lock-setting');
-keyboardLockButton.title = '开启后，手机仅通过“键盘”按钮弹出终端输入法';
+/**
+ * A setting kept per layout: its name, then one switch for 手机端 and one for
+ * PC 端. The one for the layout on screen is marked 当前.
+ */
+const layoutRows = new Map<LayoutSetting, { row: HTMLElement; buttons: Map<LayoutKind, HTMLButtonElement> }>();
+function layoutSettingRow(name: LayoutSetting, label: string, hint: string): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'sheet-seg layout-setting';
+  row.setAttribute('role', 'group');
+  row.setAttribute('aria-label', label);
+  const title = document.createElement('div');
+  title.className = 'ss-lbl';
+  title.textContent = label;
+  title.title = hint;
+  row.append(title);
+  const buttons = new Map<LayoutKind, HTMLButtonElement>();
+  for (const kind of ['mobile', 'desktop'] as const) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sf-btn layout-switch';
+    b.setAttribute('role', 'switch');
+    bindIntentionalClick(b, () => {
+      const next = !layoutSettings[name][kind];
+      if (name === 'keybar') setKeybarVisible(next, kind);
+      else { keyboardLockChanged = true; setKeyboardLocked(next, kind); }
+    }, sheet);
+    buttons.set(kind, b);
+    row.append(b);
+  }
+  layoutRows.set(name, { row, buttons });
+  return row;
+}
 
-function setKeyboardLocked(locked: boolean): void {
+function refreshLayoutSettingsUI(): void {
+  const now = currentLayout();
+  for (const [name, { buttons }] of layoutRows) {
+    for (const [kind, b] of buttons) {
+      const on = layoutSettings[name][kind];
+      b.classList.toggle('active', on);
+      b.classList.toggle('current', kind === now);
+      b.setAttribute('aria-checked', String(on));
+      b.textContent = `${LAYOUT_LABEL[kind]} ${on ? '开' : '关'}`;
+      b.title = `${LAYOUT_LABEL[kind]}：${on ? '已开启' : '已关闭'}${kind === now ? '（当前界面）' : ''}`;
+    }
+  }
+}
+
+const keybarRow = layoutSettingRow('keybar', '底部键盘栏', '手机端与 PC 端分别设置，各自只在对应界面生效');
+const keyboardLockRow = layoutSettingRow('keyboardLocked', '键盘锁定',
+  '开启后，只能通过“键盘”按钮弹出输入法；手机端与 PC 端分别设置');
+const layoutHint = document.createElement('div');
+layoutHint.className = 'sheet-hint';
+layoutHint.textContent = '键盘栏与键盘锁定按手机端 / PC 端分别保存，只在对应界面生效；带下划线的是当前界面。';
+
+/** Put the layout on screen's own key bar and lock into force. */
+function applyLayoutSettings(): void {
+  const kind = currentLayout();
+  setKeybarVisible(layoutSettings.keybar[kind], kind, false);
+  setKeyboardLocked(layoutSettings.keyboardLocked[kind], kind, false);
+}
+
+/** Turn the keyboard lock on or off for one layout (the one on screen by default). */
+function setKeyboardLocked(locked: boolean, kind: LayoutKind = currentLayout(), save = true): void {
+  layoutSettings.keyboardLocked[kind] = locked;
+  if (save) storeLayoutSetting('keyboardLocked', kind, locked);
+  refreshLayoutSettingsUI();
+  if (kind !== currentLayout()) return;
   keyboardLocked = locked;
   mKeyboardLockBtn.classList.toggle('active', locked);
   mKeyboardLockBtn.setAttribute('aria-pressed', String(locked));
   mKeyboardLockBtn.title = locked ? '键盘锁定：已开启' : '键盘锁定：已关闭';
-  keyboardLockButton.setAttribute('aria-checked', String(locked));
-  const icon = keyboardLockButton.querySelector('.sheet-ico');
-  if (icon) icon.textContent = locked ? '☑' : '☐';
   for (const session of sessions) {
     session.setKeyboardLocked(locked);
     session.mate?.setKeyboardLocked(locked);
   }
-  try { localStorage.setItem('tw.keyboardLocked', locked ? '1' : '0'); }
-  catch { /* server prefs still save the setting */ }
-  savePrefs({ keyboardLocked: locked });
 }
-setKeyboardLocked(keyboardLocked);
 
 const fullscreenButton = sheetRow('⤢', '进入全屏', () => {
   closeSheet();
@@ -5078,11 +5164,6 @@ for (const event of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 updateFullscreenButton();
 
-keybarSettingsButton = sheetRow('⌨', isKeybarVisible() ? '隐藏底部键盘栏' : '显示底部键盘栏', () => {
-  setKeybarVisible(!isKeybarVisible());
-});
-keybarSettingsButton.setAttribute('role', 'checkbox');
-keybarSettingsButton.setAttribute('aria-checked', String(isKeybarVisible()));
 
 // Floating ⌃ / ⌄ page buttons (web/pager.ts): on by default on touch devices,
 // where swiping through history is the slow way. Not offered with a mouse.
@@ -5435,14 +5516,15 @@ sheet.append(
   splitRow,
   themeRow,
   fullscreenButton,
-  keybarSettingsButton,
+  keybarRow,
+  keyboardLockRow,
+  layoutHint,
   pagerButton,
   sheetGroup('设置'),
   statusModeRow,
   statusModeHint,
   colorRow,
   colorHint,
-  keyboardLockButton,
   selectBtn,
   sheetGroup('远程主机'),
   remoteGroup,
@@ -5890,14 +5972,18 @@ async function init(): Promise<void> {
       /* ignore */
     }
   }
-  if (typeof prefs.keybar === 'boolean' && prefs.keybar !== isKeybarVisible()) {
-    setKeybarVisible(prefs.keybar);
+  // Each layout's own key bar and lock; a server that only has the old single
+  // value has it for this kind of device, and the other layout keeps its own.
+  const deviceKind: LayoutKind = TOUCH_DEVICE ? 'mobile' : 'desktop';
+  for (const kind of ['mobile', 'desktop'] as const) {
+    const suffix = kind === 'mobile' ? 'Mobile' : 'Desktop';
+    const keybar = prefs[`keybar${suffix}`] ?? (kind === deviceKind ? prefs.keybar : undefined);
+    if (typeof keybar === 'boolean') setKeybarVisible(keybar, kind, false);
+    const locked = prefs[`keyboardLocked${suffix}`] ?? (kind === deviceKind ? prefs.keyboardLocked : undefined);
+    if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
   }
   if (!pagerChanged && typeof prefs.pager === 'boolean' && prefs.pager !== pagerEnabled) {
     setPagerEnabled(prefs.pager);
-  }
-  if (!keyboardLockChanged && typeof prefs.keyboardLocked === 'boolean') {
-    setKeyboardLocked(prefs.keyboardLocked);
   }
 
   // Build every tab (creation order is tab order). None of them attaches here:
@@ -5932,7 +6018,10 @@ async function init(): Promise<void> {
   // Everything restored: from here on, changes are the user's and get saved.
   prefsReady = true;
   if (themeChanged) savePrefs({ theme: currentTheme });
-  if (keyboardLockChanged) savePrefs({ keyboardLocked });
+  if (keyboardLockChanged) {
+    savePrefs({ keyboardLockedMobile: layoutSettings.keyboardLocked.mobile,
+      keyboardLockedDesktop: layoutSettings.keyboardLocked.desktop });
+  }
 }
 
 connectAgentStatus('');
@@ -5955,17 +6044,11 @@ setInterval(() => {
   if (document.visibilityState === 'visible') void syncFromServer();
 }, 5000);
 
-// Default: show the key bar on touch devices, hidden on desktop (unless saved).
-const keybarDefault = (() => {
-  try {
-    const v = localStorage.getItem('tw.keybar');
-    if (v !== null) return v === '1';
-  } catch {
-    /* ignore */
-  }
-  return TOUCH_DEVICE;
-})();
-setKeybarVisible(keybarDefault);
+// The key bar and lock of the layout on screen: shown on phones, hidden on a
+// PC, unless set otherwise for that layout. Crossing the breakpoint (rotating,
+// or narrowing a window) brings in the other layout's own.
+applyLayoutSettings();
+mobileMQ.addEventListener('change', () => applyLayoutSettings());
 
 
 // Same-origin embedded file view isolates its CSS/keyboard handling while the

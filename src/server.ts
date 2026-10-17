@@ -891,6 +891,11 @@ interface UiPrefs {
   keyboardLocked?: boolean;
   /** Floating page buttons on touch devices; defaults to on there. */
   pager?: boolean;
+  /** Key bar and keyboard lock, kept apart for the phone and the PC layout. */
+  keybarMobile?: boolean;
+  keybarDesktop?: boolean;
+  keyboardLockedMobile?: boolean;
+  keyboardLockedDesktop?: boolean;
 }
 
 /** device class ("touch" | "desktop") -> that class's prefs. */
@@ -973,6 +978,9 @@ async function handleSetPrefs(
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
   if (typeof obj.pager === "boolean") next.pager = obj.pager;
+  for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
+    if (typeof obj[key] === "boolean") next[key] = obj[key];
+  }
   if (obj.theme === "dark" || obj.theme === "light") next.theme = obj.theme;
   all[scope] = next;
   prefsCache = all;
