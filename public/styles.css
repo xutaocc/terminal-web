@@ -251,6 +251,7 @@ body {
 .sheet-row.armed { color: #3b8eea; }
 .quick-command-box [hidden] { display: none !important; }
 .tab .tab-label {
+  flex: 1 1 auto;
   min-width: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -265,7 +266,6 @@ body {
 }
 .tab .tab-close {
   flex: 0 0 auto;
-  margin-left: auto;
   width: 16px;
   height: 16px;
   line-height: 14px;
@@ -1823,7 +1823,10 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
    --------------------------------------------------------------------------- */
 .tab .host-badge { display: none; margin-right: -2px; padding: 0 3px; font-size: 9px; line-height: 13px; }
 .has-remotes .tab .host-badge { display: inline-flex; }
-.has-remotes .tab.remote { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--host-remote) 70%, transparent); }
+/* A remote tab is told by its 远程 badge and its address, as a local one is by
+   本地. (An amber underline used to mark it too, drawn as an inset shadow over
+   the rounded bottom: against the blue border of the open tab it looked like
+   two outlines laid one over the other.) */
 .m-title .host-badge { margin-right: 2px; }
 .drawer-body .host-badge { margin-right: -2px; }
 
@@ -1889,7 +1892,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 /* --- Address suffixes and pinning ---------------------------------------- */
 /* Tabs: [dot][pin][本地][name][.56][×]. The suffix is only there once a remote
    is (it is meaningless with one server), and it never wraps under the name. */
-.tab .host-ip { display: none; font-size: 9.5px; opacity: 0.85; }
+.tab .host-ip { display: none; flex: 0 0 auto; font-size: 9.5px; opacity: 0.85; }
 .has-remotes .tab .host-ip:not([hidden]) { display: inline; }
 .tab .pin-mark { display: none; margin: 0 -2px; }
 .tab.pinned .pin-mark { display: inline-flex; }
