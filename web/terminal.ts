@@ -17,10 +17,11 @@ import { OutputActivityTracker, SessionReadState } from './output-activity.js';
 import { showQuickCommands } from './quick-commands.js';
 import { decodeOsc52, forceSelectKey, shouldHintDrag, takeHintTurn } from './terminal-copy.js';
 import { type FolderInfo, groupByFolder, wouldEmpty } from './project-groups.js';
-import { ICONS, ProjectSidebar, type SidebarSection } from './project-sidebar.js';
+import { ICONS, ProjectSidebar, type SidebarSection, type SidebarSession } from './project-sidebar.js';
 import { brandMark } from './brand-mark.js';
+import { bindTabContext } from './tab-context.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
-import { hostOfKey, hostUrl, makeKey, type RemoteHost, splitKey } from './hosts.js';
+import { hostOfKey, hostUrl, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -512,8 +513,39 @@ function hostBadge(host: string): HTMLElement {
   const badge = document.createElement('span');
   badge.className = `host-badge ${host ? 'remote' : 'local'}`;
   badge.textContent = host ? '远程' : '本地';
-  badge.title = hostLabel(host);
+  badge.title = hostTitle(host);
   return badge;
+}
+
+let selfIp = '';
+/** The address a server is known by: this one's LAN address, a remote's as it was added. */
+function hostIp(host: string): string {
+  if (!host) return selfIp;
+  const url = remoteHosts.find(r => r.id === host)?.url;
+  try { return url ? new URL(url).hostname : ''; } catch { return ''; }
+}
+
+/** "远程 · 119 桌面 · 192.168.88.119", for tooltips. */
+function hostTitle(host: string): string {
+  const ip = hostIp(host);
+  return ip ? `${hostLabel(host)} · ${ip}` : hostLabel(host);
+}
+
+function shortIps(): Map<string, string> {
+  const hosts = ['', ...remoteHosts.map(r => r.id)];
+  const tails = shortAddresses(hosts.map(hostIp));
+  return new Map(hosts.map((h, i) => [h, tails[i]]));
+}
+let ipTails = new Map<string, string>();
+
+/** A session's address suffix: the short form, with the whole address on hover. */
+function ipSuffix(host: string, full = false): HTMLElement {
+  const el = document.createElement('span');
+  el.className = `host-ip ${host ? 'remote' : 'local'}`;
+  el.textContent = full ? hostIp(host) : ipTails.get(host) ?? '';
+  el.title = hostTitle(host);
+  el.hidden = !el.textContent;
+  return el;
 }
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
@@ -530,6 +562,7 @@ const sidebar = new ProjectSidebar({
   },
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
+  pinSession: (name, pinned) => pinSession(name, pinned),
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
   renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
@@ -606,6 +639,7 @@ class Session {
   tabEl: HTMLElement | null = null;
   tabLabel: HTMLElement | null = null;
   tabDot: HTMLElement | null = null;
+  tabIp: HTMLElement | null = null;
   // Where the session is working, as last reported by the server (or where it
   // was asked to start). The sidebar files the tab under a project by this.
   cwd: string | null = null;
@@ -2292,9 +2326,85 @@ function finishTabDrag(): void {
   suppressTabTapUntil = performance.now() + 250;
 }
 
+// ---------------------------------------------------------------------------
+// Pinning. A pinned session goes to the top of its directory card — and so of
+// the tab strip, which on the desktop shows one card at a time, and of its
+// row in the phone's session list. Every server keeps its own pins next to its
+// folders (/api/folders), so they are the same on every device. Most recently
+// pinned first.
+// ---------------------------------------------------------------------------
+let pinnedKeys: string[] = [];
+
+function isPinned(s: Session): boolean {
+  return pinnedKeys.includes(s.name);
+}
+
+/** `list` with its pinned sessions first (most recently pinned first), the rest in order. */
+function pinnedFirst(list: readonly Session[]): Session[] {
+  const rank = (s: Session): number => {
+    const i = pinnedKeys.indexOf(s.name);
+    return i < 0 ? Infinity : i;
+  };
+  return list.map((s, i) => ({ s, i, r: rank(s) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.s);
+}
+
+function pinSession(name: string, pinned: boolean): void {
+  const s = sessions.find(x => x.name === name);
+  if (!s) return;
+  pinnedKeys = pinned ? [name, ...pinnedKeys.filter(n => n !== name)] : pinnedKeys.filter(n => n !== name);
+  refreshMobileUI();
+  flashStatus(pinned ? `已置顶：${s.displayName}` : `已取消置顶：${s.displayName}`, 1400);
+  void editFolders({ action: 'pin', sessions: [name], pinned });
+}
+
+/** Put the strip's tabs in display order: pinned first. Touches the DOM only when it changed. */
+function orderTabStrip(): void {
+  const ordered = pinnedFirst(sessions);
+  const current = Array.from(tabsEl.children).filter(el => el !== addBtn);
+  if (ordered.every((s, i) => s.tabEl === current[i])) return;
+  for (const s of ordered) if (s.tabEl) tabsEl.insertBefore(s.tabEl, addBtn);
+}
+
+let tabMenu: HTMLElement | null = null;
+function closeTabMenu(): void {
+  tabMenu?.remove();
+  tabMenu = null;
+}
+document.addEventListener('pointerdown', e => {
+  if (tabMenu && !tabMenu.contains(e.target as Node)) closeTabMenu();
+}, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTabMenu(); });
+
+/** A tab's own menu, at the pointer: pin, edit its details, close it. */
+function openTabMenu(s: Session, x: number, y: number): void {
+  closeTabMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ps-menu tab-menu';
+  const title = document.createElement('div');
+  title.className = 'ps-menu-title';
+  title.textContent = remoteHosts.length ? `${s.displayName} · ${hostTitle(s.host)}` : s.displayName;
+  menu.append(title);
+  const item = (text: string, onPick: () => void, cls = ''): void => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `ps-menu-item ${cls}`;
+    b.textContent = text;
+    b.addEventListener('click', () => { closeTabMenu(); onPick(); });
+    menu.append(b);
+  };
+  item(isPinned(s) ? '取消置顶' : '置顶到目录最前', () => pinSession(s.name, !isPinned(s)));
+  item('编辑会话信息', () => void showSessionNote(s));
+  item('关闭会话', () => confirmCloseSession(s), 'danger');
+  document.body.append(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
+  tabMenu = menu;
+}
+
 function applyTabOrder(ordered: Session[]): void {
   sessions.splice(0, sessions.length, ...ordered);
-  for (const tab of sessions) if (tab.tabEl) tabsEl.insertBefore(tab.tabEl, addBtn);
+  orderTabStrip();
   saveTabs();
   refreshMobileUI();
 }
@@ -2525,8 +2635,16 @@ function buildTab(s: Session): void {
   close.textContent = '×';
   close.title = '关闭标签并结束会话';
   // Shown only once there is a remote to tell apart from (CSS: .has-remotes).
-  tab.append(dot, hostBadge(s.host), label, close);
+  const pin = document.createElement('span');
+  pin.className = 'pin-mark';
+  pin.innerHTML = ICONS.pin;
+  pin.title = '已置顶';
+  const ip = ipSuffix(s.host);
+  tab.append(dot, pin, hostBadge(s.host), label, ip, close);
   tab.classList.toggle('remote', !!s.host);
+  s.tabIp = ip;
+  // Right-click (or a long press on touch): pin, edit, close.
+  bindTabContext(tab, (x, y) => openTabMenu(s, x, y), tabsEl);
 
   // Single tap activates. On a tap only (see
   // onTap), and WITHOUT preventDefault, so a sideways drag scrolls the strip
@@ -2676,7 +2794,7 @@ function confirmCloseSession(s: Session): void {
   const sessionNote = s.displayName === s.raw ? '' : `（tmux 会话 "${s.raw}"）`;
   label.append(
     '关闭 ',
-    ...(remoteHosts.length ? [hostBadge(s.host), ' '] : []),
+    ...(remoteHosts.length ? [hostBadge(s.host), ' ', ipSuffix(s.host, true), ' '] : []),
     strong,
     `${sessionNote}？这会结束它的 tmux 会话，其中运行的程序也会一并结束。`,
   );
@@ -2988,12 +3106,15 @@ function folderOf(s: Session): string {
 
 function refreshSidebar(): void {
   const sections: SidebarSection[] = ['', ...remoteHosts.map(r => r.id)].map(host => {
-    const groups = groupByFolder(sessions.filter(s => s.host === host), s => s.name,
-      folders.filter(f => hostOfKey(f.id) === host), folderMembers);
+    // What a card needs, pinned ones first and flagged for their mark.
+    const items: SidebarSession[] = pinnedFirst(sessions.filter(s => s.host === host))
+      .map(s => ({ name: s.name, displayName: s.displayName, cwd: s.cwd, pinned: isPinned(s) }));
+    const groups = groupByFolder(items, s => s.name, folders.filter(f => hostOfKey(f.id) === host), folderMembers);
     for (const group of groups) if (!group.folder) group.key = looseKey(host);
     return {
       host,
       title: host ? remoteHosts.find(r => r.id === host)?.name ?? host : selfName ? `本机 · ${selfName}` : '本机',
+      ip: hostIp(host),
       remote: !!host,
       online: !offlineHosts.has(host),
       home: homeDirs.get(host) ?? '',
@@ -3001,6 +3122,15 @@ function refreshSidebar(): void {
     };
   });
   sidebar.render(sections, activeTab?.name ?? null, dirNames, cardOrder);
+  orderTabStrip();
+  for (const s of sessions) {
+    s.tabEl?.classList.toggle('pinned', isPinned(s));
+    if (s.tabIp) {
+      s.tabIp.textContent = ipTails.get(s.host) ?? '';
+      s.tabIp.title = hostTitle(s.host);
+      s.tabIp.hidden = !s.tabIp.textContent;
+    }
+  }
   const filtering = !mobileMQ.matches && !sidebar.isHidden;
   const activeFolder = activeTab ? folderOf(activeTab) : '';
   const activeDir = activeTab?.cwd ?? '';
@@ -3010,7 +3140,8 @@ function refreshSidebar(): void {
 }
 
 interface FolderReply {
-  folders?: unknown; members?: unknown; dirNames?: unknown; cardOrder?: unknown; emptied?: unknown; home?: unknown; error?: unknown;
+  folders?: unknown; members?: unknown; dirNames?: unknown; cardOrder?: unknown; pinned?: unknown;
+  emptied?: unknown; home?: unknown; error?: unknown;
 }
 
 /** Entries of `obj` that do not belong to `host`. */
@@ -3051,6 +3182,12 @@ function setFolders(host: string, data: FolderReply): void {
     ...otherHosts(cardOrder, host),
     ...(data.cardOrder && typeof data.cardOrder === 'object' ? keyedBy(host, data.cardOrder as typeof cardOrder) : {}),
   };
+  if (Array.isArray(data.pinned)) {
+    pinnedKeys = [
+      ...pinnedKeys.filter(key => !mine(key)),
+      ...data.pinned.filter((n): n is string => typeof n === 'string').map(n => makeKey(host, n)),
+    ];
+  }
   if (typeof data.home === 'string') homeDirs.set(host, data.home);
   if (gone.length) flashStatus(`文件夹「${gone.map(f => f.name).join('」「')}」已无会话，已删除`, 3500);
 }
@@ -3069,7 +3206,8 @@ type FolderEdit =
   | { action: 'rename'; id: string; name: string }
   | { action: 'move'; sessions: string[]; folder: string; card?: { cwd: string; name: string } }
   | { action: 'renameDir'; folder: string; cwd: string; name: string }
-  | { action: 'orderCards'; folder: string; cwds: string[] };
+  | { action: 'orderCards'; folder: string; cwds: string[] }
+  | { action: 'pin'; sessions: string[]; pinned: boolean };
 
 /** An edit goes to the server whose folders it touches, in that server's own names. */
 function forServer(edit: FolderEdit): { host: string; body: FolderEdit } {
@@ -3077,6 +3215,7 @@ function forServer(edit: FolderEdit): { host: string; body: FolderEdit } {
   switch (edit.action) {
     case 'create': return { host: hostOfKey(edit.session), body: { ...edit, session: raw(edit.session) } };
     case 'rename': return { host: hostOfKey(edit.id), body: { ...edit, id: raw(edit.id) } };
+    case 'pin': return { host: hostOfKey(edit.sessions[0] ?? ''), body: { ...edit, sessions: edit.sessions.map(raw) } };
     case 'move': return {
       host: hostOfKey(edit.sessions[0] ?? edit.folder),
       body: { ...edit, sessions: edit.sessions.map(raw), folder: raw(edit.folder) },
@@ -3629,11 +3768,12 @@ async function loadRemotes(): Promise<void> {
 }
 
 let selfToken = '';
-function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?: unknown; token?: unknown } }): void {
+function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?: unknown; token?: unknown; ip?: unknown } }): void {
   if (!Array.isArray(data.remotes)) return;
   if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
   if (typeof data.self?.token === 'string') selfToken = data.self.token;
+  if (typeof data.self?.ip === 'string') selfIp = data.self.ip;
   const next = data.remotes.filter((r): r is RemoteHost =>
     !!r && typeof r.id === 'string' && typeof r.name === 'string' && typeof r.url === 'string');
   const kept = new Set(next.map(r => r.id));
@@ -3642,6 +3782,7 @@ function takeRemotes(data: { remotes?: unknown; health?: unknown; self?: { name?
   for (const s of sessions.filter(x => x.host && !kept.has(x.host))) removeLocalSession(s);
   for (const r of remoteHosts) if (!kept.has(r.id)) { disconnectAgentStatus(r.id); offlineHosts.delete(r.id); }
   remoteHosts = next;
+  ipTails = shortIps();
   document.documentElement.classList.toggle('has-remotes', next.length > 0);
   renderRemoteList();
 }
@@ -4216,7 +4357,9 @@ const mCaret = document.createElement('span');
 mCaret.className = 'm-caret';
 mCaret.textContent = '▾';
 const mTitleHost = document.createElement('span');
-mTitle.append(mTitleDot, mTitleHost, mTitleLabel, mCaret);
+const mTitleIp = document.createElement('span');
+mTitleIp.className = 'm-title-ip';
+mTitle.append(mTitleDot, mTitleHost, mTitleLabel, mTitleIp, mCaret);
 bindIntentionalClick(mTitle, openDrawer);
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
@@ -4295,9 +4438,10 @@ function selectDrawerSession(session: Session): void {
 function renderDrawer(): void {
   if (!drawerSelected || !sessions.includes(drawerSelected)) drawerSelected = activeTab ?? sessions[0] ?? null;
   drawerList.textContent = '';
-  for (const s of sessions) {
+  // Pinned sessions head the list, the way they head their card on the desktop.
+  for (const s of pinnedFirst(sessions)) {
     const row = document.createElement('div');
-    row.className = 'drawer-row' + (s === drawerSelected ? ' active' : '');
+    row.className = 'drawer-row' + (s === drawerSelected ? ' active' : '') + (isPinned(s) ? ' pinned' : '');
     row.dataset.session = s.name;
 
     const body = document.createElement('div');
@@ -4311,9 +4455,25 @@ function renderDrawer(): void {
     const name = document.createElement('span');
     name.className = 'drawer-name';
     name.textContent = s.displayName;
-    // With a remote added, every row says which server it runs on.
-    if (remoteHosts.length) body.append(dot, hostBadge(s.host), name);
-    else body.append(dot, name);
+    // With a remote added, every row says which server it runs on: the badge in
+    // front, the address under the name.
+    const text = document.createElement('span');
+    text.className = 'drawer-text';
+    text.append(name);
+    if (remoteHosts.length) {
+      const meta = document.createElement('span');
+      meta.className = 'drawer-meta';
+      meta.append(ipSuffix(s.host, true));
+      text.append(meta);
+    }
+    if (isPinned(s)) {
+      const pin = document.createElement('span');
+      pin.className = 'pin-mark';
+      pin.innerHTML = ICONS.pin;
+      body.append(dot, pin);
+    } else body.append(dot);
+    if (remoteHosts.length) body.append(hostBadge(s.host));
+    body.append(text);
     // Taps only: this list scrolls, and a swipe through it must not pick the
     // session it started on (it used to, on pointerdown).
     onTap(body, () => {
@@ -4334,6 +4494,16 @@ function renderDrawer(): void {
       activateSession(s);
       closeDrawer();
     }, drawer);
+
+    // One tap to pin: a phone has no right-click, and a long press is hidden.
+    const pin = document.createElement('button');
+    pin.className = 'drawer-act drawer-pin' + (isPinned(s) ? ' on' : '');
+    pin.type = 'button';
+    pin.innerHTML = ICONS.pin;
+    pin.title = isPinned(s) ? '取消置顶' : '置顶';
+    pin.setAttribute('aria-label', `${pin.title}：${s.displayName}`);
+    pin.setAttribute('aria-pressed', String(isPinned(s)));
+    onTap(pin, () => pinSession(s.name, !isPinned(s)), drawer);
 
     const rename = document.createElement('button');
     rename.className = 'drawer-act';
@@ -4356,7 +4526,7 @@ function renderDrawer(): void {
       confirmCloseSession(s);
     }, drawer);
 
-    row.append(body, enter, rename, close);
+    row.append(body, pin, enter, rename, close);
     drawerList.append(row);
   }
   updateOutputActivity();
@@ -4681,7 +4851,7 @@ function refreshSettingsTarget(): void {
   const host = settingsHost();
   settingsTarget.hidden = !remoteHosts.length;
   settingsTarget.classList.toggle('remote', !!host);
-  settingsTarget.replaceChildren(hostBadge(host), `当前设置对象：${hostLabel(host)}`);
+  settingsTarget.replaceChildren(hostBadge(host), `当前设置对象：${hostLabel(host)}`, ipSuffix(host, true));
   const hint = document.createElement('small');
   hint.textContent = '「设置」组与快捷命令作用于该主机；字号、主题等只作用于本设备。';
   settingsTarget.append(hint);
@@ -4770,7 +4940,7 @@ function renderRemoteList(): void {
   self.className = 'remote-row self';
   const selfText = document.createElement('span');
   selfText.className = 'remote-row-text';
-  selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机');
+  selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机', ipSuffix('', true));
   const copy = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '复制本机 Token' });
   copy.title = '在另一台主机的「远程主机」里添加本机时使用';
   copy.disabled = !selfToken;
@@ -4915,6 +5085,7 @@ function refreshMobileUI(): void {
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleHost.replaceChildren(...(s && remoteHosts.length ? [hostBadge(s.host)] : []));
+  mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));
   if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); }
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();
@@ -5411,8 +5582,10 @@ function openFileBrowser(): void {
   if (fileBrowserSession !== session.name) {
     fileBrowserSession = session.name;
     const query: Record<string, string> = { session: session.raw, label: session.displayName, theme: currentTheme };
-    if (session.host) { query.host = session.host; query.hostLabel = hostLabel(session.host); }
-    else if (remoteHosts.length) query.hostLabel = hostLabel('');
+    if (session.host) query.host = session.host;
+    // The file manager always says whose files these are, and at which address.
+    query.hostLabel = hostLabel(session.host);
+    if (hostIp(session.host)) query.hostIp = hostIp(session.host);
     fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams(query)}`;
   }
   fileBrowserOpen = true;

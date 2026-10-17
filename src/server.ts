@@ -638,7 +638,7 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
   if (req.method === 'GET') { sendJsonHttp(res, 200, { ...(await folders.get()), emptied: [], home: os.homedir() }); return; }
   let body: {
     action?: unknown; name?: unknown; session?: unknown; id?: unknown;
-    sessions?: unknown; folder?: unknown; cwd?: unknown; card?: unknown; cwds?: unknown;
+    sessions?: unknown; folder?: unknown; cwd?: unknown; card?: unknown; cwds?: unknown; pinned?: unknown;
   };
   try { body = JSON.parse((await readBody(req, 16384)).toString('utf8')); }
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
@@ -654,6 +654,10 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
       const carry = card && typeof card.cwd === 'string' && card.cwd.startsWith('/') && validFolderName(card.name)
         ? { cwd: card.cwd, name: card.name } : undefined;
       const r = await folders.move(body.sessions as string[], body.folder, carry);
+      sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
+    } else if (body.action === 'pin' && Array.isArray(body.sessions) && body.sessions.length <= 100 &&
+               body.sessions.every(validSession) && typeof body.pinned === 'boolean') {
+      const r = await folders.pin(body.sessions as string[], body.pinned);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
     } else if (body.action === 'renameDir' && typeof body.folder === 'string' && typeof body.cwd === 'string' &&
                body.cwd.startsWith('/') && body.cwd.length <= 4096 &&
@@ -1203,14 +1207,48 @@ function interfaceSignature(): string {
     .sort().join(",");
 }
 const remoteMonitor = new RemoteMonitor(remotes, interfaceSignature);
-remoteMonitor.start();
+
+/**
+ * This machine's IPv4 addresses, the likeliest LAN address first: physical
+ * interfaces (en*, eth*, wl*, ens*…) before tunnels, private ranges before
+ * others. VM / container bridges and proxy fake-IP tunnels (198.18.0.0/15)
+ * are left out — they are nobody's idea of "this machine's IP".
+ */
+function lanAddresses(): string[] {
+  const virtual = /^(bridge|docker|br-|veth|vmnet|vboxnet|virbr|lo)/;
+  const physical = /^(en|eth|wl|wlan|ens|enp|eno)/;
+  const found: { ip: string; score: number }[] = [];
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    if (virtual.test(name)) continue;
+    for (const a of list ?? []) {
+      if (a.family !== "IPv4" || a.internal) continue;
+      const ip = a.address;
+      if (ip.startsWith("169.254.") || /^198\.1[89]\./.test(ip)) continue;
+      const privateRange = /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
+      found.push({ ip, score: (physical.test(name) ? 0 : 2) + (privateRange ? 0 : 1) });
+    }
+  }
+  return [...new Set(found.sort((x, y) => x.score - y.score).map((f) => f.ip))];
+}
+
+/**
+ * The address to show for this machine: LAN_IP if set, else the address the
+ * server is bound to, else the likeliest LAN address. It follows the machine:
+ * a laptop on another network shows its new address at the next sync.
+ */
+function lanAddress(): string {
+  const configured = process.env.LAN_IP?.trim();
+  if (configured) return configured;
+  if (config.host && config.host !== "0.0.0.0" && config.host !== "127.0.0.1") return config.host;
+  return lanAddresses()[0] ?? "";
+}
 
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   res.setHeader("Cache-Control", "no-store");
   const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
     remotes: RemoteStore.view(await remotes.list()),
     health: remoteMonitor.snapshot(),
-    self: { name: os.hostname(), token: config.authToken },
+    self: { name: os.hostname(), token: config.authToken, ip: lanAddress(), ips: lanAddresses() },
   });
   if (req.method === "GET") { await reply(); return; }
   let body: Record<string, unknown>;
@@ -1281,6 +1319,8 @@ const server = http.createServer((req, res) => {
       if (viaRemote) {
         const remote = await remotes.get(viaRemote.id);
         if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
+        // A remote's remote list carries its own token; this page has no use for it.
+        if (viaRemote.rest.startsWith('/api/remotes')) { sendJsonHttp(res, 404, { error: 'not available through a remote' }); return; }
         proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search, remoteMonitor);
         return;
       }

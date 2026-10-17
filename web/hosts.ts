@@ -29,3 +29,20 @@ export function hostOfKey(key: string): string {
 export function hostUrl(host: string, path: string): string {
   return host ? `/remote/${host}${path}` : path;
 }
+
+/**
+ * The shortest tail of each address that still tells them apart: ".56" and
+ * ".119" for 172.16.69.56 and 192.168.88.119, ".1.5" and ".2.5" when the last
+ * parts collide. A host name keeps its first label. Tabs carry this; the full
+ * address is in their tooltip.
+ */
+export function shortAddresses(ips: readonly string[]): string[] {
+  const ipv4 = /^\d+(\.\d+){3}$/;
+  let tails: string[] = [];
+  for (let take = 1; take <= 4; take++) {
+    tails = ips.map(ip => !ip ? '' : ipv4.test(ip) ? '.' + ip.split('.').slice(-take).join('.') : ip.split('.')[0].slice(0, 12));
+    const shown = tails.filter(Boolean);
+    if (new Set(shown).size === shown.length) break;
+  }
+  return tails;
+}

@@ -490,22 +490,27 @@ async function requestSessionPath() {
 }
 $('#tree').append(el('p', 'tree-error', '正在读取当前会话目录…'));
 $('#session-label').textContent = query.get('label') || session || '当前会话';
-// Which server these files are on, when there is more than one to choose from.
-if (query.get('hostLabel')) {
-  const badge = el('span', `host-badge ${host ? 'remote' : 'local'}`, host ? '远程' : '本地');
-  badge.title = query.get('hostLabel');
-  $('#session-label').before(badge);
-  $('#session-label').title = `${query.get('hostLabel')} · ${$('#session-label').textContent}`;
-  document.body.classList.toggle('remote-files', !!host);
-  document.title = `文件管理 · ${query.get('hostLabel')}`;
-  $('.demo-note').prepend(`文件位于：${query.get('hostLabel')}`, el('br'));
+// Which server these files are on, and at which address: a badge and the IP
+// beside the session name, and a full line in the details panel.
+{
+  const where = query.get('hostLabel'), ip = query.get('hostIp');
+  if (where || ip) {
+    const tag = el('span', 'host-tag');
+    tag.append(el('span', `host-badge ${host ? 'remote' : 'local'}`, host ? '远程' : '本地'));
+    if (ip) tag.append(el('span', `host-ip ${host ? 'remote' : 'local'}`, ip));
+    tag.title = [where, ip].filter(Boolean).join(' · ');
+    $('#session-label').after(tag);
+    document.body.classList.toggle('remote-files', !!host);
+    document.title = `文件管理 · ${tag.title}`;
+    $('.demo-note').prepend(`文件位于：${tag.title}`, el('br'));
+  }
 }
 $('#brand-slot').append(brandMark('fb-brand'));
 // The badge yields to the session name: shown only while the name fits whole.
 function fitBrand() {
-  const slot = $('#brand-slot'), label = $('#session-label');
+  const slot = $('#brand-slot'), label = $('#session-label'), heading = $('.heading');
   slot.hidden = false;
-  if (label.scrollWidth > label.clientWidth + 1) slot.hidden = true;
+  if (label.scrollWidth > label.clientWidth + 1 || heading.scrollWidth > heading.clientWidth + 1) slot.hidden = true;
 }
 new ResizeObserver(fitBrand).observe($('header'));
 fitBrand();

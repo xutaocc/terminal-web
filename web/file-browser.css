@@ -177,5 +177,8 @@ footer{padding:6px 14px max(6px,env(safe-area-inset-bottom));gap:6px}
   .fb-brand .brand-glyph svg{width:8px;height:8px}
   .fb-brand .brand-owner{font-size:9px}
 }
-.heading .host-badge{margin-right:-6px}
+
 body.remote-files header{box-shadow:inset 0 -2px 0 color-mix(in srgb,var(--host-remote) 70%,transparent)}
+.host-tag{display:inline-flex;align-items:center;gap:5px;flex:none;padding:2px 6px 2px 2px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}
+.host-tag .host-ip{font-size:11px}
+@media(max-width:700px){.heading .host-tag{padding:1px 4px 1px 1px;gap:3px}.host-tag .host-ip{font-size:9px}}

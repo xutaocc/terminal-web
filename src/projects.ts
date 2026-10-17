@@ -26,10 +26,17 @@ export interface FolderData {
    * order. Optional: files written before cards could be reordered lack it.
    */
   cardOrder?: Record<string, string[]>;
+  /**
+   * Pinned sessions, most recently pinned first. A pinned session goes to the
+   * top of its directory card (and of the tab strip, which shows one card).
+   * Optional: files written before pinning lack it.
+   */
+  pinned?: string[];
 }
 
 const MAX_FOLDERS = 100;
 const MAX_DIR_NAMES = 500;
+const MAX_PINNED = 500;
 
 export function validFolderName(value: unknown): value is string {
   return typeof value === 'string' && !!value.trim() && value.length <= 64 && !/[\x00-\x1f\x7f]/.test(value);
@@ -49,7 +56,8 @@ function valid(data: unknown): data is FolderData {
     Object.values(d.dirNames).reduce((n, names) => n + Object.keys(names).length, 0) <= MAX_DIR_NAMES &&
     (d.cardOrder === undefined || (typeof d.cardOrder === 'object' && !!d.cardOrder &&
       Object.values(d.cardOrder).every(list => Array.isArray(list) && list.length <= MAX_DIR_NAMES &&
-        list.every(cwd => typeof cwd === 'string' && cwd.startsWith('/') && cwd.length <= 4096))));
+        list.every(cwd => typeof cwd === 'string' && cwd.startsWith('/') && cwd.length <= 4096)))) &&
+    (d.pinned === undefined || (Array.isArray(d.pinned) && d.pinned.length <= MAX_PINNED && d.pinned.every(validSession)));
 }
 
 /** Drop memberships of unknown folders, then folders nobody is in, then their card names. */
@@ -63,7 +71,7 @@ function settle(data: FolderData): FolderData {
     .filter(([id, names]) => kept.has(id) && Object.keys(names).length));
   const cardOrder = Object.fromEntries(Object.entries(data.cardOrder ?? {})
     .filter(([id, list]) => kept.has(id) && list.length));
-  return { folders, members, dirNames, cardOrder };
+  return { folders, members, dirNames, cardOrder, pinned: [...new Set(data.pinned ?? [])] };
 }
 
 /**
@@ -143,7 +151,16 @@ export class FolderStore {
     return this.update(data => ({
       ...data,
       members: Object.fromEntries(Object.entries(data.members).filter(([s]) => live.has(s))),
+      pinned: (data.pinned ?? []).filter(s => live.has(s)),
     }));
+  }
+
+  /** Pin sessions (to the front of the list) or unpin them. */
+  pin(sessions: string[], pinned: boolean): Promise<{ data: FolderData; emptied: Folder[] }> {
+    return this.update(data => {
+      const rest = (data.pinned ?? []).filter(s => !sessions.includes(s));
+      return { ...data, pinned: pinned ? [...sessions, ...rest].slice(0, MAX_PINNED) : rest };
+    });
   }
 
   create(name: string, session: string): Promise<{ data: FolderData; emptied: Folder[]; folder: Folder }> {

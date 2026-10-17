@@ -21,3 +21,17 @@
   color: var(--host-remote);
   background: color-mix(in srgb, var(--host-remote) 14%, transparent);
 }
+/* The address that tells servers apart: monospace, quiet, tinted like its
+   badge. Short form (".119") on tabs, full address in lists and headers. */
+.host-ip {
+  flex: none;
+  font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--host-local) 80%, var(--ui-muted, #9a9a9a));
+}
+.host-ip.remote { color: color-mix(in srgb, var(--host-remote) 85%, var(--ui-muted, #9a9a9a)); }
+.host-ip[hidden] { display: none; }
+/* Pinned: a small pin in the accent colour, never in the way of the name. */
+.pin-mark { display: inline-flex; flex: none; color: #3b8eea; }
+.pin-mark svg { display: block; }

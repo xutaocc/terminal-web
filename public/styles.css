@@ -1882,3 +1882,42 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .remote-form .prompt-input { width: 100%; box-sizing: border-box; }
 .actions-sheet .remote-hosts { padding: 0 8px 6px; }
 .actions-sheet .settings-target { margin: 2px 8px 6px; }
+
+/* --- Address suffixes and pinning ---------------------------------------- */
+/* Tabs: [dot][pin][本地][name][.56][×]. The suffix is only there once a remote
+   is (it is meaningless with one server), and it never wraps under the name. */
+.tab .host-ip { display: none; font-size: 9.5px; opacity: 0.85; }
+.has-remotes .tab .host-ip:not([hidden]) { display: inline; }
+.tab .pin-mark { display: none; margin: 0 -2px; }
+.tab.pinned .pin-mark { display: inline-flex; }
+.tab.pinned:not(.active) { border-color: color-mix(in srgb, #3b8eea 35%, var(--ui-hover, #3a3a3a)); }
+.tab-menu .ps-menu-item.danger { color: var(--ui-danger-text, #f14c4c); }
+.ps-menu-sep { height: 1px; margin: 4px 6px; background: var(--ui-border, #333); }
+
+/* Sidebar chips: the pin trails the name; the host header carries the full IP. */
+.ps-chip.pinned { border-color: color-mix(in srgb, #3b8eea 45%, transparent); }
+.ps-chip .pin-mark { margin-left: -1px; }
+.ps-host-head .host-ip { font-size: 10.5px; }
+.ps-host-name { flex: 0 1 auto; }
+.ps-host-head .ps-host-state { margin-left: auto; }
+
+/* Phone list: name on top, address under it, so a long name never pushes the
+   address off the row. */
+.drawer-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.drawer-text .drawer-name { flex: none; }
+.drawer-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.drawer-meta .host-ip { font-size: 11px; }
+.drawer-row.pinned { border-color: color-mix(in srgb, #3b8eea 40%, var(--ui-hover, #3a3a3a)); }
+.drawer-pin svg { width: 15px; height: 15px; }
+.drawer-pin.on { color: #fff; background: #2472c8; border-color: #3b8eea; }
+.m-title-ip:empty { display: none; }
+.m-title-ip .host-ip { font-size: 10px; }
+
+/* Settings banner and remote list show the full address. */
+.settings-target .host-ip { font-size: 11px; font-weight: 600; }
+.remote-row-text .host-ip { font-size: 11px; }
+
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer-pin svg { width: 12px; height: 12px; }
+  .drawer-meta .host-ip { font-size: 10px; }
+}

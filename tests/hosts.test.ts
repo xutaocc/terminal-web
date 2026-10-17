@@ -26,3 +26,10 @@ test('remote addresses are plain http(s) origins', () => {
   assert.equal(validRemoteUrl('http://u:p@x'), null);
   assert.equal(validRemoteUrl('nonsense'), null);
 });
+
+test('address suffixes are as short as they can be and still differ', async () => {
+  const { shortAddresses } = await import('../web/hosts.js');
+  assert.deepEqual(shortAddresses(['172.16.69.56', '192.168.88.119']), ['.56', '.119']);
+  assert.deepEqual(shortAddresses(['192.168.1.5', '192.168.2.5']), ['.1.5', '.2.5']);
+  assert.deepEqual(shortAddresses(['', 'nas.local']), ['', 'nas']);
+});
