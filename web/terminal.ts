@@ -613,7 +613,7 @@ document.body.prepend(sidebar.el);
 
 // Floating page buttons; shown by refreshPager() once everything is set up.
 const pager = new FloatingPager({
-  page: direction => { void activeSession?.scrollHistory(direction); },
+  scroll: notches => activeSession?.wheel(notches),
   bottom: () => { void activeSession?.scrollHistory('bottom'); },
   // The terminal's visible part: below the bars, above the key bar and the
   // soft keyboard (#terminal slides up behind the bar while typing).
@@ -1623,6 +1623,16 @@ class Session {
     );
     this.el.addEventListener('touchend', end, { capture: true, passive: true });
     this.el.addEventListener('touchcancel', end, { capture: true, passive: true });
+  }
+
+  /**
+   * Turn the wheel over the middle of the screen, as a finger swipe does
+   * (positive: toward the live end). Used by the floating scroll buttons.
+   */
+  wheel(notches: number): void {
+    if (!notches) return;
+    this.stopTouchScroll();
+    this.sendWheel(-notches, Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
   }
 
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).

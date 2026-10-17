@@ -1,23 +1,30 @@
 /**
- * Floating page buttons for phones: ⌃ / ⌄ stacked at the right, a little in
+ * Floating scroll buttons for phones: ⌃ / ⌄ stacked at the right, a little in
  * from the edge, about a third of the way down the terminal — where a right
- * thumb rests. A tap pages once; holding pages on until released; dragging
- * moves the pair up or down (remembered). After paging up, ⤓ appears to go
- * back to the live output.
- *
- * Paging is a whole screen per round trip, which is what makes it smoother
- * than a swipe: a swipe streams many small wheel events to tmux and waits on
- * each, and near the top of the page it can be taken for pull-to-refresh.
+ * thumb rests. They scroll the way a finger or a mouse wheel does, a few lines
+ * at a time, so the eye can follow where it was reading: a tap nudges a few
+ * lines, holding scrolls on at a steady pace that picks up the longer it is
+ * held. Dragging moves the pair up or down (remembered). After scrolling up,
+ * ⤓ appears to go back to the live output.
  */
 export interface PagerHooks {
-  page(direction: 'up' | 'down'): void;
+  /**
+   * Turn the wheel `notches` notches (negative: back through history) — what a
+   * finger swipe sends too. tmux moves a few lines per notch.
+   */
+  scroll(notches: number): void;
   bottom(): void;
   /** The part of the screen the terminal is visible in, in client pixels. */
   visibleRange(): { top: number; bottom: number };
 }
 
-const HOLD_MS = 400;
-const REPEAT_MS = 250;
+// A tap is one notch. Held, one notch per step, the steps shortening the longer
+// it is held: slow enough to read along at first, quicker for long stretches.
+const HOLD_MS = 280;
+/** Time to the next notch after `ms` of holding. */
+function stepAfter(ms: number): number {
+  return ms < 1200 ? 220 : ms < 3000 ? 140 : 90;
+}
 const DRAG_PX = 8;
 const DEFAULT_AT = 0.35;
 const STORE_KEY = 'tw.pager.at';
@@ -32,15 +39,15 @@ export class FloatingPager {
   constructor(private readonly hooks: PagerHooks) {
     this.el.id = 'pager';
     this.el.setAttribute('role', 'group');
-    this.el.setAttribute('aria-label', '翻页');
+    this.el.setAttribute('aria-label', '滚动');
     try {
       const saved = Number(localStorage.getItem(STORE_KEY));
       if (saved > 0 && saved < 1) this.at = saved;
     } catch { /* default position */ }
 
-    const up = this.button('pager-up', '向上翻页（按住连续翻，拖动可调整位置）',
+    const up = this.button('pager-up', '向上滚动（按住持续滚动，拖动可调整位置）',
       '<path d="m6 15 6-6 6 6"/>');
-    const down = this.button('pager-down', '向下翻页（按住连续翻，拖动可调整位置）',
+    const down = this.button('pager-down', '向下滚动（按住持续滚动，拖动可调整位置）',
       '<path d="m6 9 6 6 6-6"/>');
     this.bottomBtn = this.button('pager-bottom', '回到底部（最新输出）',
       '<path d="M12 5v11m-5-5 5 5 5-5"/><path d="M6 20h12"/>');
@@ -101,27 +108,31 @@ export class FloatingPager {
   }
 
   /**
-   * Tap: one page. Hold: a page now, then one every REPEAT_MS. Move the finger
-   * first: drag the pair instead. preventDefault on pointerdown keeps the soft
-   * keyboard and the terminal's focus exactly as they were.
+   * Tap: one notch. Hold: a notch per step, quicker the longer it is held,
+   * until released. Move the finger first: drag the pair instead.
+   * preventDefault on pointerdown keeps the soft keyboard and the terminal's
+   * focus exactly as they were.
    */
   private bindPaging(button: HTMLButtonElement, direction: 'up' | 'down'): void {
+    const sign = direction === 'up' ? -1 : 1;
     let pointer: number | null = null;
     let startY = 0;
     let startAt = 0;
     let dragging = false;
-    let repeating = false;
+    let holding = false;
+    let heldAt = 0;
     let hold: number | undefined;
-    let repeat: number | undefined;
-    const fire = (): void => {
-      this.buzz();
+    const scroll = (): void => {
       if (direction === 'up') this.setPagedUp(true);
-      this.hooks.page(direction);
+      this.hooks.scroll(sign);
+    };
+    const glideOn = (): void => {
+      scroll();
+      hold = window.setTimeout(glideOn, stepAfter(performance.now() - heldAt));
     };
     const stop = (): void => {
       clearTimeout(hold);
-      clearInterval(repeat);
-      hold = repeat = undefined;
+      hold = undefined;
       button.classList.remove('pressed');
       this.el.classList.remove('dragging');
     };
@@ -132,16 +143,17 @@ export class FloatingPager {
       button.setPointerCapture(e.pointerId);
       startY = e.clientY;
       startAt = this.at;
-      dragging = repeating = false;
+      dragging = holding = false;
       button.classList.add('pressed');
       hold = window.setTimeout(() => {
-        repeating = true;
-        fire();
-        repeat = window.setInterval(fire, REPEAT_MS);
+        holding = true;
+        heldAt = performance.now();
+        this.buzz();
+        glideOn();
       }, HOLD_MS);
     });
     button.addEventListener('pointermove', e => {
-      if (e.pointerId !== pointer || repeating) return;
+      if (e.pointerId !== pointer || holding) return;
       const dy = e.clientY - startY;
       if (!dragging && Math.abs(dy) < DRAG_PX) return;
       if (!dragging) {
@@ -157,17 +169,20 @@ export class FloatingPager {
     const end = (e: PointerEvent, cancelled: boolean): void => {
       if (e.pointerId !== pointer) return;
       pointer = null;
-      const tapped = !dragging && !repeating && !cancelled;
+      const tapped = !dragging && !holding && !cancelled;
       if (dragging) {
         try { localStorage.setItem(STORE_KEY, String(this.at)); } catch { /* this session only */ }
       }
       stop();
-      if (tapped) fire();
+      if (tapped) {
+        this.buzz();
+        scroll();
+      }
     };
     button.addEventListener('pointerup', e => end(e, false));
     button.addEventListener('pointercancel', e => end(e, true));
     button.addEventListener('lostpointercapture', e => end(e, true));
-    // The tap was handled on pointerup; a synthesized click must not page again.
+    // The tap was handled on pointerup; a synthesized click must not scroll again.
     button.addEventListener('click', e => e.preventDefault());
     button.addEventListener('contextmenu', e => e.preventDefault());
   }
