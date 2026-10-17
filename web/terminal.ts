@@ -45,6 +45,14 @@ const KEYBAR_HEIGHT = 48; // px when shown
 // Code) has no scrollback, so whatever no longer fits is destroyed rather than
 // scrolled off. A session found sitting at 11x6 on this machine is what that
 // looks like afterwards. Below this floor we keep the last good size.
+// A tap on the floating scroll buttons: this much of a screen, over this long.
+const GLIDE_PAGE = 0.8;
+const GLIDE_MS = 350;
+// Lines a full-screen program (Claude Code, Codex) scrolls per wheel notch —
+// measured, in effect: at 5 a tap moved only a quarter of a screen in Claude
+// Code, so it is nearer 1.5.
+const LINES_PER_APP_NOTCH = 1.5;
+
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
 
@@ -1645,22 +1653,31 @@ class Session {
   }
 
   /**
-   * About 80% of a screen, as a run of wheel notches over ~0.3 s rather than
+   * About 80% of a screen, as a run of wheel notches over ~0.35 s rather than
    * one jump: a fifth of what was on screen stays in view, and the text is
-   * seen moving, so the eye keeps its place. tmux moves 5 lines per notch in
-   * copy-mode (tmux/web.tmux.conf); a full-screen program moves its own amount.
+   * seen moving, so the eye keeps its place.
+   *
+   * How far a notch goes depends on who takes it. tmux's history moves 5 lines
+   * (tmux/web.tmux.conf); a full-screen program that reads the mouse itself —
+   * Claude Code, Codex — moves its own few, about 1.5. Which one it is shows in
+   * the terminal's mouse mode: a program asking for mouse events is on screen.
    */
   glidePage(direction: 1 | -1): void {
     this.stopTouchScroll();
     this.stopGlide();
-    let left = Math.max(1, Math.round(this.term.rows * 0.8 / 5));
-    const step = Math.max(16, Math.round(300 / left));
+    const perNotch = this.term.modes.mouseTrackingMode === 'none' ? 5 : LINES_PER_APP_NOTCH;
+    const left = Math.max(2, Math.round(this.term.rows * GLIDE_PAGE / perNotch));
+    // Several notches a frame on a tall screen, so it still takes ~0.35 s.
+    const frames = Math.min(left, 18);
+    const step = Math.round(GLIDE_MS / frames);
+    const sendAt = (frame: number): number => Math.round(left * (frame + 1) / frames) - Math.round(left * frame / frames);
+    let frame = 0;
     const next = (): void => {
       this.glideTimer = null;
-      if (this.disposed || left <= 0) return;
-      left--;
-      this.sendWheel(-direction, Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
-      if (left > 0) this.glideTimer = setTimeout(next, step);
+      if (this.disposed || frame >= frames) return;
+      const n = sendAt(frame++);
+      if (n) this.sendWheel(-direction * n, Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
+      if (frame < frames) this.glideTimer = setTimeout(next, step);
     };
     next();
   }
