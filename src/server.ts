@@ -1339,6 +1339,15 @@ const server = http.createServer((req, res) => {
         handleRemoteEvents(req, res);
         return;
       }
+      if (method === 'GET' && requestUrl.pathname === '/api/remotes/access') {
+        // A remote's sign-in token, for the settings panel's access link. Whoever
+        // is signed in here can already drive that remote through this server.
+        res.setHeader('Cache-Control', 'no-store');
+        const remote = await remotes.get(requestUrl.searchParams.get('id') ?? '');
+        if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
+        sendJsonHttp(res, 200, { url: remote.url, token: remote.token });
+        return;
+      }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/remotes') {
         await handleRemotes(req, res);
         return;

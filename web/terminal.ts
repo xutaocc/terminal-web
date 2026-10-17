@@ -520,6 +520,8 @@ function hostBadge(host: string): HTMLElement {
 let selfIp = '';
 /** host -> the address that server says it goes by (GET /api/host-info). */
 const remoteIps = new Map<string, string>();
+/** host -> every address it has and its port, as it reported them. */
+const remoteAddrs = new Map<string, { ips: string[]; port: number }>();
 /**
  * The address a server is shown by: the one it picks for itself (overlay
  * 10.144.x.x first, then 192.168.x.x — see lanAddresses in server.ts), or for a
@@ -538,8 +540,12 @@ async function loadHostInfo(host: string): Promise<void> {
   try {
     const res = await fetch(hostUrl(host, '/api/host-info'), { cache: 'no-store' });
     if (!res.ok) return;
-    const data = await res.json() as { ip?: unknown };
+    const data = await res.json() as { ip?: unknown; ips?: unknown; port?: unknown };
     const ip = typeof data.ip === 'string' ? data.ip : '';
+    remoteAddrs.set(host, {
+      ips: Array.isArray(data.ips) ? data.ips.filter((x): x is string => typeof x === 'string') : ip ? [ip] : [],
+      port: typeof data.port === 'number' ? data.port : 0,
+    });
     if (ip === (remoteIps.get(host) ?? '')) return;
     if (ip) remoteIps.set(host, ip);
     else remoteIps.delete(host);
@@ -4973,24 +4979,63 @@ remoteForm.addEventListener('submit', e => {
 // ---------------------------------------------------------------------------
 const accessBox = document.createElement('div');
 accessBox.className = 'access-link';
-let accessIp = '';
+/** host -> the address its link was last set to use. */
+const accessIps = new Map<string, string>();
+/** host -> its token, fetched the first time its link is shown. */
+const remoteTokens = new Map<string, string>();
 
-function accessUrl(ip: string, token: string, encode = true): string {
-  return `http://${ip}${selfPort && selfPort !== 80 ? `:${selfPort}` : ''}/?token=${encode ? encodeURIComponent(token) : token}`;
+/**
+ * The link follows the session the settings are for: this server's own, or
+ * the remote's — its own addresses (as it reports them) plus the one it was
+ * added under, its port and its token.
+ */
+function accessTarget(host: string): { ips: string[]; port: number; token: string } {
+  if (!host) return { ips: selfIps.length ? selfIps : selfIp ? [selfIp] : [], port: selfPort, token: selfToken };
+  const reported = remoteAddrs.get(host);
+  let added = '', addedPort = 0;
+  try {
+    const u = new URL(remoteHosts.find(r => r.id === host)?.url ?? '');
+    added = u.hostname;
+    addedPort = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  } catch { /* none */ }
+  const ips = [...new Set([...(reported?.ips ?? []), added].filter(Boolean))];
+  return { ips, port: reported?.port || addedPort, token: remoteTokens.get(host) ?? '' };
+}
+
+function accessUrl(ip: string, port: number, token: string, encode = true): string {
+  return `http://${ip}${port && port !== 80 ? `:${port}` : ''}/?token=${encode ? encodeURIComponent(token) : token}`;
+}
+
+async function loadRemoteToken(host: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/remotes/access?id=${encodeURIComponent(host)}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json() as { token?: unknown };
+    if (typeof data.token !== 'string') return;
+    remoteTokens.set(host, data.token);
+    if (settingsHost() === host) renderAccessLink();
+  } catch { /* shown as still loading; the next open retries */ }
 }
 
 function renderAccessLink(): void {
+  const host = settingsHost();
+  const { ips, port, token } = accessTarget(host);
+  if (host && !remoteTokens.has(host)) void loadRemoteToken(host);
+  if (host && !remoteAddrs.has(host)) void loadHostInfo(host);
+  let ip = accessIps.get(host) ?? '';
+  if (!ips.includes(ip)) ip = ips[0] ?? '';
   accessBox.replaceChildren();
-  const ips = selfIps.length ? selfIps : selfIp ? [selfIp] : [];
-  if (!ips.includes(accessIp)) accessIp = ips[0] ?? '';
+  accessBox.classList.toggle('remote', !!host);
   const head = document.createElement('div');
   head.className = 'access-head';
-  head.append(hostBadge(''), '本机访问链接');
+  const title = document.createElement('span');
+  title.textContent = host ? `远程访问链接 · ${remoteHosts.find(r => r.id === host)?.name ?? host}` : '本机访问链接';
+  head.append(hostBadge(host), title);
   accessBox.append(head);
-  if (!accessIp || !selfToken) {
+  if (!ip || !token) {
     const none = document.createElement('div');
     none.className = 'sheet-hint';
-    none.textContent = '读取本机地址中…';
+    none.textContent = host && offlineHosts.has(host) ? '远程主机暂时无法连接，恢复后可复制。' : '读取地址中…';
     accessBox.append(none);
     return;
   }
@@ -5000,46 +5045,47 @@ function renderAccessLink(): void {
     pick.className = 'access-ips';
     pick.setAttribute('role', 'radiogroup');
     pick.setAttribute('aria-label', '链接使用的地址');
-    for (const ip of ips) {
-      const kind = ip.startsWith('10.144.') ? '组网' : ip.startsWith('192.168.') ? '局域网' : '其他';
+    for (const option of ips) {
+      const kind = option.startsWith('10.144.') ? '组网' : option.startsWith('192.168.') ? '局域网' : '其他';
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'access-ip';
-      b.classList.toggle('active', ip === accessIp);
+      b.classList.toggle('active', option === ip);
       b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', String(ip === accessIp));
+      b.setAttribute('aria-checked', String(option === ip));
       const k = document.createElement('span');
       k.className = 'access-ip-kind';
       k.textContent = kind;
       const v = document.createElement('span');
       v.className = 'access-ip-addr';
-      v.textContent = ip;
+      v.textContent = option;
       b.append(k, v);
-      b.addEventListener('click', () => { accessIp = ip; renderAccessLink(); });
+      b.addEventListener('click', () => { accessIps.set(host, option); renderAccessLink(); });
       pick.append(b);
     }
     accessBox.append(pick);
   }
   const shown = document.createElement('code');
   shown.className = 'access-url';
-  shown.textContent = accessUrl(accessIp, `${selfToken.slice(0, 4)}••••${selfToken.slice(-4)}`, false);
+  shown.textContent = accessUrl(ip, port, `${token.slice(0, 4)}••••${token.slice(-4)}`, false);
   shown.title = '链接中含访问 Token（已遮挡显示），复制得到完整链接';
+  const where = host ? '远程' : '本机';
   const row = document.createElement('div');
   row.className = 'access-actions';
   const copyLink = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn primary', textContent: '复制访问链接' });
   copyLink.addEventListener('click', () => {
-    void copyText(accessUrl(accessIp, selfToken)).then(ok =>
-      flashStatus(ok ? '访问链接已复制（含 Token，请勿外传）' : '复制失败', 2200));
+    void copyText(accessUrl(ip, port, token)).then(ok =>
+      flashStatus(ok ? `${where}访问链接已复制（含 Token，请勿外传）` : '复制失败', 2200));
   });
   const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn', textContent: '仅复制 Token' });
-  copyToken.title = '在另一台主机的「远程主机」里添加本机时使用';
+  copyToken.title = host ? '该远程主机的访问 Token' : '在另一台主机的「远程主机」里添加本机时使用';
   copyToken.addEventListener('click', () => {
-    void copyText(selfToken).then(ok => flashStatus(ok ? '本机 Token 已复制' : '复制失败', 1800));
+    void copyText(token).then(ok => flashStatus(ok ? `${where} Token 已复制` : '复制失败', 1800));
   });
   row.append(copyLink, copyToken);
   const hint = document.createElement('div');
   hint.className = 'sheet-hint';
-  hint.textContent = '在其他设备的浏览器打开即自动登录；链接含 Token，等同于密码，请勿发给他人。';
+  hint.textContent = `随当前会话切换：现在是${hostLabel(host)}。在其他设备的浏览器打开即自动登录；链接含 Token，等同于密码，请勿发给他人。`;
   accessBox.append(shown, row, hint);
 }
 
@@ -5190,7 +5236,7 @@ function refreshMobileUI(): void {
   mTitleLabel.textContent = s ? s.displayName : '—';
   mTitleHost.replaceChildren(...(s && remoteHosts.length ? [hostBadge(s.host)] : []));
   mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));
-  if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); }
+  if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); renderAccessLink(); }
   mTitleDot.classList.toggle('connected', !!s?.connected);
   refreshSidebar();
   updateOutputActivity();
