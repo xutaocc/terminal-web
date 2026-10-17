@@ -6,8 +6,10 @@
  * a few lines at a time, quicker the longer it is held. To their right, a
  * second pair turns real pages (上页 / 下页, as on the key bar) for when a
  * whole screen at once is what you want. Dragging any of them moves the group
- * up or down (remembered). ⤒ above jumps to the start of the history and ⤓
- * below back to the live output; both are always there.
+ * up or down (remembered). ⤒ over the page pair jumps to the start of the
+ * history and ⤓ under it back to the live output; both are always there. The
+ * jumps go with the pages because both move by whole screens, and the outer
+ * column is the one nearest the edge, so the inner one stays short.
  */
 export interface PagerHooks {
   /**
@@ -93,11 +95,15 @@ export class FloatingPager {
     const pages = document.createElement('div');
     pages.className = 'pager-pair pager-pages';
     pages.append(pageUp, pageDown);
-    // ⤒ and ⤓ sit over and under the scroll pair; the page pair beside it.
+    // Inner column: the scroll pair. Outer column, by the edge: ⤒, the page
+    // pair, ⤓ — everything that moves by whole screens.
+    const jumps = document.createElement('div');
+    jumps.className = 'pager-col';
+    jumps.append(topBtn, pages, this.bottomBtn);
     const row = document.createElement('div');
     row.className = 'pager-row';
-    row.append(pair, pages);
-    this.el.append(topBtn, row, this.bottomBtn);
+    row.append(pair, jumps);
+    this.el.append(row);
     this.el.hidden = true;
   }
 
