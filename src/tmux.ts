@@ -4,6 +4,28 @@ import { constants } from 'node:fs';
 import { tmuxColorArgs } from './terminal-env.js';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+
+/**
+ * The tmux binary every call goes through. TMUX_BIN overrides it (e.g. psmux's
+ * tmux.exe on Windows). node-pty on Windows does not search PATH for a bare
+ * name the way execFile does, so there it is resolved to a full path up front.
+ */
+export const TMUX = resolveTmux();
+/** psmux (Windows) speaks tmux's commands but differs in a few behaviours. */
+export const IS_PSMUX = process.platform === 'win32';
+
+function resolveTmux(): string {
+  const configured = process.env.TMUX_BIN?.trim();
+  if (configured) return configured;
+  if (process.platform !== 'win32') return 'tmux';
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    const candidate = path.join(dir, 'tmux.exe');
+    if (dir && existsSync(candidate)) return candidate;
+  }
+  return 'tmux';
+}
 
 /** Invalid, missing or inaccessible startup directories fall back to the user's home. */
 export async function resolveSessionDirectory(value: string): Promise<string> {
@@ -46,7 +68,47 @@ export function tmuxArgs(session: string, confPath: string, startDir?: string): 
   // `-A` hands it to attach-session, which would reset the session's default
   // directory instead.
   const dir = startDir ? ["-c", startDir] : [];
-  return ["-u", "-f", confPath, ...tmuxColorArgs(), "new-session", "-A", "-s", session, ...dir];
+  // psmux runs one server per session, so a new session takes its environment
+  // from this spawn — and a `set-environment … ;` chain ahead of new-session
+  // fails there when no server is running yet.
+  const color = IS_PSMUX ? [] : tmuxColorArgs();
+  // psmux: the pane's program goes after `--`; a session that already exists
+  // ignores it, as tmux does.
+  const shell = IS_PSMUX ? psmuxShell() : [];
+  return ["-u", "-f", confPath, ...color, "new-session", "-A", "-s", session, ...dir, ...shell];
+}
+
+/**
+ * The shell a new psmux session runs: TERMINAL_WEB_SHELL (a program plus any
+ * arguments, e.g. `bash.exe --login -i`) or PowerShell 7 without its banner.
+ * Windows PowerShell 5.1 when pwsh is not installed. PowerShell also loads
+ * tmux/pwsh-integration.ps1 (after the profile), which keeps the directory
+ * psmux reports in step with `cd`.
+ */
+function psmuxShell(): string[] {
+  const configured = process.env.TERMINAL_WEB_SHELL?.trim();
+  if (configured) return ["--", ...configured.match(/"[^"]*"|\S+/g)!.map(a => a.replace(/^"|"$/g, ""))];
+  const pwsh = path.join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "pwsh.exe");
+  const integration = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "tmux", "pwsh-integration.ps1");
+  return ["--", existsSync(pwsh) ? pwsh : "powershell.exe", "-NoLogo", "-NoExit",
+    "-Command", `. '${integration.replace(/'/g, "''")}'`];
+}
+
+/**
+ * Environment for the psmux client the pty runs. The config is passed as an
+ * env var as well as -f because psmux reads it in the server it starts; no warm
+ * (pre-spawned) servers, since one of those is claimed with psmux's defaults
+ * and never reads the config at all.
+ *
+ * PSModulePath is emptied so pwsh builds its own. Inherited from a Windows
+ * PowerShell (or Git Bash started from one), it lists the 5.1 module folders
+ * first: pwsh then loads 5.1's modules through a compatibility session — a
+ * hidden powershell.exe child that slows every start, prints "正在创建隐式远程
+ * 处理模块", and is the process psmux reads the pane's directory from, so `cd`
+ * never showed up in the session list.
+ */
+export function psmuxEnv(confPath: string): Record<string, string> {
+  return IS_PSMUX ? { PSMUX_CONFIG_FILE: confPath, PSMUX_NO_WARM: "1", PSModulePath: "" } : {};
 }
 
 /**
@@ -55,7 +117,7 @@ export function tmuxArgs(session: string, confPath: string, startDir?: string): 
  */
 export function mateStartDir(mate: string, base: string, displayedDirectory?: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("tmux", ["has-session", "-t", `=${mate}`], async (err) => {
+    execFile(TMUX, ["has-session", "-t", `=${mate}`], async (err) => {
       if (!err) {
         resolve(null); // already there: attaching must not move it
         return;
@@ -65,7 +127,7 @@ export function mateStartDir(mate: string, base: string, displayedDirectory?: st
         return;
       }
       execFile(
-        "tmux",
+        TMUX,
         ["-u", "display-message", "-p", "-t", `=${base}:`, "#{pane_current_path}"],
         async (err2, stdout) => {
           const dir = err2 ? "" : stdout.replace(/\r?\n$/, '');
@@ -88,7 +150,7 @@ export function mateStartDir(mate: string, base: string, displayedDirectory?: st
 export function listTmuxSessions(): Promise<string[] | null> {
   return new Promise((resolve) => {
     execFile(
-      "tmux",
+      TMUX,
       ["list-sessions", "-F", "#{session_name}"],
       (err, stdout) => {
         if (err) {
@@ -112,7 +174,7 @@ export function listTmuxSessions(): Promise<string[] | null> {
  */
 export function ensureTmuxAvailable(): boolean {
   try {
-    execFileSync("tmux", ["-V"], { stdio: "ignore" });
+    execFileSync(TMUX, ["-V"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -185,8 +247,8 @@ export interface WebTab {
  * set-option can fail with "can't find session" — retry briefly until it sticks.
  */
 export function tagWebSession(name: string, attempt = 0): void {
-  execFile("tmux", ["set-option", "-t", name, TAB_TAG, "1"], (err) => {
-    if (err && attempt < 10) {
+  execFile(TMUX, ["set-option", "-t", name, TAB_TAG, "1"], (err, _out, stderr) => {
+    if (setOptionFailed(err, stderr) && attempt < 10) {
       setTimeout(() => tagWebSession(name, attempt + 1), 150);
     }
   });
@@ -197,11 +259,19 @@ export function setWebTabLabel(name: string, displayName: string, attempt = 0): 
   // Strip control chars (newlines/tabs) so a label can never break the
   // space-delimited parsing in listWebTabs.
   const dn = displayName.replace(/[\x00-\x1f]/g, " ").trim().slice(0, 64) || name;
-  execFile("tmux", ["-u", "set-option", "-t", name, TAB_LABEL, dn], err => {
+  execFile(TMUX, ["-u", "set-option", "-t", name, TAB_LABEL, dn], (err, _out, stderr) => {
     // The browser can send the display label before an inherited-cwd attach
     // has created the session. Retry just as we do for its web-tab tag.
-    if (err && attempt < 10) setTimeout(() => setWebTabLabel(name, dn, attempt + 1), 150);
+    if (setOptionFailed(err, stderr) && attempt < 10) setTimeout(() => setWebTabLabel(name, dn, attempt + 1), 150);
   });
+}
+
+/**
+ * tmux fails set-option on a session not there yet; psmux exits 0 and only
+ * warns ("no active session"), dropping the value — so read the warning too.
+ */
+function setOptionFailed(err: Error | null, stderr: string | Buffer): boolean {
+  return !!err || /no active session/.test(String(stderr));
 }
 
 /**
@@ -223,7 +293,7 @@ export function listWebTabs(): Promise<WebTab[] | null> {
     " "
   );
   return new Promise((resolve) => {
-    execFile("tmux", ["-u", "list-sessions", "-F", fmt], (err, stdout) => {
+    execFile(TMUX, ["-u", "list-sessions", "-F", fmt], (err, stdout) => {
       if (err) {
         resolve(null);
         return;
@@ -263,7 +333,7 @@ export async function listSessionCwds(): Promise<Map<string, string> | null> {
     const space = line.indexOf(" ");
     if (space <= 0) continue;
     const cwd = line.slice(space + 1);
-    if (cwd.startsWith("/")) cwds.set(line.slice(0, space), cwd);
+    if (path.isAbsolute(cwd)) cwds.set(line.slice(0, space), cwd);
   }
   return cwds;
 }
@@ -271,7 +341,7 @@ export async function listSessionCwds(): Promise<Map<string, string> | null> {
 /** Run tmux; resolve its stdout, or null if it failed. Never throws. */
 function runTmux(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("tmux", ['-u', ...args], (err, stdout) => resolve(err ? null : stdout));
+    execFile(TMUX, ['-u', ...args], (err, stdout) => resolve(err ? null : stdout));
   });
 }
 

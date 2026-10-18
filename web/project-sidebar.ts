@@ -426,7 +426,7 @@ export class ProjectSidebar {
       glyph.innerHTML = ICONS.terminal;
       const label = document.createElement('span');
       label.className = 'ps-card-name';
-      const ownName = dir.cwd ? dir.cwd.split('/').filter(Boolean).pop() ?? '/' : '目录未知';
+      const ownName = dir.cwd ? dir.cwd.split(/[\\/]/).filter(Boolean).pop() ?? '/' : '目录未知';
       const given = dir.cwd ? this.dirNames[group.key]?.[dir.cwd] : undefined;
       label.textContent = given ?? ownName;
       row.append(dot, glyph, label);

@@ -121,7 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     hostFromTailscale,
     defaultSession,
     repoRoot: REPO_ROOT,
-    tmuxConfPath: path.join(REPO_ROOT, "tmux", "web.tmux.conf"),
+    tmuxConfPath: path.join(REPO_ROOT, "tmux", process.platform === "win32" ? "web.psmux.conf" : "web.tmux.conf"),
     publicDir: path.join(REPO_ROOT, "public"),
     uploadDir,
     uploadRetentionHours: parseNonNegInt(env.UPLOAD_RETENTION_HOURS, 72),

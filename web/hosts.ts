@@ -31,6 +31,15 @@ export function hostUrl(host: string, path: string): string {
 }
 
 /**
+ * An absolute directory on whichever server reported it: "/home/x" from a Unix
+ * host, "C:\Users\x" from a Windows one (psmux). Hosts of both kinds can be
+ * open in one page, so this cannot follow the browser's own platform.
+ */
+export function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/**
  * The shortest tail of each address that still tells them apart: ".56" and
  * ".119" for 172.16.69.56 and 192.168.88.119, ".1.5" and ".2.5" when the last
  * parts collide. A host name keeps its first label. Tabs carry this; the full

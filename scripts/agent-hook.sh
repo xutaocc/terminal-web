@@ -37,12 +37,15 @@ event=$(printf '%s' "$event" | tr -cd 'A-Za-z0-9_')
 tool=$(pick tool_name)
 kind=$(pick notification_type)
 pane=$(printf '%s' "$TMUX_PANE" | tr -cd '%0-9')
+# psmux numbers panes per session (each one's first is %1): it names the
+# session in $PSMUX_SESSION, and that is what tells two %1s apart.
+session=$(printf '%s' "${PSMUX_SESSION:-}" | tr -cd 'A-Za-z0-9_-')
 
 (
   curl -s -m 2 -o /dev/null \
     -H 'Content-Type: application/json' \
     -b "tw_auth=$token" \
-    -d "{\"agent\":\"$agent\",\"pane\":\"$pane\",\"event\":\"$event\",\"tool\":\"$tool\",\"kind\":\"$kind\"}" \
+    -d "{\"agent\":\"$agent\",\"pane\":\"$pane\",\"session\":\"$session\",\"event\":\"$event\",\"tool\":\"$tool\",\"kind\":\"$kind\"}" \
     "$url/api/agent-hook" </dev/null >/dev/null 2>&1 &
 )
 exit 0

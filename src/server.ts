@@ -14,6 +14,9 @@ import { loadConfig } from "./config.js";
 import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors } from './terminal-env.js';
 import { isKeyboardInput } from './history-input.js';
 import {
+  TMUX,
+  psmuxEnv,
+  IS_PSMUX,
   sanitizeSession,
   tmuxArgs,
   ensureTmuxAvailable,
@@ -585,13 +588,14 @@ async function handleListSessions(res: http.ServerResponse): Promise<void> {
 // browsers read a live snapshot over server-sent events and say what they saw.
 // ---------------------------------------------------------------------------
 async function handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  let body: { pane?: unknown; event?: unknown; tool?: unknown; kind?: unknown };
+  let body: { pane?: unknown; session?: unknown; event?: unknown; tool?: unknown; kind?: unknown };
   try { body = JSON.parse((await readBody(req, 4096)).toString('utf8')); }
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
   const word = (v: unknown): string => typeof v === 'string' && /^[A-Za-z0-9_]{0,64}$/.test(v) ? v : '';
   const pane = typeof body?.pane === 'string' && /^%\d{1,6}$/.test(body.pane) ? body.pane : '';
+  const session = typeof body?.session === 'string' && validSession(body.session) ? body.session : undefined;
   if (!pane || !word(body.event)) { sendJsonHttp(res, 400, { error: 'invalid hook' }); return; }
-  const used = await agentStatus.hook(pane, word(body.event), word(body.tool), word(body.kind));
+  const used = await agentStatus.hook(pane, word(body.event), word(body.tool), word(body.kind), session);
   sendJsonHttp(res, 200, { ok: true, used });
 }
 
@@ -651,7 +655,7 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
     } else if (body.action === 'move' && Array.isArray(body.sessions) && body.sessions.length <= 100 &&
                body.sessions.every(validSession) && typeof body.folder === 'string') {
       const card = body.card as { cwd?: unknown; name?: unknown } | undefined;
-      const carry = card && typeof card.cwd === 'string' && card.cwd.startsWith('/') && validFolderName(card.name)
+      const carry = card && typeof card.cwd === 'string' && path.isAbsolute(card.cwd) && validFolderName(card.name)
         ? { cwd: card.cwd, name: card.name } : undefined;
       const r = await folders.move(body.sessions as string[], body.folder, carry);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
@@ -660,13 +664,13 @@ async function handleFolders(req: http.IncomingMessage, res: http.ServerResponse
       const r = await folders.pin(body.sessions as string[], body.pinned);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
     } else if (body.action === 'renameDir' && typeof body.folder === 'string' && typeof body.cwd === 'string' &&
-               body.cwd.startsWith('/') && body.cwd.length <= 4096 &&
+               path.isAbsolute(body.cwd) && body.cwd.length <= 4096 &&
                (body.name === '' || validFolderName(body.name))) {
       const r = await folders.renameDir(body.folder, body.cwd, body.name as string);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
     } else if (body.action === 'orderCards' && typeof body.folder === 'string' && Array.isArray(body.cwds) &&
                body.cwds.length <= 500 &&
-               body.cwds.every(c => typeof c === 'string' && c.startsWith('/') && c.length <= 4096)) {
+               body.cwds.every(c => typeof c === 'string' && path.isAbsolute(c) && c.length <= 4096)) {
       const r = await folders.orderCards(body.folder, body.cwds as string[]);
       sendJsonHttp(res, 200, { ...r.data, emptied: r.emptied });
     } else {
@@ -697,7 +701,7 @@ async function handleScrollSession(
   }
   const target = `=${obj.name}:`;
   const run = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
-    execFile('tmux', args, { timeout: 3000 }, (error, stdout) => {
+    execFile(TMUX, args, { timeout: 3000 }, (error, stdout) => {
       if (error) reject(error);
       else resolve(stdout.trim());
     });
@@ -855,7 +859,7 @@ async function handleKillSession(
   // save covers both halves.
   await snapshotBeforeKill(name);
   for (const target of names) {
-    execFile("tmux", ["kill-session", "-t", target], (err) => {
+    execFile(TMUX, ["kill-session", "-t", target], (err) => {
       // A tab that was never split has no second session, and "can't find
       // session" is the expected answer for it rather than a failure.
       if (err) console.error(`[api] kill-session "${target}" failed:`, err.message);
@@ -1129,8 +1133,8 @@ function sessionCwd(session: string | null): Promise<string | null> {
   const name = sanitizeSession(session);
   return new Promise((resolve) => {
     execFile(
-      "tmux",
-      ["-u", "display-message", "-p", "-t", `=${name}:`, "-F", "#{pane_current_path}"],
+      TMUX,
+      ["-u", "display-message", "-p", "-t", `=${name}:`, "#{pane_current_path}"],
       { timeout: 3000 },
       (err, stdout) => resolve(err ? null : stdout.toString().replace(/\n$/, '') || null)
     );
@@ -1742,12 +1746,17 @@ function attachSession(
 ): void {
   let proc: pty.IPty;
   try {
-    proc = pty.spawn("tmux", tmuxArgs(session, config.tmuxConfPath, startDir), {
+    proc = pty.spawn(TMUX, tmuxArgs(session, config.tmuxConfPath, startDir), {
       name: "xterm-256color",
       cols,
       rows,
       cwd: os.homedir(),
-      env: buildChildEnv(),
+      env: { ...buildChildEnv(), ...psmuxEnv(config.tmuxConfPath) },
+      // Windows: the ConPTY that node-pty puts between us and psmux re-renders
+      // psmux's output. The console host inbox in Windows mis-tracks wide (CJK)
+      // characters there and leaves ghost copies of them ("中 文") across the
+      // screen; the OpenConsole that node-pty ships does not.
+      useConptyDll: IS_PSMUX,
     });
   } catch (err) {
     console.error(`[ws] failed to spawn tmux for session "${session}":`, err);
@@ -1846,7 +1855,9 @@ function attachSession(
     // onData first, pausing that stream, so the close can lag. destroy() force-
     // closes it (and, on node-pty 1.2, the slave + kqueue) promptly. IPty's
     // public typing omits destroy(); the runtime UnixTerminal has it.
-    try {
+    // Not on Windows: there destroy() is kill() again, and closing the same
+    // pseudoconsole twice corrupts the heap and takes the whole server down.
+    if (process.platform !== "win32") try {
       (proc as unknown as { destroy?: () => void }).destroy?.();
     } catch (err) {
       console.error("[ws] error destroying pty:", err);
@@ -1854,7 +1865,19 @@ function attachSession(
   };
 
   // pty output -> ws (binary)
-  const onData = proc.onData((data: string) => {
+  // OpenConsole (useConptyDll) opens by asking its terminal who it is (DA1,
+  // ESC[c) and holds the client's output for ~3s until it hears back. That
+  // question is for this server, not the browser: answer it here, once, so a
+  // tab opens at once, and do not pass it on (the browser's answer would be a
+  // second one, which psmux would read as typed text).
+  let conptyAsked = !IS_PSMUX;
+  const onData = proc.onData((raw: string) => {
+    let data = raw;
+    if (!conptyAsked && data.includes("\x1b[c")) {
+      conptyAsked = true;
+      proc.write("\x1b[?62;22c");
+      data = data.replace("\x1b[c", "");
+    }
     if (ws.readyState !== WebSocket.OPEN) return;
     try {
       // node-pty emits strings; send raw bytes so xterm gets exact output.
@@ -1897,7 +1920,7 @@ function attachSession(
     }
     preparingInput = true;
     const target = `=${session}:`;
-    execFile('tmux', ['if-shell', '-F', '-t', target,
+    execFile(TMUX, ['if-shell', '-F', '-t', target,
       '#{==:#{pane_mode},copy-mode}', `send-keys -t ${target} -X cancel`],
     { timeout: 3000 }, (error) => {
       preparingInput = false;
@@ -1974,7 +1997,7 @@ function attachSession(
         // not meant to cost the other twelve, which is what it does on the day
         // this command takes the server with it.
         void snapshotBeforeKill(session).then(() => {
-          execFile("tmux", ["kill-session", "-t", session], (err) => {
+          execFile(TMUX, ["kill-session", "-t", session], (err) => {
             if (err) {
               console.error(
                 `[ws] restart: kill-session "${session}" failed:`,

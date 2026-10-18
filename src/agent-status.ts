@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { IS_PSMUX, TMUX } from './tmux.js';
 
 /**
  * Where tab status (working / waiting / done / unread) comes from. Chosen in
@@ -72,7 +73,7 @@ export function hookSignal(event: string, tool = '', kind = ''): AgentState | nu
 }
 
 /** Foreground commands that mean no agent is running in the pane. */
-const SHELLS = /^-?(zsh|bash|sh|fish|dash|ksh|tcsh|csh|nu|login|tmux)$/;
+const SHELLS = /^-?(zsh|bash|sh|fish|dash|ksh|tcsh|csh|nu|login|tmux|pwsh|powershell|cmd)(\.exe)?$/i;
 
 export function isShell(command: string): boolean {
   return SHELLS.test(command);
@@ -171,7 +172,7 @@ interface Pane {
 
 function run(args: string[]): Promise<string | null> {
   return new Promise(resolve => {
-    execFile('tmux', ['-u', ...args], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 },
+    execFile(TMUX, ['-u', ...args], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => resolve(err ? null : stdout));
   });
 }
@@ -232,12 +233,16 @@ export class AgentStatusMonitor {
     return { mode: this.mode, sessions };
   }
 
-  /** A hook fired in tmux pane `pane`. Returns false when the event was not used. */
-  async hook(pane: string, event: string, tool: string, kind: string): Promise<boolean> {
+  /**
+   * A hook fired in tmux pane `pane`. Returns false when the event was not used.
+   * `named` is the session the hook said it ran in (psmux, where pane ids
+   * repeat across sessions); without it the pane id is looked up.
+   */
+  async hook(pane: string, event: string, tool: string, kind: string, named?: string): Promise<boolean> {
     if (this.mode !== 'hooks') return false;
     const signal = hookSignal(event, tool, kind);
     if (!signal) return false;
-    let session = this.paneSessions.get(pane);
+    let session = named ?? this.paneSessions.get(pane);
     if (!session) {
       session = (await run(['display-message', '-p', '-t', pane, '#{session_name}']))?.trim() || undefined;
       if (!session) return false;
@@ -347,7 +352,10 @@ export class AgentStatusMonitor {
     if (pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
     t.activity = pane.activity;
     t.capturedAt = now;
-    const screen = await run(['capture-pane', '-p', '-t', pane.id]);
+    // psmux numbers panes per session (every session's first is %1), so a
+    // bare pane id names some other session's pane there; the session does not.
+    const target = IS_PSMUX ? `=${pane.session}:` : pane.id;
+    const screen = await run(['capture-pane', '-p', '-t', target]);
     if (screen === null) return;
     let seen = screenSignal(screen);
     if (seen !== 'working' && seen !== 'waiting' && titleWorking(pane.title)) seen = 'working';

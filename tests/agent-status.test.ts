@@ -71,6 +71,9 @@ test('titles and foreground commands', () => {
   assert.equal(titleWorking('✳ Fix bug'), false);
   assert.equal(isShell('zsh'), true);
   assert.equal(isShell('-zsh'), true);
+  assert.equal(isShell('pwsh'), true);
+  assert.equal(isShell('powershell'), true);
+  assert.equal(isShell('cmd.exe'), true);
   assert.equal(isShell('claude.exe'), false);
   assert.equal(isShell('node'), false);
 });

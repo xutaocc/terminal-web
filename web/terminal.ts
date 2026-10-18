@@ -22,7 +22,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
-import { hostOfKey, hostUrl, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
+import { hostOfKey, hostUrl, isAbsolutePath, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -352,7 +352,7 @@ async function copyCurrentPath(): Promise<void> {
     });
     if (!response.ok) throw new Error('working directory unavailable');
     const data = await response.json() as { path?: unknown };
-    if (typeof data.path !== 'string' || !data.path.startsWith('/')) {
+    if (typeof data.path !== 'string' || !isAbsolutePath(data.path)) {
       throw new Error('invalid working directory');
     }
     return data.path;
@@ -3320,7 +3320,7 @@ async function promptAddSession(
       });
       if (!response.ok) throw new Error('directory unavailable');
       const data = await response.json() as { path?: unknown };
-      if (typeof data.path !== 'string' || !data.path.startsWith('/')) throw new Error('invalid directory');
+      if (typeof data.path !== 'string' || !isAbsolutePath(data.path)) throw new Error('invalid directory');
       return data.path;
     },
     onDirectoryChange: value => { directory = value; },
@@ -3353,7 +3353,7 @@ async function promptAddSession(
 async function openTerminalIn(directory: string, dirName: string): Promise<void> {
   const from = sessions.find(s => s.name === fileBrowserSession) ?? null;
   const host = from?.host ?? hostOfKey(fileBrowserSession);
-  const label = dirName.replace(/[\x00-\x1f\x7f]/g, '').trim() || directory.split('/').filter(Boolean).pop() || 'root';
+  const label = dirName.replace(/[\x00-\x1f\x7f]/g, '').trim() || directory.split(/[\\/]/).filter(Boolean).pop() || 'root';
   const displayName = newSessionName(label, sessions.map(s => s.displayName));
   const name = makeKey(host, await newSessionId(displayName, sessions.filter(s => s.host === host).map(s => s.raw)));
   const session = addSession(name, false, displayName);
@@ -3620,7 +3620,7 @@ function loadTabs(): { tabs: SavedTab[]; active: string | null } {
             item.view === 'one' || item.view === 'two' || item.view === 'both'
               ? item.view
               : undefined;
-          const cwd = typeof item.cwd === 'string' && item.cwd.startsWith('/') ? item.cwd : undefined;
+          const cwd = typeof item.cwd === 'string' && isAbsolutePath(item.cwd) ? item.cwd : undefined;
           tabs.push({ name: item.name, displayName: dn, view, cwd });
         }
       }
@@ -3661,7 +3661,7 @@ async function fetchServerTabs(host: string, timeoutMs = 2500): Promise<SavedTab
         const dnRaw = (item as SavedTab).displayName;
         const dn = typeof dnRaw === 'string' && dnRaw.trim() ? dnRaw : name;
         const cwdRaw = (item as SavedTab).cwd;
-        const cwd = typeof cwdRaw === 'string' && cwdRaw.startsWith('/') ? cwdRaw : undefined;
+        const cwd = typeof cwdRaw === 'string' && isAbsolutePath(cwdRaw) ? cwdRaw : undefined;
         out.push({ name: makeKey(host, name), displayName: dn, cwd });
       }
     }
@@ -6147,7 +6147,7 @@ window.addEventListener('message', event => {
   const data = event.data as { type?: string; name?: string; path?: string } | null;
   if (data?.type === 'files-close') closeFileBrowser();
   if (data?.type === 'files-auth-expired') location.reload();
-  if (data?.type === 'files-open-terminal' && typeof data.path === 'string' && data.path.startsWith('/')) {
+  if (data?.type === 'files-open-terminal' && typeof data.path === 'string' && isAbsolutePath(data.path)) {
     closeFileBrowser();
     void openTerminalIn(data.path, typeof data.name === 'string' ? data.name : '');
   }

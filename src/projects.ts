@@ -52,11 +52,11 @@ function valid(data: unknown): data is FolderData {
     Object.entries(d.members).every(([s, f]) => validSession(s) && typeof f === 'string') &&
     !!d.dirNames && typeof d.dirNames === 'object' &&
     Object.values(d.dirNames).every(names => !!names && typeof names === 'object' &&
-      Object.entries(names).every(([cwd, name]) => cwd.startsWith('/') && validFolderName(name))) &&
+      Object.entries(names).every(([cwd, name]) => path.isAbsolute(cwd) && validFolderName(name))) &&
     Object.values(d.dirNames).reduce((n, names) => n + Object.keys(names).length, 0) <= MAX_DIR_NAMES &&
     (d.cardOrder === undefined || (typeof d.cardOrder === 'object' && !!d.cardOrder &&
       Object.values(d.cardOrder).every(list => Array.isArray(list) && list.length <= MAX_DIR_NAMES &&
-        list.every(cwd => typeof cwd === 'string' && cwd.startsWith('/') && cwd.length <= 4096)))) &&
+        list.every(cwd => typeof cwd === 'string' && path.isAbsolute(cwd) && cwd.length <= 4096)))) &&
     (d.pinned === undefined || (Array.isArray(d.pinned) && d.pinned.length <= MAX_PINNED && d.pinned.every(validSession)));
 }
 
