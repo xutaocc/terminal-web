@@ -20,9 +20,12 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = os.homedir();
 const HOOK_DIR = path.join(HOME, '.terminal-web');
-const HOOK_SCRIPT = path.join(HOOK_DIR, 'agent-hook.sh');
+// Windows has no /bin/sh for the agents to run the shell script with: there the
+// hook is its Node twin, run by the node that runs this installer.
+const WINDOWS = process.platform === 'win32';
+const HOOK_SCRIPT = path.join(HOOK_DIR, WINDOWS ? 'agent-hook.mjs' : 'agent-hook.sh');
 const HOOK_ENV = path.join(HOOK_DIR, 'agent-hook.env');
-const MARK = '/.terminal-web/agent-hook.sh';
+const MARK = /[/\\]\.terminal-web[/\\]agent-hook\.(sh|mjs)/;
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
@@ -41,8 +44,13 @@ const CODEX_EVENTS = [
 ];
 
 const quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-const command = (agent, event) => `/bin/sh ${quote(HOOK_SCRIPT)} ${agent} ${event}`;
-const ours = (group) => (group?.hooks ?? []).some(h => typeof h?.command === 'string' && h.command.includes(MARK));
+// Forward slashes on Windows too: both agents hand the command to a shell that
+// would read backslashes as escapes.
+const slashed = (p) => p.replace(/\\/g, '/');
+const command = (agent, event) => WINDOWS
+  ? `"${slashed(process.execPath)}" "${slashed(HOOK_SCRIPT)}" ${agent} ${event}`
+  : `/bin/sh ${quote(HOOK_SCRIPT)} ${agent} ${event}`;
+const ours = (group) => (group?.hooks ?? []).some(h => typeof h?.command === 'string' && MARK.test(h.command));
 
 function readJson(file, fallback) {
   try {
@@ -239,7 +247,13 @@ function codexInstalled() {
 }
 
 // ---------------------------------------------------------------------------
-const has = (bin) => { try { execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' }); return true; } catch { return false; } };
+const has = (bin) => {
+  try {
+    if (WINDOWS) execFileSync('where.exe', [bin], { stdio: 'ignore' });
+    else execFileSync('sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' });
+    return true;
+  } catch { return false; }
+};
 
 async function main() {
   const env = dotEnv();
@@ -261,10 +275,10 @@ async function main() {
 
   const install = !flag('uninstall');
   if (install) {
-    if (!has('curl')) throw new Error('curl is required by the hook script');
+    if (!WINDOWS && !has('curl')) throw new Error('curl is required by the hook script');
     fs.mkdirSync(HOOK_DIR, { recursive: true });
-    fs.copyFileSync(path.join(REPO, 'scripts/agent-hook.sh'), HOOK_SCRIPT);
-    fs.chmodSync(HOOK_SCRIPT, 0o755);
+    fs.copyFileSync(path.join(REPO, 'scripts', path.basename(HOOK_SCRIPT)), HOOK_SCRIPT);
+    if (!WINDOWS) fs.chmodSync(HOOK_SCRIPT, 0o755);
     writeFile(HOOK_ENV, `# Written by scripts/install-agent-hooks.mjs\nTERMINAL_WEB_URL=${quote(server.url)}\nTERMINAL_WEB_TOKEN_FILE=${quote(tokenFile(env))}\n`);
   }
   if (wants('claude')) {

@@ -159,6 +159,8 @@ interface Tracked extends SessionAgentStatus {
   idleSince: number;
   activity: string;
   capturedAt: number;
+  /** psmux: the last screen read, standing in for the activity stamp. */
+  screen?: string;
 }
 
 interface Pane {
@@ -236,12 +238,17 @@ export class AgentStatusMonitor {
   /**
    * A hook fired in tmux pane `pane`. Returns false when the event was not used.
    * `named` is the session the hook said it ran in (psmux, where pane ids
-   * repeat across sessions); without it the pane id is looked up.
+   * repeat across sessions); without it the pane id is looked up. A name no
+   * live session has is not believed: a psmux session taken from its warm pool
+   * still says "__warm__" there. Under psmux the pane id is no fallback — it
+   * names every session's first pane at once — so such a report is dropped.
    */
   async hook(pane: string, event: string, tool: string, kind: string, named?: string): Promise<boolean> {
     if (this.mode !== 'hooks') return false;
     const signal = hookSignal(event, tool, kind);
     if (!signal) return false;
+    if (named && await run(['has-session', '-t', `=${named}`]) === null) named = undefined;
+    if (IS_PSMUX && !named) return false;
     let session = named ?? this.paneSessions.get(pane);
     if (!session) {
       session = (await run(['display-message', '-p', '-t', pane, '#{session_name}']))?.trim() || undefined;
@@ -349,7 +356,9 @@ export class AgentStatusMonitor {
     const busy = t.state === 'working' || t.state === 'waiting';
     // Read the screen only when something was drawn, or while a turn is open
     // (so its end is seen promptly). Idle sessions cost one list-panes line.
-    if (pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
+    // psmux never advances #{window_activity}, so there every agent pane is
+    // read each poll and "something was drawn" is told by the screen itself.
+    if (!IS_PSMUX && pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
     t.activity = pane.activity;
     t.capturedAt = now;
     // psmux numbers panes per session (every session's first is %1), so a
@@ -357,6 +366,10 @@ export class AgentStatusMonitor {
     const target = IS_PSMUX ? `=${pane.session}:` : pane.id;
     const screen = await run(['capture-pane', '-p', '-t', target]);
     if (screen === null) return;
+    if (IS_PSMUX) {
+      if (screen === t.screen && !busy) return;
+      t.screen = screen;
+    }
     let seen = screenSignal(screen);
     if (seen !== 'working' && seen !== 'waiting' && titleWorking(pane.title)) seen = 'working';
     if (seen === 'unknown') return; // covered up: keep what we had, restart nothing
