@@ -694,15 +694,26 @@ window.addEventListener('storage', event => {
   if (event.key === 'tw.logout') window.location.replace('/');
 });
 
-let currentFont = (() => {
+// Font size, like the key bar, is kept per layout: a phone wants it smaller
+// than a PC. The one in force follows the layout on screen.
+const DEFAULT_FONT: Record<LayoutKind, number> = { mobile: 12, desktop: 14 };
+function clampFont(n: number): number {
+  return Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(n)));
+}
+function readFont(kind: LayoutKind): number {
   try {
-    const n = parseInt(localStorage.getItem('tw.fontSize') ?? '', 10);
-    if (!Number.isNaN(n)) return Math.min(MAX_FONT, Math.max(MIN_FONT, n));
+    const own = parseInt(localStorage.getItem(`tw.fontSize.${kind}`) ?? '', 10);
+    if (!Number.isNaN(own)) return clampFont(own);
+    // The single size from before the split belongs to this kind of device.
+    const legacy = parseInt(localStorage.getItem('tw.fontSize') ?? '', 10);
+    if (!Number.isNaN(legacy) && kind === (TOUCH_DEVICE ? 'mobile' : 'desktop')) return clampFont(legacy);
   } catch {
     /* ignore */
   }
-  return 14;
-})();
+  return DEFAULT_FONT[kind];
+}
+const fontSizes: Record<LayoutKind, number> = { mobile: readFont('mobile'), desktop: readFont('desktop') };
+let currentFont = fontSizes[currentLayout()];
 
 // The size every pane has. All panes are inset:0 in #terminal and share one
 // font, so a single measurement taken from the pane on screen is the correct
@@ -3738,6 +3749,8 @@ interface UiPrefs {
   theme?: ThemeName;
   activeTab?: string;
   fontSize?: number;
+  fontSizeMobile?: number;
+  fontSizeDesktop?: number;
   keybar?: boolean;
   keyboardLocked?: boolean;
   pager?: boolean;
@@ -4267,20 +4280,33 @@ function makeButton(
   return b;
 }
 
-function changeFont(delta: number): void {
-  currentFont = Math.min(MAX_FONT, Math.max(MIN_FONT, currentFont + delta));
-  try {
-    localStorage.setItem('tw.fontSize', String(currentFont));
-  } catch {
-    /* ignore */
+/** Change one layout's font size (the one on screen by default). */
+function changeFont(delta: number, kind: LayoutKind = currentLayout()): void {
+  setFontSize(fontSizes[kind] + delta, kind);
+  if (kind === currentLayout()) activeSession?.focus();
+}
+
+function setFontSize(px: number, kind: LayoutKind, save = true): void {
+  fontSizes[kind] = clampFont(px);
+  if (save) {
+    try { localStorage.setItem(`tw.fontSize.${kind}`, String(fontSizes[kind])); }
+    catch { /* server prefs keep it */ }
+    savePrefs(kind === 'mobile' ? { fontSizeMobile: fontSizes.mobile } : { fontSizeDesktop: fontSizes.desktop });
   }
-  savePrefs({ fontSize: currentFont });
+  updateFontVal();
+  applyFont();
+}
+
+/** Put the layout on screen's font size on every terminal, if it changed. */
+function applyFont(): void {
+  const px = fontSizes[currentLayout()];
+  if (px === currentFont) return;
+  currentFont = px;
   for (const s of sessions) {
     s.setFont(currentFont);
     s.mate?.setFont(currentFont); // a second half is not in `sessions`
   }
   fitActive(); // the cell size changed: re-measure and push the new size to all panes
-  activeSession?.focus();
 }
 
 let fullscreenBusy = false;
@@ -4853,32 +4879,41 @@ const sheetGrip = document.createElement('div');
 sheetGrip.className = 'sheet-grip';
 const sheetTitle = sheetHeader('设置');
 
+// One A− / A+ pair per layout, the one on screen marked 当前, the same way the
+// key bar and keyboard lock are set.
 const fontRow = document.createElement('div');
-fontRow.className = 'sheet-font';
-const fontMinus = document.createElement('button');
-fontMinus.className = 'sf-btn';
-fontMinus.type = 'button';
-fontMinus.textContent = 'A−';
-fontMinus.title = '缩小字号';
-const fontVal = document.createElement('div');
-fontVal.className = 'sf-val';
-const fontPlus = document.createElement('button');
-fontPlus.className = 'sf-btn';
-fontPlus.type = 'button';
-fontPlus.textContent = 'A+';
-fontPlus.title = '放大字号';
-function updateFontVal(): void {
-  fontVal.textContent = `字号 ${currentFont}px`;
+fontRow.className = 'sheet-fonts';
+const fontVals = new Map<LayoutKind, HTMLElement>();
+const fontLines = new Map<LayoutKind, HTMLElement>();
+for (const kind of ['mobile', 'desktop'] as const) {
+  const line = document.createElement('div');
+  line.className = 'sheet-font';
+  const minus = document.createElement('button');
+  minus.className = 'sf-btn';
+  minus.type = 'button';
+  minus.textContent = 'A−';
+  minus.title = `${LAYOUT_LABEL[kind]}缩小字号`;
+  const val = document.createElement('div');
+  val.className = 'sf-val';
+  const plus = document.createElement('button');
+  plus.className = 'sf-btn';
+  plus.type = 'button';
+  plus.textContent = 'A+';
+  plus.title = `${LAYOUT_LABEL[kind]}放大字号`;
+  bindIntentionalClick(minus, () => changeFont(-1, kind), sheet);
+  bindIntentionalClick(plus, () => changeFont(1, kind), sheet);
+  line.append(val, minus, plus);
+  fontVals.set(kind, val);
+  fontLines.set(kind, line);
+  fontRow.append(line);
 }
-bindIntentionalClick(fontMinus, () => {
-  changeFont(-1);
-  updateFontVal();
-}, sheet);
-bindIntentionalClick(fontPlus, () => {
-  changeFont(1);
-  updateFontVal();
-}, sheet);
-fontRow.append(fontMinus, fontVal, fontPlus);
+function updateFontVal(): void {
+  const now = currentLayout();
+  for (const [kind, val] of fontVals) {
+    val.textContent = `字号 · ${LAYOUT_LABEL[kind]} ${fontSizes[kind]}px`;
+    fontLines.get(kind)?.classList.toggle('current', kind === now);
+  }
+}
 
 const themeRow = document.createElement('div');
 themeRow.className = 'sheet-seg theme-picker';
@@ -5123,6 +5158,8 @@ layoutHint.textContent = '键盘栏与键盘锁定按手机端 / PC 端分别保
 /** Put the layout on screen's own key bar and lock into force. */
 function applyLayoutSettings(): void {
   const kind = currentLayout();
+  updateFontVal();
+  applyFont();
   setKeybarVisible(layoutSettings.keybar[kind], kind, false);
   setKeyboardLocked(layoutSettings.keyboardLocked[kind], kind, false);
 }
@@ -5961,16 +5998,15 @@ async function init(): Promise<void> {
   // differs on one that lost them (see fetchServerPrefs).
   const prefs = (await prefsPromise) ?? {};
   if (!themeChanged && isTheme(prefs.theme)) setTheme(prefs.theme);
-  if (typeof prefs.fontSize === 'number' && Number.isFinite(prefs.fontSize)) {
-    currentFont = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(prefs.fontSize)));
-    updateFontVal();
-    try {
-      // Refill the cache, so a device that does keep its storage paints at the
-      // right size before the server has answered.
-      localStorage.setItem('tw.fontSize', String(currentFont));
-    } catch {
-      /* ignore */
-    }
+  // Each layout's own font size; a server with only the old single size has it
+  // for this kind of device. The cache is refilled, so a device that does keep
+  // its storage paints at the right size before the server has answered.
+  for (const kind of ['mobile', 'desktop'] as const) {
+    const own = kind === 'mobile' ? prefs.fontSizeMobile : prefs.fontSizeDesktop;
+    const size = own ?? (kind === (TOUCH_DEVICE ? 'mobile' : 'desktop') ? prefs.fontSize : undefined);
+    if (typeof size !== 'number' || !Number.isFinite(size)) continue;
+    setFontSize(size, kind, false);
+    try { localStorage.setItem(`tw.fontSize.${kind}`, String(fontSizes[kind])); } catch { /* ignore */ }
   }
   // Each layout's own key bar and lock; a server that only has the old single
   // value has it for this kind of device, and the other layout keeps its own.

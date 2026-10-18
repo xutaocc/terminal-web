@@ -885,6 +885,9 @@ interface UiPrefs {
   activeTab?: string;
   /** Terminal font size in px. */
   fontSize?: number;
+  /** Font size kept apart for the phone and the PC layout. */
+  fontSizeMobile?: number;
+  fontSizeDesktop?: number;
   /** Whether the on-screen key bar is shown. */
   keybar?: boolean;
   /** Explicit keyboard activation on touch devices; defaults to false. */
@@ -974,6 +977,10 @@ async function handleSetPrefs(
   }
   if (typeof obj.fontSize === "number" && Number.isFinite(obj.fontSize)) {
     next.fontSize = Math.min(28, Math.max(8, Math.round(obj.fontSize)));
+  }
+  for (const key of ["fontSizeMobile", "fontSizeDesktop"] as const) {
+    const v = obj[key];
+    if (typeof v === "number" && Number.isFinite(v)) next[key] = Math.min(28, Math.max(8, Math.round(v)));
   }
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;

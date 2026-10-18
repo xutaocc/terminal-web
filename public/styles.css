@@ -2162,3 +2162,10 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 @media (max-width: 640px), (hover: none) and (pointer: coarse) {
   .layout-setting .layout-switch { padding: 0 8px; font-size: 12px; }
 }
+
+/* Font size per layout: a 手机端 line and a PC 端 line, the one on screen
+   underlined like the key bar and keyboard lock switches. The size reads first,
+   the buttons sit at the right, as in the other rows. */
+.sheet-fonts { display: flex; flex-direction: column; }
+.sheet-fonts .sheet-font .sf-val { flex: 1 1 auto; text-align: left; }
+.sheet-fonts .sheet-font.current .sf-val { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; }
