@@ -156,6 +156,138 @@ export class RemoteMonitor {
   }
 }
 
+/**
+ * Every remote's agent status, gathered here once for all pages. Each page used
+ * to open its own /remote/<id>/api/agent-status/events stream per remote — all
+ * to this server's address, where a browser allows six connections in all — so
+ * a page with five remotes left no room for its own requests, and the next tab
+ * hung on a blank page. Now this server holds one upstream stream per remote
+ * while any page is listening, and pages get every remote's status as `remote`
+ * events on the one stream they already have.
+ *
+ * A remote's frame is passed on as it came ({ mode, sessions }); a remote that
+ * drops answers `null`, so pages fall back to their own dots for it.
+ */
+export type RemoteStatus = { host: string; status: unknown | null };
+
+export class RemoteStatusHub {
+  private readonly latest = new Map<string, unknown>();
+  private readonly streams = new Map<string, { close: () => void }>();
+  private readonly listeners = new Set<(update: RemoteStatus) => void>();
+  private readonly retry = new Map<string, NodeJS.Timeout>();
+
+  constructor(private readonly store: RemoteStore, private readonly monitor: RemoteMonitor) {
+    // A remote that comes back online is reopened at once, not at the next retry.
+    monitor.subscribe(health => {
+      for (const [id, h] of Object.entries(health)) if (h.online && this.listeners.size && !this.streams.has(id)) void this.open(id);
+    });
+  }
+
+  /** What is known now, one entry per remote that has reported. */
+  snapshot(): RemoteStatus[] {
+    return [...this.latest].map(([host, status]) => ({ host, status }));
+  }
+
+  /** Start listening; the upstream streams run only while someone is. */
+  subscribe(fn: (update: RemoteStatus) => void): () => void {
+    this.listeners.add(fn);
+    if (this.listeners.size === 1) void this.sync();
+    return () => {
+      this.listeners.delete(fn);
+      if (!this.listeners.size) this.closeAll();
+    };
+  }
+
+  /** Follow the remote list: open new remotes, close removed ones. */
+  async sync(): Promise<void> {
+    if (!this.listeners.size) return;
+    const ids = new Set((await this.store.list()).map(r => r.id));
+    for (const id of [...this.streams.keys(), ...this.latest.keys()]) if (!ids.has(id)) this.drop(id);
+    for (const id of ids) if (!this.streams.has(id)) void this.open(id);
+  }
+
+  private emit(update: RemoteStatus): void {
+    for (const fn of this.listeners) fn(update);
+  }
+
+  private set(host: string, status: unknown | null): void {
+    if (status === null) { if (!this.latest.delete(host)) return; }
+    else this.latest.set(host, status);
+    this.emit({ host, status });
+  }
+
+  private drop(id: string): void {
+    this.streams.get(id)?.close();
+    this.streams.delete(id);
+    clearTimeout(this.retry.get(id));
+    this.retry.delete(id);
+    this.set(id, null);
+  }
+
+  private closeAll(): void {
+    for (const id of [...this.streams.keys(), ...this.retry.keys()]) {
+      this.streams.get(id)?.close();
+      clearTimeout(this.retry.get(id));
+    }
+    this.streams.clear();
+    this.retry.clear();
+    this.latest.clear();
+  }
+
+  private later(id: string): void {
+    if (!this.listeners.size || this.retry.has(id)) return;
+    const timer = setTimeout(() => { this.retry.delete(id); void this.open(id); }, 5_000);
+    timer.unref();
+    this.retry.set(id, timer);
+  }
+
+  private async open(id: string): Promise<void> {
+    if (this.streams.has(id) || !this.listeners.size) return;
+    const remote = await this.store.get(id);
+    if (!remote) return;
+    if (!this.monitor.isOnline(id)) { this.set(id, null); return; } // the health check reopens it
+    const to = new URL(remote.url + '/api/agent-status/events');
+    let closed = false;
+    const request = (to.protocol === 'https:' ? https : http).request(to, {
+      method: 'GET', agent: false,
+      headers: { cookie: `tw_auth=${encodeURIComponent(remote.token)}`, accept: 'text/event-stream', [HOP_HEADER]: '1' },
+    }, res => {
+      if (res.statusCode !== 200) { res.resume(); finish(); return; }
+      res.setEncoding('utf8');
+      let buffer = '';
+      // Remotes ping every 25 s; two minutes of nothing is a dead path.
+      res.setTimeout(120_000, () => request.destroy());
+      res.on('data', (chunk: string) => {
+        buffer += chunk;
+        let cut;
+        while ((cut = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          // Only unnamed frames carry status; comments and named events do not.
+          if (/^event:/m.test(frame)) continue;
+          const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (!data) continue;
+          try { this.set(id, JSON.parse(data)); } catch { /* a bad frame changes nothing */ }
+        }
+      });
+      res.on('end', finish);
+      res.on('close', finish);
+    });
+    const finish = (): void => {
+      if (closed) return;
+      closed = true;
+      if (this.streams.get(id) === handle) this.streams.delete(id);
+      this.set(id, null);
+      this.later(id);
+    };
+    const handle = { close: () => { closed = true; request.destroy(); } };
+    this.streams.set(id, handle);
+    request.setTimeout(CONNECT_TIMEOUT_MS, () => request.destroy());
+    request.on('error', finish);
+    request.end();
+  }
+}
+
 export function validRemoteUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   try {

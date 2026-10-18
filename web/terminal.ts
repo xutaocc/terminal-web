@@ -23,6 +23,7 @@ import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
+import { lastSegment, platformLabel, quotePathForShell } from './platform.js';
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -539,6 +540,8 @@ let dirNames: Record<string, Record<string, string>> = {};
 let cardOrder: Record<string, string[]> = {};
 /** host -> that server's home directory, for shortening card paths. */
 const homeDirs = new Map<string, string>();
+/** host -> its server's operating system (Node's process.platform), once it has said. */
+const hostPlatforms = new Map<string, string>();
 // The other servers this one forwards to (src/remotes.ts), in the order they
 // were added, and which of them did not answer the last sync.
 let remoteHosts: RemoteHost[] = [];
@@ -560,6 +563,14 @@ function hostBadge(host: string): HTMLElement {
   return badge;
 }
 
+/** "Windows" / "macOS" / "Linux" for a server's row; empty (and so invisible) until it has said. */
+function platformTag(host: string): HTMLElement {
+  const tag = document.createElement('small');
+  tag.className = 'host-os';
+  tag.textContent = platformLabel(hostPlatforms.get(host));
+  return tag;
+}
+
 let selfIp = '';
 /** host -> the address that server says it goes by (GET /api/host-info). */
 const remoteIps = new Map<string, string>();
@@ -578,18 +589,22 @@ function hostIp(host: string): string {
   try { return url ? new URL(url).hostname : ''; } catch { return ''; }
 }
 
-/** Ask a remote which address it goes by; redraw if that changed. */
+/** Ask a server (this one: '') which address and system it goes by; redraw if that changed. */
 async function loadHostInfo(host: string): Promise<void> {
   try {
     const res = await fetch(hostUrl(host, '/api/host-info'), { cache: 'no-store' });
     if (!res.ok) return;
-    const data = await res.json() as { ip?: unknown; ips?: unknown; port?: unknown };
+    const data = await res.json() as { ip?: unknown; ips?: unknown; port?: unknown; platform?: unknown };
+    const platform = typeof data.platform === 'string' ? data.platform : '';
+    const platformChanged = platform !== (hostPlatforms.get(host) ?? '');
+    if (platform) hostPlatforms.set(host, platform);
+    if (!host) { if (platformChanged) renderRemoteList(); return; } // this server's own address comes with the page
     const ip = typeof data.ip === 'string' ? data.ip : '';
     remoteAddrs.set(host, {
       ips: Array.isArray(data.ips) ? data.ips.filter((x): x is string => typeof x === 'string') : ip ? [ip] : [],
       port: typeof data.port === 'number' ? data.port : 0,
     });
-    if (ip === (remoteIps.get(host) ?? '')) return;
+    if (ip === (remoteIps.get(host) ?? '') && !platformChanged) return;
     if (ip) remoteIps.set(host, ip);
     else remoteIps.delete(host);
     ipTails = shortIps();
@@ -598,10 +613,11 @@ async function loadHostInfo(host: string): Promise<void> {
   } catch { /* keep the address it was added under */ }
 }
 
-/** "远程 · 119 桌面 · 192.168.88.119", for tooltips. */
+/** "远程 · 119 桌面 · 192.168.88.119 · Windows", for tooltips. */
 function hostTitle(host: string): string {
   const ip = hostIp(host);
-  return ip ? `${hostLabel(host)} · ${ip}` : hostLabel(host);
+  const os = platformLabel(hostPlatforms.get(host));
+  return [hostLabel(host), ip, os].filter(Boolean).join(' · ');
 }
 
 function shortIps(): Map<string, string> {
@@ -2288,11 +2304,14 @@ function takeAgentStatus(host: string, data: { mode?: unknown; sessions?: Record
 }
 
 function connectAgentStatus(host: string): void {
+  // Only this server's stream: remotes' statuses come on it as `remote` events
+  // (see RemoteStatusHub in src/remotes.ts), so a page holds one long-lived
+  // connection however many remotes it shows — a browser allows six per address.
+  if (host) return;
   if (agentSources.has(host)) return;
-  // This page's own server's stream also carries remote health (?health=1, as
-  // `health` events): one long-lived connection per page instead of two, since
-  // a browser has only six per host to share among every tab on it.
-  const source = new EventSource(hostUrl(host, `/api/agent-status/events${host ? '' : '?health=1'}`));
+  // This server's stream also carries remote health (?health=1, as `health`
+  // events) and every remote's status (`remote` events).
+  const source = new EventSource('/api/agent-status/events?health=1');
   agentSources.set(host, source);
   source.onmessage = (event: MessageEvent) => {
     try {
@@ -2303,13 +2322,22 @@ function connectAgentStatus(host: string): void {
       /* a malformed frame changes nothing */
     }
   };
-  if (!host) watchHealth(source);
+  source.addEventListener('remote', (event: MessageEvent) => {
+    try {
+      const { host: remote, status } = JSON.parse(event.data as string) as { host?: unknown; status?: unknown };
+      if (typeof remote !== 'string' || !remoteHosts.some(r => r.id === remote)) return;
+      takeAgentStatus(remote, status && typeof status === 'object' ? status as Parameters<typeof takeAgentStatus>[1] : {});
+      refreshStatusModeUI();
+      refreshMobileUI();
+    } catch {
+      /* a malformed frame changes nothing */
+    }
+  });
+  watchHealth(source);
   // EventSource reconnects by itself. A server without the endpoint answers
   // 404, which ends the stream for good: the page stays on the legacy dots.
-  // A remote that is down answers 502 the same way; forget the stream, and the
-  // next sync that reaches the remote opens a new one.
   source.onerror = () => {
-    if (host && source.readyState === EventSource.CLOSED && agentSources.get(host) === source) agentSources.delete(host);
+    if (source.readyState === EventSource.CLOSED && agentSources.get(host) === source) agentSources.delete(host);
   };
 }
 
@@ -3895,7 +3923,6 @@ async function syncHost(host: string): Promise<void> {
   if (!serverTabs) return; // unreachable — keep what we have; the health stream says why
   if (host && offlineHosts.has(host)) setHostOnline(host, true); // the stream may lag a sync
   if (host) void loadHostInfo(host); // its address may have moved with it
-  connectAgentStatus(host); // a remote that was down has its stream back
   const byName = new Map(serverTabs.map((t) => [t.name, t]));
 
   // Expire stale guards first so re-opening a name later still works.
@@ -3974,9 +4001,9 @@ function setHostOnline(host: string, online: boolean): void {
   renderRemoteList();
   if (activeSession?.host === host) reflectActiveStatus();
   if (!online) return;
-  // Back: reattach its terminals, reopen its status stream, take its tabs.
+  // Back: reattach its terminals and take its tabs. Its statuses resume on this
+  // server's stream, which reopens the remote's upstream as soon as it is up.
   flashStatus(`${hostLabel(host)} 已恢复连接`, 2000);
-  connectAgentStatus(host);
   for (const s of sessions) if (s.host === host) { s.reconnectNow(); s.mate?.reconnectNow(); }
   void syncFromServer();
 }
@@ -5489,7 +5516,7 @@ function renderRemoteList(): void {
   self.className = 'remote-row self';
   const selfText = document.createElement('span');
   selfText.className = 'remote-row-text';
-  selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机', ipSuffix('', true));
+  selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机', ipSuffix('', true), platformTag(''));
   self.append(selfText);
   remoteList.append(self);
   for (const remote of remoteHosts) {
@@ -5511,7 +5538,7 @@ function renderRemoteList(): void {
       });
       retryButton = retry;
     }
-    text.append(hostBadge(remote.id), name, url);
+    text.append(hostBadge(remote.id), name, platformTag(remote.id), url);
     const edit = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '编辑' });
     edit.addEventListener('click', () => openRemoteForm(remote));
     const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn danger', textContent: '移除' });
@@ -5778,10 +5805,9 @@ function uploadFile(file: Blob, name?: string): Promise<void> {
           // paste when the program asked for one: Claude Code only turns an image
           // path into an [Image #N] attachment when it arrives as a paste, and
           // typed keystrokes leave it as plain text. The space stays outside the
-          // markers so the pasted text is the bare path.
-          const p = /\s/.test(data.path)
-            ? `'${data.path.replace(/'/g, `'\\''`)}'`
-            : data.path;
+          // markers so the pasted text is the bare path. Quoted for the shell of
+          // the server it lands on: PowerShell on Windows, a Unix shell elsewhere.
+          const p = quotePathForShell(data.path, hostPlatforms.get(target.host));
           target.sendSeq(
             (target.term.modes.bracketedPasteMode ? `\x1b[200~${p}\x1b[201~` : p) + ' ',
           );
@@ -5838,7 +5864,7 @@ async function downloadFromHost(rawPath: string): Promise<void> {
   const a = document.createElement('a');
   a.href = url;
   a.rel = 'noopener';
-  a.download = p.split('/').pop() || 'download';
+  a.download = lastSegment(p) || 'download';
   document.body.append(a);
   a.click();
   a.remove();
@@ -6087,8 +6113,9 @@ async function init(): Promise<void> {
   }
 }
 
-connectAgentStatus(''); // also carries remote health (see watchHealth)
-void init().then(() => { for (const r of remoteHosts) if (!offlineHosts.has(r.id)) connectAgentStatus(r.id); });
+connectAgentStatus(''); // also carries remote health and every remote's status (see watchHealth)
+void loadHostInfo(''); // this server's own system, for quoting paths typed into its terminals
+void init();
 
 // Keep the tab list in sync with the server: when the page regains focus /
 // visibility, and on a light interval while visible.

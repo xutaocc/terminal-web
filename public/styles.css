@@ -1882,6 +1882,8 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .remote-row-text { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; }
 .remote-row-text small { overflow: hidden; text-overflow: ellipsis; color: var(--ui-muted, #9a9a9a); font-size: 11px; }
 .remote-row.offline small { color: var(--ui-danger-text, #f14c4c); }
+.remote-row-text .host-os { flex: none; color: var(--ui-muted, #9a9a9a); font-size: 11px; }
+.remote-row-text .host-os:empty { display: none; }
 .remote-add { align-self: flex-start; }
 .remote-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .remote-form[hidden] { display: none; }

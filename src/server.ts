@@ -39,7 +39,7 @@ import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
-import { RemoteMonitor, RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
+import { RemoteMonitor, RemoteStatusHub, RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
@@ -615,6 +615,11 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
   const sendHealth = (health: unknown): void => { res.write(`event: health\ndata: ${JSON.stringify(health)}\n\n`); };
   if (withHealth) sendHealth(remoteMonitor.snapshot());
   const unsubscribeHealth = withHealth ? remoteMonitor.subscribe(sendHealth) : () => {};
+  // Every remote's status too (see RemoteStatusHub), as `remote` events: the
+  // page needs no stream of its own per remote.
+  const sendRemote = (update: unknown): void => { res.write(`event: remote\ndata: ${JSON.stringify(update)}\n\n`); };
+  if (withHealth) for (const update of remoteStatus.snapshot()) sendRemote(update);
+  const unsubscribeRemote = withHealth ? remoteStatus.subscribe(sendRemote) : () => {};
   // Frequent enough that a page notices a dead link to this server quickly. A
   // named event, not an SSE comment: comments never reach the page's code, and
   // the page decides the link is dead by what it has heard.
@@ -623,6 +628,7 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
     clearInterval(keepAlive);
     unsubscribe();
     unsubscribeHealth();
+    unsubscribeRemote();
   });
 }
 
@@ -1178,7 +1184,8 @@ async function handleDownload(
     return;
   }
   let abs: string;
-  if (raw === "~" || raw.startsWith("~/")) {
+  // "~\" is how a Windows user writes it; on Unix a backslash is a file name character.
+  if (raw === "~" || raw.startsWith("~/") || (process.platform === "win32" && raw.startsWith("~\\"))) {
     abs = path.resolve(path.join(os.homedir(), raw.slice(1)));
   } else if (path.isAbsolute(raw)) {
     abs = path.resolve(raw);
@@ -1245,6 +1252,7 @@ function interfaceSignature(): string {
     .sort().join(",");
 }
 const remoteMonitor = new RemoteMonitor(remotes, interfaceSignature);
+const remoteStatus = new RemoteStatusHub(remotes, remoteMonitor);
 
 /**
  * This machine's IPv4 addresses, in the order they are preferred for display.
@@ -1282,9 +1290,14 @@ function lanAddress(): string {
   return lanAddresses()[0] ?? "";
 }
 
-/** Who this server is: name and addresses, for the page and for servers that list it as a remote. */
-function hostInfo(): { name: string; ip: string; ips: string[]; port: number } {
-  return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses(), port: config.port };
+/**
+ * Who this server is: name, addresses and operating system, for the page and
+ * for servers that list it as a remote. `platform` is Node's ('win32',
+ * 'darwin', 'linux', …): a page showing several servers needs it to quote a path
+ * for the right shell and to label each host.
+ */
+function hostInfo(): { name: string; ip: string; ips: string[]; port: number; platform: NodeJS.Platform } {
+  return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses(), port: config.port, platform: process.platform };
 }
 
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1308,6 +1321,7 @@ async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse
   try { await remotes.edit(body ?? {}); }
   catch (err) { sendJsonHttp(res, 400, { error: (err as Error).message }); return; }
   await remoteMonitor.sync();
+  await remoteStatus.sync();
   await reply();
 }
 
@@ -1586,6 +1600,13 @@ function hasUtf8(value: string | undefined): boolean {
 function buildChildEnv(): NodeJS.ProcessEnv {
   const env = terminalEnvironment(process.env);
   for (const key of SERVER_ENV_VARS) {
+    delete env[key];
+  }
+  // A server started from inside a terminal — one of its own tabs, say — has
+  // that terminal's tmux / psmux identity in its environment. Passed on, it
+  // makes the new client think it is nested: psmux refuses outright ("sessions
+  // should be nested with care") and the tab closes the moment it opens.
+  for (const key of ["TMUX", "TMUX_PANE", "PSMUX_SESSION", "PSMUX_TARGET_SESSION", "PSMUX_TARGET_FULL", "PSMUX_ACTIVE"]) {
     delete env[key];
   }
   // Ensure a UTF-8 locale. Under launchd the environment has no LANG, which

@@ -1,3 +1,5 @@
+import { homeRelative } from './platform.js';
+
 /** A sidebar folder: a named group the user puts sessions in. No path. */
 export interface FolderInfo { id: string; name: string }
 
@@ -31,16 +33,10 @@ export function wouldEmpty(folderId: string, leaving: readonly string[], members
   return !Object.entries(members).some(([session, id]) => id === folderId && !gone.has(session));
 }
 
-/** Whether `dir` is `root` itself or somewhere beneath it. */
-function within(dir: string, root: string): boolean {
-  return dir === root || dir.startsWith(root.endsWith('/') ? root : `${root}/`);
-}
-
-/** A session's directory as the card shows it: with ~ for home. */
+/** A session's directory as the card shows it: with ~ for home, in its own separator. */
 export function shortCwd(cwd: string | null | undefined, home: string): string {
   if (!cwd) return '';
-  if (home && within(cwd, home)) return `~${cwd.slice(home.length)}`;
-  return cwd;
+  return homeRelative(cwd, home);
 }
 
 export interface DirectoryGroup<T> {
