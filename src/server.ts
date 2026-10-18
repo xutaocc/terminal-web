@@ -2392,9 +2392,11 @@ function logStartup(): void {
   }
 
   if (!ensureTmuxAvailable()) {
-    console.warn(
-      "  WARNING: tmux was not found on PATH. Sessions will fail to start. Install tmux (e.g. `brew install tmux`)."
-    );
+    console.warn(IS_PSMUX
+      ? "  WARNING: psmux (tmux.exe) was not found. Sessions will fail to start. Put psmux in this project's .psmux\\ folder (see docs/部署与使用指南.md, section 10.2), or set TMUX_BIN."
+      : "  WARNING: tmux was not found on PATH. Sessions will fail to start. Install tmux (e.g. `brew install tmux`).");
+  } else if (IS_PSMUX) {
+    console.log(`  psmux: ${TMUX}`);
   }
   console.log(`  Authentication: required for all access. Token file: ${config.authTokenFile}`);
   console.log(`  Default session: "${config.defaultSession}"  (override with ?session=NAME)`);

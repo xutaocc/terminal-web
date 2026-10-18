@@ -10,7 +10,9 @@ import { existsSync } from 'node:fs';
 /**
  * The tmux binary every call goes through. TMUX_BIN overrides it (e.g. psmux's
  * tmux.exe on Windows). node-pty on Windows does not search PATH for a bare
- * name the way execFile does, so there it is resolved to a full path up front.
+ * name the way execFile does, so there it is resolved to a full path up front:
+ * the repo's own .psmux\ first (where the deployment guide puts psmux, so a
+ * plain `npm start` finds it), then PATH.
  */
 export const TMUX = resolveTmux();
 /** psmux (Windows) speaks tmux's commands but differs in a few behaviours. */
@@ -20,6 +22,8 @@ function resolveTmux(): string {
   const configured = process.env.TMUX_BIN?.trim();
   if (configured) return configured;
   if (process.platform !== 'win32') return 'tmux';
+  const bundled = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.psmux', 'tmux.exe');
+  if (existsSync(bundled)) return bundled;
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
     const candidate = path.join(dir, 'tmux.exe');
     if (dir && existsSync(candidate)) return candidate;
@@ -27,10 +31,14 @@ function resolveTmux(): string {
   return 'tmux';
 }
 
-/** Invalid, missing or inaccessible startup directories fall back to the user's home. */
+/**
+ * Invalid, missing or inaccessible startup directories fall back to the user's
+ * home. "~" and "~/…" mean the home directory everywhere; on Windows "~\…" does
+ * too, as its own paths are written that way.
+ */
 export async function resolveSessionDirectory(value: string): Promise<string> {
-  const directory = value === '~' ? os.homedir() : value.startsWith('~/') ?
-    path.join(os.homedir(), value.slice(2)) : value;
+  const home = value === '~' || value.startsWith('~/') || (process.platform === 'win32' && value.startsWith('~\\'));
+  const directory = value === '~' ? os.homedir() : home ? path.join(os.homedir(), value.slice(2)) : value;
   if (!path.isAbsolute(directory) || directory.length > 4096 || directory.includes('\0')) return os.homedir();
   try {
     if (!(await fs.stat(directory)).isDirectory()) return os.homedir();

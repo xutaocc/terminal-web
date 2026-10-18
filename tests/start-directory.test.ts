@@ -19,3 +19,13 @@ test('startup directory accepts Unicode/spaces and uses home for invalid input',
     assert.equal(await resolveSessionDirectory('~'), os.homedir());
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
+
+test('"~/" means home on every system; "~\\" also on Windows', async () => {
+  const name = `startup-home-${process.pid}`;
+  const inHome = path.join(os.homedir(), name);
+  await mkdir(inHome);
+  try {
+    assert.equal(await resolveSessionDirectory(`~/${name}`), inHome);
+    if (process.platform === 'win32') assert.equal(await resolveSessionDirectory(`~\\${name}`), inHome);
+  } finally { await rm(inHome, { recursive: true, force: true }); }
+});

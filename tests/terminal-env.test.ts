@@ -14,7 +14,7 @@ test('web terminal drops launcher NO_COLOR without changing parent environment',
 });
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { tmuxColorArgs } from '../src/terminal-env.js';
@@ -49,7 +49,11 @@ test('disabled policy removes inherited force-color flags', () => {
   assert.equal(env.CLICOLOR_FORCE, undefined);
 });
 
-test('new tmux shells follow policy changes even when the server already exists', async () => {
+test('new tmux shells follow policy changes even when the server already exists', async (t) => {
+  // tmux's -L socket, -f /dev/null and the sh one-liner are Unix's. On Windows
+  // (psmux) there is one server per session, so a new session simply inherits
+  // the spawn's environment — the psmux test below covers that.
+  if (process.platform === 'win32') { t.skip('Unix tmux only'); return; }
   const dir = mkdtempSync(path.join(tmpdir(), 'tw-color-'));
   const socket = `tw-color-${process.pid}-${Date.now()}`;
   const tmux = (args: string[]) => execFileSync('tmux', ['-L', socket, ...args], {
@@ -71,6 +75,39 @@ test('new tmux shells follow policy changes even when the server already exists'
     }
   } finally {
     try { tmux(['kill-server']); } catch { /* test startup may fail */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('new psmux sessions (Windows) get the colour policy from their spawn environment', async (t) => {
+  if (process.platform !== 'win32') { t.skip('Windows (psmux) only'); return; }
+  const bin = process.env.TMUX_BIN || path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', '.psmux', 'tmux.exe');
+  if (!existsSync(bin)) { t.skip('psmux not found in .psmux\\ (or set TMUX_BIN)'); return; }
+  const dir = mkdtempSync(path.join(tmpdir(), 'tw-color-'));
+  const names: string[] = [];
+  try {
+    for (const [i, enabled] of [true, false, true].entries()) {
+      const file = path.join(dir, `result-${i}.txt`);
+      const script = path.join(dir, `probe-${i}.cjs`);
+      writeFileSync(script, `const e = process.env; require('fs').writeFileSync(${JSON.stringify(file)}, ` +
+        `[e.NO_COLOR, e.CLICOLOR, e.FORCE_COLOR].map(v => v ?? 'unset').join('|')); setTimeout(() => {}, 30000);`);
+      const name = `twcolor${process.pid}x${i}`;
+      names.push(name);
+      // As the server spawns a session: the environment it builds, then the pane's program.
+      execFileSync(bin, ['new-session', '-d', '-s', name, '--', process.execPath, script], {
+        env: { ...terminalEnvironment({ ...process.env, NO_COLOR: '1', FORCE_COLOR: '3' }, enabled), PSMUX_NO_WARM: '1' } as NodeJS.ProcessEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let value = '';
+      for (let retry = 0; retry < 100; retry++) {
+        try { value = readFileSync(file, 'utf8'); } catch { /* starting */ }
+        if (value) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(value, enabled ? 'unset|1|unset' : '1|0|unset');
+    }
+  } finally {
+    for (const name of names) try { execFileSync(bin, ['kill-session', '-t', name], { stdio: 'ignore' }); } catch { /* gone */ }
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -23,6 +23,10 @@ window.addEventListener('message', event => {
   if (event.data?.type === 'terminal-theme' && isTheme(event.data.theme)) applyDocumentTheme(event.data.theme);
 });
 const session = query.get('session') || '';
+// Which system the files' server runs, as it says itself (GET /api/host-info):
+// a Windows server has no Unix permission bits, so the 权限 action is left out
+// there and details show no owner / group. Unknown until it has answered.
+let windowsHost = false;
 let sessionPath = '/';
 let current = '/';
 let active = null;
@@ -190,7 +194,8 @@ function details(item, container) {
   container.replaceChildren(el('div', 'detail-icon', item.directory ? '▰' : '≡'), el('strong', 'detail-name', item.name), el('div', 'detail-path', item.path));
   const list = el('dl');
   const symbolic = item.mode.slice(-3).split('').map(n => ['---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx'][Number(n)]).join('');
-  const fields = [['类型', item.symlink ? '符号链接' : item.directory ? '目录' : '文件'], ['大小', item.directory ? '使用“统计”计算' : bytes(item.size)], ['修改时间', date(item.modified)], ['创建时间', date(item.created)], ['访问时间', date(item.accessed)], ['权限', `${item.mode} · ${symbolic}`], ['所有者 / 组', `${item.owner} / ${item.group}`]];
+  const fields = [['类型', item.symlink ? '符号链接' : item.directory ? '目录' : '文件'], ['大小', item.directory ? '使用“统计”计算' : bytes(item.size)], ['修改时间', date(item.modified)], ['创建时间', date(item.created)], ['访问时间', date(item.accessed)],
+    ...(windowsHost ? [] : [['权限', `${item.mode} · ${symbolic}`], ['所有者 / 组', `${item.owner} / ${item.group}`]])];
   if (item.linkTarget) fields.push(['链接目标', item.linkTarget]);
   fields.forEach(([key, value]) => { const row = el('div'); row.append(el('dt', '', key), el('dd', '', value)); list.append(row); }); container.append(list);
 }
@@ -211,7 +216,7 @@ function menu(item) {
   const ops = item ? item.directory ? [['↳', '进入'], ['⌘', '立即打开对应终端目录'], ['↑', '上传'], ['＋', '新建']] : [['◉', '预览'], ['✎', '编辑'], ['↓', '下载']] : [];
   if (item && !item.directory && htmlExtensions.test(item.name)) ops.unshift(['↗', '浏览器打开']);
   if (item) ops.push(['⧉', '复制路径'], ['✎', '重命名'], ['ⓘ', '详情']);
-  ops.push(['▣', '复制'], ['↗', '移动'], ['▤', '压缩'], ['⚿', '权限'], ['∑', '统计'], ['×', '删除']);
+  ops.push(['▣', '复制'], ['↗', '移动'], ['▤', '压缩'], ...(windowsHost ? [] : [['⚿', '权限']]), ['∑', '统计'], ['×', '删除']);
   ops.forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
 }
 function confirmation(title, fields, execute) {
@@ -522,4 +527,11 @@ function fitBrand() {
 }
 new ResizeObserver(fitBrand).observe($('header'));
 fitBrand();
+// The server's system, for what this page offers (see windowsHost). A server
+// too old to say is taken as Unix, the only kind there was.
+fetch(`${hostBase}/api/host-info`, { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(info => {
+  if (info?.platform !== 'win32') return;
+  windowsHost = true;
+  if (active) render();
+}).catch(() => { /* keep the Unix menu */ });
 (async () => { try { const p = await requestSessionPath(); await navigate(p, false); } catch (error) { toast(error.message); $('#tree').append(el('p', 'tree-error', error.message)); } })();
