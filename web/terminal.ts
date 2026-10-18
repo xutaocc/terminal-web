@@ -4136,6 +4136,10 @@ function takeRemotes(data: {
   ipTails = shortIps();
   document.documentElement.classList.toggle('has-remotes', next.length > 0);
   renderRemoteList();
+  // Each remote's system and address, for its row and its paths — asked for as
+  // soon as it is listed, not only once one of its sessions has synced (a
+  // remote with no tabs yet would otherwise show no system at all).
+  for (const r of next) if (!hostPlatforms.has(r.id) && !offlineHosts.has(r.id)) void loadHostInfo(r.id);
 }
 
 // ---------------------------------------------------------------------------
