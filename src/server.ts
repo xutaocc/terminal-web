@@ -599,7 +599,7 @@ async function handleAgentHook(req: http.IncomingMessage, res: http.ServerRespon
   sendJsonHttp(res, 200, { ok: true, used });
 }
 
-function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResponse): void {
+function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResponse, withHealth = false): void {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -608,10 +608,21 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
   const send = (snapshot: unknown): void => { res.write(`data: ${JSON.stringify(snapshot)}\n\n`); };
   send(agentStatus.snapshot());
   const unsubscribe = agentStatus.subscribe(send);
-  const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000);
+  // A page asks for remote health on its own server's status stream (?health=1)
+  // rather than opening /api/remotes/events beside it: every open page holds its
+  // streams for good, and a browser allows only six connections per host, so two
+  // each left a third tab on the same address waiting for ever on an empty page.
+  const sendHealth = (health: unknown): void => { res.write(`event: health\ndata: ${JSON.stringify(health)}\n\n`); };
+  if (withHealth) sendHealth(remoteMonitor.snapshot());
+  const unsubscribeHealth = withHealth ? remoteMonitor.subscribe(sendHealth) : () => {};
+  // Frequent enough that a page notices a dead link to this server quickly. A
+  // named event, not an SSE comment: comments never reach the page's code, and
+  // the page decides the link is dead by what it has heard.
+  const keepAlive = setInterval(() => res.write(withHealth ? 'event: ping\ndata: \n\n' : ': ping\n\n'), withHealth ? 15_000 : 25_000);
   req.on('close', () => {
     clearInterval(keepAlive);
     unsubscribe();
+    unsubscribeHealth();
   });
 }
 
@@ -1416,7 +1427,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (method === 'GET' && requestUrl.pathname === '/api/agent-status/events') {
-        handleAgentStatusEvents(req, res);
+        handleAgentStatusEvents(req, res, requestUrl.searchParams.get('health') === '1');
         return;
       }
       if (method === 'POST' && requestUrl.pathname === '/api/agent-status/mode') {

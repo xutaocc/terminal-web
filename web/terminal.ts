@@ -2289,7 +2289,10 @@ function takeAgentStatus(host: string, data: { mode?: unknown; sessions?: Record
 
 function connectAgentStatus(host: string): void {
   if (agentSources.has(host)) return;
-  const source = new EventSource(hostUrl(host, '/api/agent-status/events'));
+  // This page's own server's stream also carries remote health (?health=1, as
+  // `health` events): one long-lived connection per page instead of two, since
+  // a browser has only six per host to share among every tab on it.
+  const source = new EventSource(hostUrl(host, `/api/agent-status/events${host ? '' : '?health=1'}`));
   agentSources.set(host, source);
   source.onmessage = (event: MessageEvent) => {
     try {
@@ -2300,6 +2303,7 @@ function connectAgentStatus(host: string): void {
       /* a malformed frame changes nothing */
     }
   };
+  if (!host) watchHealth(source);
   // EventSource reconnects by itself. A server without the endpoint answers
   // 404, which ends the stream for good: the page stays on the legacy dots.
   // A remote that is down answers 502 the same way; forget the stream, and the
@@ -3989,9 +3993,12 @@ function takeHealth(health: Record<string, RemoteHealth>): void {
 
 let healthSource: EventSource | null = null;
 let lastHealthAt = 0;
-function watchRemoteHealth(): void {
-  healthSource?.close();
-  const source = new EventSource('/api/remotes/events');
+/**
+ * Remote health arrives on this server's status stream (see connectAgentStatus)
+ * as `health` events, and its pings keep lastHealthAt fresh. Called for each new
+ * stream on this server, so a reopened one is tracked the same way.
+ */
+function watchHealth(source: EventSource): void {
   healthSource = source;
   let opened = false;
   source.onopen = () => {
@@ -4000,12 +4007,20 @@ function watchRemoteHealth(): void {
     if (opened) recoverNow('server');
     opened = true;
   };
-  source.onmessage = (event: MessageEvent) => {
+  source.addEventListener('health', (event: MessageEvent) => {
     lastHealthAt = performance.now();
     try { takeHealth(JSON.parse(event.data as string)); } catch { /* ignore a bad frame */ }
-  };
-  // EventSource retries on its own while the server is merely unreachable; a
-  // server that answers 404 (too old for this) ends it, and nothing is lost.
+  });
+  // Status frames and the server's 15 s pings both prove the link is alive.
+  const heard = (): void => { lastHealthAt = performance.now(); };
+  source.addEventListener('message', heard);
+  source.addEventListener('ping', heard);
+}
+/** Reopen this server's stream, which also shows whether it is reachable at all. */
+function watchRemoteHealth(): void {
+  agentSources.get('')?.close();
+  agentSources.delete('');
+  connectAgentStatus('');
 }
 // The server pings the stream every 15 s. Silence for 40 s is a link that died
 // without saying so (the usual way after sleep): reopen it, which also shows
@@ -6072,8 +6087,7 @@ async function init(): Promise<void> {
   }
 }
 
-connectAgentStatus('');
-watchRemoteHealth();
+connectAgentStatus(''); // also carries remote health (see watchHealth)
 void init().then(() => { for (const r of remoteHosts) if (!offlineHosts.has(r.id)) connectAgentStatus(r.id); });
 
 // Keep the tab list in sync with the server: when the page regains focus /
