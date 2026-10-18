@@ -4,24 +4,48 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const TEXT_LIMIT = 2 * 1024 * 1024;
 const WALK_LIMIT = 50000;
+const WINDOWS = process.platform === 'win32';
+/**
+ * Windows has no `zip`: archives are built by scripts/zip-manifest.ps1, under
+ * PowerShell 7 when present — only its .NET marks names as UTF-8, so Chinese
+ * names survive other unzip tools. Windows PowerShell 5.1 is the fallback.
+ */
+const WINDOWS_ZIP = (() => {
+  const pwsh = path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe');
+  return {
+    shell: fs.existsSync(pwsh) ? pwsh : 'powershell.exe',
+    script: path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'zip-manifest.ps1'),
+  };
+})();
 class FileError extends Error {
   constructor(message: string, public status = 400) { super(message); }
 }
 function absolute(value: unknown): string {
   if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) throw new FileError('需要有效的绝对路径');
+  // "\x" and "/x" are absolute on Windows too but name no drive; demand one.
+  if (WINDOWS && !/^[A-Za-z]:[\\/]/.test(value)) throw new FileError('需要带盘符的绝对路径，例如 C:\\Users');
   return path.resolve(value);
 }
+// Windows also splits on "\" and forbids <>:"|?* in names.
+const BAD_NAME = WINDOWS ? /[<>:"|?*\\/\0\x01-\x1f]/ : /[/\0]/;
 function basename(value: unknown): string {
-  if (typeof value !== 'string' || !value || value === '.' || value === '..' || /[/\0]/.test(value)) throw new FileError('名称无效');
+  if (typeof value !== 'string' || !value || value === '.' || value === '..' || BAD_NAME.test(value)) throw new FileError('名称无效');
+  if (WINDOWS && /[. ]$/.test(value)) throw new FileError('名称不能以点或空格结尾');
   return value;
+}
+/** `p` is `ancestor` or below it. Case-insensitive on Windows, never a mere string prefix. */
+export function within(p: string, ancestor: string): boolean {
+  const relative = path.relative(ancestor, p);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 function paths(value: unknown): string[] {
   if (!Array.isArray(value) || !value.length || value.length > 1000) throw new FileError('请选择 1 至 1000 个条目');
   const result = [...new Set(value.map(absolute))];
-  return result.filter(p => !result.some(other => other !== p && p.startsWith(other === '/' ? '/' : other + path.sep)));
+  return result.filter(p => !result.some(other => other !== p && within(p, other)));
 }
 function mutable(p: string): void { if (p === path.parse(p).root) throw new FileError('不能修改文件系统根目录'); }
 async function directory(p: string): Promise<void> { if (!(await fsp.stat(p)).isDirectory()) throw new FileError('目标路径不是目录'); }
@@ -45,22 +69,25 @@ function message(error: unknown): string {
   return `${names[err.code || ''] || '文件操作失败'}${err.path ? `：${err.path}` : ''}`;
 }
 const identities: { users: Map<number, string>; groups: Map<number, string> } = { users: new Map(), groups: new Map() };
-for (const [file, mapping] of [['/etc/passwd', identities.users], ['/etc/group', identities.groups]] as const) {
+for (const [file, mapping] of WINDOWS ? [] : [['/etc/passwd', identities.users], ['/etc/group', identities.groups]] as const) {
   try { for (const line of fs.readFileSync(file, 'utf8').split('\n')) { const parts = line.split(':'); if (parts.length >= 3) mapping.set(Number(parts[2]), parts[0]); } } catch { /* Numeric IDs are portable. */ }
 }
 export async function fileEntry(p: string) {
   const stat = await fsp.lstat(p);
   let isDirectory = stat.isDirectory(); let linkTarget: string | null = null;
   if (stat.isSymbolicLink()) { linkTarget = await fsp.readlink(p); try { isDirectory = (await fsp.stat(p)).isDirectory(); } catch { /* Dangling links remain visible. */ } }
-  return { path: p, name: path.basename(p) || '/', directory: isDirectory, symlink: stat.isSymbolicLink(), linkTarget, size: stat.size,
+  // Windows has no uid/gid (Node reports 0) and only a read-only bit for modes:
+  // show the owner as unknown rather than as "0", the mode as it is reported.
+  return { path: p, name: path.basename(p) || p, directory: isDirectory, symlink: stat.isSymbolicLink(), linkTarget, size: stat.size,
     modified: stat.mtime.toISOString(), accessed: stat.atime.toISOString(), created: stat.birthtimeMs > 0 ? stat.birthtime.toISOString() : null,
-    mode: (stat.mode & 0o7777).toString(8).padStart(3, '0'), uid: stat.uid, gid: stat.gid, owner: identities.users.get(stat.uid) || String(stat.uid), group: identities.groups.get(stat.gid) || String(stat.gid) };
+    mode: (stat.mode & 0o7777).toString(8).padStart(3, '0'), uid: stat.uid, gid: stat.gid,
+    owner: WINDOWS ? '—' : identities.users.get(stat.uid) || String(stat.uid), group: WINDOWS ? '—' : identities.groups.get(stat.gid) || String(stat.gid) };
 }
 type WalkEntry = { path: string; directory: boolean; size: number; blocks: number; symlink: boolean };
 // 使用 lstat 遍历，符号链接只作为条目处理，避免递归操作越过用户选择的目录。
 async function walk(inputs: string[], exclusions: string[], tick?: (p: string) => void): Promise<WalkEntry[]> {
   const result: WalkEntry[] = [];
-  const excluded = (p: string) => exclusions.some(e => p === e || p.startsWith(e + path.sep));
+  const excluded = (p: string) => exclusions.some(e => within(p, e));
   async function visit(p: string): Promise<void> {
     if (excluded(p)) return;
     tick?.(p);
@@ -75,9 +102,14 @@ async function walk(inputs: string[], exclusions: string[], tick?: (p: string) =
 }
 // 选中父子条目已去重；产物放在最外层选择的同级目录，跨分支时使用共同父目录。
 export function compressionParent(inputs: string[]): string {
-  if (!inputs.length || inputs.some(p => p === '/')) throw new FileError('不能压缩文件系统根目录');
+  if (!inputs.length || inputs.some(p => p === path.parse(p).root)) throw new FileError('不能压缩文件系统根目录');
   let parent = path.dirname(inputs[0]);
-  while (!inputs.every(p => p.startsWith(parent === '/' ? '/' : parent + '/'))) parent = path.dirname(parent);
+  while (!inputs.every(p => within(p, parent) && p !== parent)) {
+    const up = path.dirname(parent);
+    // Different drives (C:\ and D:\) share no parent at all.
+    if (up === parent) throw new FileError('所选条目不在同一个磁盘上，无法一起压缩');
+    parent = up;
+  }
   return parent;
 }
 interface Job { id: string; status: 'running' | 'complete' | 'failed' | 'cancelled'; operation: string; count: number; current: string; result?: unknown; error?: string; failures: { path: string; error: string }[]; cancelled: boolean; cancel?: () => void; }
@@ -99,7 +131,7 @@ async function noNestedDestination(source: string, destination: string): Promise
   const stat = await fsp.lstat(source);
   if (!stat.isDirectory()) return;
   const [src, dest] = await Promise.all([fsp.realpath(source), fsp.realpath(destination)]);
-  if (dest === src || dest.startsWith(src + '/')) throw new FileError('目标目录不能是自身或子目录');
+  if (within(dest, src)) throw new FileError('目标目录不能是自身或子目录');
 }
 const mime: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.pdf': 'application/pdf' };
 // 网页服务模式下页面与终端同源运行（个人内网使用），脚本、存储与相对路径资源均按普通静态站点处理。
@@ -131,6 +163,19 @@ async function content(req: http.IncomingMessage, res: http.ServerResponse, p: s
     });
   } finally { await handle.close(); }
 }
+/**
+ * Move a finished temporary file into place without ever replacing an existing
+ * one. A hard link does that atomically, but FAT32 / exFAT / network shares
+ * (common on Windows) refuse links: there, copy with COPYFILE_EXCL instead.
+ */
+async function publish(temporary: string, target: string): Promise<void> {
+  try { await fsp.link(temporary, target); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!['EPERM', 'ENOTSUP', 'EXDEV', 'EINVAL', 'ENOSYS'].includes(code || '')) throw error;
+    await fsp.copyFile(temporary, target, fs.constants.COPYFILE_EXCL);
+  }
+}
 async function upload(req: http.IncomingMessage, destination: string, name: string, maxBytes: number): Promise<void> {
   await directory(destination);
   const target = path.join(destination, basename(name)); await unused(target);
@@ -138,7 +183,7 @@ async function upload(req: http.IncomingMessage, destination: string, name: stri
   const handle = await fsp.open(temporary, 'wx', 0o600); let size = 0;
   try {
     for await (const chunk of req) { const data = Buffer.from(chunk); size += data.length; if (size > maxBytes) throw new FileError('上传超过大小限制', 413); let offset = 0; while (offset < data.length) offset += (await handle.write(data, offset, data.length - offset)).bytesWritten; }
-    await handle.close(); await fsp.link(temporary, target);
+    await handle.close(); await publish(temporary, target);
   } finally { await handle.close().catch(() => {}); await fsp.unlink(temporary).catch(() => {}); }
 }
 async function textFile(p: string): Promise<{ data: Buffer; version: string }> {
@@ -164,13 +209,25 @@ async function writeText(p: string, text: string, version: unknown): Promise<voi
     try { await handle.writeFile(text, 'utf8'); await handle.truncate(Buffer.byteLength(text)); } finally { await handle.close(); }
   } finally { writeLocks.delete(real); }
 }
+/**
+ * The file system path a /site/… URL names. Unix: the path as is. Windows: the
+ * page puts "C:\a\b" in the URL as "/C:/a/b", so a page's relative links still
+ * resolve with "/" in the browser; turn it back here.
+ */
+export function sitePath(urlPath: string): string {
+  const rest = decodeURIComponent(urlPath.slice('/site'.length)) || '/';
+  if (!WINDOWS) return absolute(rest);
+  const m = /^\/([A-Za-z]:)(\/.*)?$/.exec(rest);
+  if (!m) throw new FileError('路径无效');
+  return absolute(`${m[1]}${(m[2] || '/').replace(/\//g, '\\')}`);
+}
 // /site/<绝对路径>：把服务器上的文件当作静态网站提供，供浏览器新标签直接打开 HTML。
 export async function handleSite(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
   if (url.pathname !== '/site' && !url.pathname.startsWith('/site/')) return false;
   const fail = (status: number, text: string) => { res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(text); };
   if (req.method !== 'GET' && req.method !== 'HEAD') { fail(405, '不支持的请求方法'); return true; }
   let p: string;
-  try { p = absolute(decodeURIComponent(url.pathname.slice('/site'.length)) || '/'); } catch { fail(400, '路径无效'); return true; }
+  try { p = sitePath(url.pathname); } catch { fail(400, '路径无效'); return true; }
   try {
     if ((await fsp.stat(p)).isDirectory()) {
       // 目录需以 / 结尾，页面里的相对路径才会解析到该目录内。
@@ -216,15 +273,19 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
       // Only checks the directory. The page names and creates the session the
       // same way as its own "新建会话" (web/session-name.ts), on first attach.
       const p = absolute(obj.path); await directory(p);
-      json(res, 200, { path: p, name: path.basename(p) || '/' });
+      json(res, 200, { path: p, name: path.basename(p) || p });
     }
     else if (['copy', 'move', 'remove', 'chmod', 'scan', 'compression-plan'].includes(route)) {
       const inputs = paths(obj.paths); if (route !== 'scan' && route !== 'compression-plan') inputs.forEach(mutable);
       const exclusions = Array.isArray(obj.exclude) ? obj.exclude.map(absolute) : [];
-      if (exclusions.some(e => !inputs.some(p => e === p || e.startsWith(p + '/')))) throw new FileError('排除项必须在所选范围内');
+      if (exclusions.some(e => !inputs.some(p => within(e, p)))) throw new FileError('排除项必须在所选范围内');
       let destination = '';
       if (route === 'copy' || route === 'move') { destination = absolute(obj.destination); await directory(destination); const names = new Set<string>(); for (const input of inputs) { if (names.has(path.basename(input))) throw new FileError('选择包含同名条目'); names.add(path.basename(input)); await noNestedDestination(input, destination); await unused(path.join(destination, path.basename(input))); } }
-      let mode = 0; if (route === 'chmod') { if (typeof obj.mode !== 'string' || !/^[0-7]{3,4}$/.test(obj.mode)) throw new FileError('请输入有效的八进制权限'); mode = Number.parseInt(obj.mode, 8); }
+      let mode = 0; if (route === 'chmod') {
+        // Windows file modes only carry a read-only bit; there is nothing to set.
+        if (WINDOWS) throw new FileError('Windows 不支持 Linux 权限设置，请在资源管理器中修改', 501);
+        if (typeof obj.mode !== 'string' || !/^[0-7]{3,4}$/.test(obj.mode)) throw new FileError('请输入有效的八进制权限'); mode = Number.parseInt(obj.mode, 8);
+      }
       const job = task(route, async current => {
         if (route === 'scan' || route === 'compression-plan') {
           const entries = await walk(inputs, exclusions, p => checkpoint(current, p));
@@ -262,21 +323,37 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
       const output = path.join(plan.parent, name); await unused(output);
       const job = task('compress', async current => {
         const temporary = path.join(plan.parent, `.tw-archive-${crypto.randomUUID()}.zip`);
+        // Entry names inside the zip always use "/", whatever the host's separator.
+        const names = plan.entries.map(entry => `${path.relative(plan.parent, entry.path).split(path.sep).join('/')}${entry.directory ? '/' : ''}`);
+        const manifest = WINDOWS ? path.join(plan.parent, `.tw-archive-${crypto.randomUUID()}.txt`) : '';
         try {
+          if (WINDOWS) {
+            // Symlinks are listed (not followed) like on Unix; the script adds a
+            // directory symlink as an empty folder rather than descending into it.
+            await fsp.writeFile(manifest, names.join('\n') + '\n', 'utf8');
+          }
           await new Promise<void>((resolve, reject) => {
             // Explicit manifest instead of recursive zip: exclusions and symlinks cannot expand the selection.
-            const child = spawn('zip', ['-y', '-q', temporary, '-@'], { cwd: plan.parent, stdio: ['pipe', 'ignore', 'pipe'] });
+            const child = WINDOWS
+              ? spawn(WINDOWS_ZIP.shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WINDOWS_ZIP.script, plan.parent, manifest, temporary], { stdio: ['ignore', 'ignore', 'pipe'] })
+              : spawn('zip', ['-y', '-q', temporary, '-@'], { cwd: plan.parent, stdio: ['pipe', 'ignore', 'pipe'] });
             current.cancel = () => child.kill('SIGTERM'); let stderr = '';
-            child.stderr.on('data', data => { stderr = (stderr + String(data)).slice(-4096); }); child.on('error', error => reject((error as NodeJS.ErrnoException).code === 'ENOENT' ? new FileError('未安装 zip，请安装后重试') : error));
-            child.on('exit', code => code === 0 ? resolve() : reject(new FileError(`压缩失败${stderr.trim() ? `：${stderr.trim()}` : ''}，请确认已安装 zip`)));
-            child.stdin.on('error', () => {});
-            // 显式传入已确认的条目，不使用 zip -r，防止重新递归把排除项加入归档。
-            child.stdin.end(plan.entries.map(entry => `./${path.relative(plan.parent, entry.path)}${entry.directory ? '/' : ''}`).join('\n') + '\n');
+            const tool = WINDOWS ? 'PowerShell' : 'zip';
+            child.stderr!.on('data', data => { stderr = (stderr + String(data)).slice(-4096); }); child.on('error', error => reject((error as NodeJS.ErrnoException).code === 'ENOENT' ? new FileError(`未找到 ${tool}，请安装后重试`) : error));
+            child.on('exit', code => code === 0 ? resolve() : reject(new FileError(`压缩失败${stderr.trim() ? `：${stderr.trim()}` : ''}${WINDOWS ? '' : '，请确认已安装 zip'}`)));
+            if (!WINDOWS) {
+              child.stdin!.on('error', () => {});
+              // 显式传入已确认的条目，不使用 zip -r，防止重新递归把排除项加入归档。
+              child.stdin!.end(names.map(name => `./${name}`).join('\n') + '\n');
+            }
             current.count = plan.entries.length; current.current = output;
           });
           if (current.cancelled) throw new FileError('压缩已取消');
-          await fsp.link(temporary, output); return { path: output };
-        } finally { current.cancel = undefined; await fsp.unlink(temporary).catch(() => {}); }
+          await publish(temporary, output); return { path: output };
+        } finally {
+          current.cancel = undefined; await fsp.unlink(temporary).catch(() => {});
+          if (manifest) await fsp.unlink(manifest).catch(() => {});
+        }
       }); plans.delete(id); json(res, 202, { jobId: job.id });
     }
     else throw new FileError('接口不存在', 404);

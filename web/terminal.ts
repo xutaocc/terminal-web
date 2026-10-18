@@ -628,8 +628,20 @@ const sidebar = new ProjectSidebar({
     if (s) activateSession(s);
   },
   activateDirectory: names => {
-    // Back to the session last used there, as Orca restores a worktree's tab.
     const inDir = sessions.filter(x => names.includes(x.name));
+    // The card's dot sums up its sessions, so a click goes where the dot points:
+    // a question first, then an unread result — moving on to the next one when
+    // already there, as the server pill does. With nothing waiting, back to the
+    // session last used there, as Orca restores a worktree's tab.
+    const wanting = [
+      ...inDir.filter(x => attentionOf(x) === 'waiting'),
+      ...inDir.filter(x => attentionOf(x) === 'unread'),
+    ];
+    if (wanting.length) {
+      const at = wanting.findIndex(x => x === activeTab);
+      activateSession(wanting[at >= 0 ? (at + 1) % wanting.length : 0]);
+      return;
+    }
     const s = inDir.find(x => x.name === lastUsedIn.get(x.cwd ?? '')) ?? inDir[0];
     if (s) activateSession(s);
   },

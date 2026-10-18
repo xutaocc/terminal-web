@@ -3,6 +3,7 @@ import './theme.css';
 import './hosts.css';
 import { applyDocumentTheme, isTheme } from './theme.js';
 import { brandMark } from './brand-mark.js';
+import { baseName, childPath, crumbs, isAbsolutePath, isRoot, isWithin as within, normalizePath, parentPath, rootOf, samePath, segments } from './file-path.js';
 
 // Runs in a same-origin embedded page; cookies and all APIs belong to the terminal server.
 const $ = selector => document.querySelector(selector);
@@ -38,9 +39,9 @@ const history = [];
 let previewItem = null, previewText = '', previewVersion = '', originalText = '', markdownView = false;
 let toastTimer;
 function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
-function parent(p) { const parts = p.split('/').filter(Boolean); parts.pop(); return '/' + parts.join('/'); }
-function childPath(p, name) { return `${p === '/' ? '' : p}/${name}`; }
-function isWithin(p, ancestor) { return p === ancestor || p.startsWith(ancestor === '/' ? '/' : ancestor + '/'); }
+// Path helpers live in file-path.js: the server may be Unix ("/a/b") or Windows ("C:\a\b").
+const parent = parentPath;
+const isWithin = within;
 function compactPaths(inputs) { return [...new Set(inputs)].filter(p => !inputs.some(other => other !== p && isWithin(p, other))); }
 function bytes(size) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`; return `${(size / 1073741824).toFixed(2)} GB`; }
 function date(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '不可用'; }
@@ -116,7 +117,7 @@ async function refresh() {
   const top = $('#tree').scrollTop, left = $('#tree').scrollLeft;
   const paths = [...expanded].filter(p => isWithin(p, current));
   try { await load(current, true); } catch (error) {
-    if (current !== '/') { cache.delete(current); const previous = parent(current); current = previous; active = null; await initialExpand(previous, true); active = cache.get(previous).directory; render(); toast('原目录已不可访问，已返回父目录'); return; }
+    if (!isRoot(current)) { cache.delete(current); const previous = parent(current); current = previous; active = null; await initialExpand(previous, true); active = cache.get(previous).directory; render(); toast('原目录已不可访问，已返回父目录'); return; }
     throw error;
   }
   for (let i = 0; i < paths.length; i += 4) await Promise.all(paths.slice(i, i + 4).map(p => load(p, true).catch(() => cache.delete(p))));
@@ -126,16 +127,16 @@ async function refresh() {
   render(); $('#tree').scrollTop = top; $('#tree').scrollLeft = left;
 }
 function navigation() {
-  const crumbs = $('#breadcrumbs'); crumbs.replaceChildren(); let p = '/';
-  ['/'].concat(current.split('/').filter(Boolean)).forEach((part, index) => {
-    if (index) p = childPath(p, part);
-    const target = p;
-    if (index > 1) crumbs.append(el('span', 'path-separator', '/'));
-    const node = button(part, () => navigate(target), `crumb quiet${target === current ? ' current' : ''}`);
-    node.setAttribute('aria-label', `进入 ${target}`); if (target === current) node.setAttribute('aria-current', 'location'); crumbs.append(node);
+  const crumbsBox = $('#breadcrumbs'); crumbsBox.replaceChildren();
+  // One button per segment — "C:\" › "Users" › … on Windows, "/" › "home" › … on Unix.
+  crumbs(current).forEach(({ label, path: target }, index) => {
+    if (index > 1) crumbsBox.append(el('span', 'path-separator', target.includes('\\') ? '\\' : '/'));
+    const here = samePath(target, current);
+    const node = button(label, () => navigate(target), `crumb quiet${here ? ' current' : ''}`);
+    node.setAttribute('aria-label', `进入 ${target}`); if (here) node.setAttribute('aria-current', 'location'); crumbsBox.append(node);
   });
-  $('#directory-back').disabled = !history.length; $('#up').disabled = current === '/';
-  $('#location-label').textContent = current === sessionPath ? '当前会话目录' : '当前浏览目录';
+  $('#directory-back').disabled = !history.length; $('#up').disabled = isRoot(current);
+  $('#location-label').textContent = samePath(current, sessionPath) ? '当前会话目录' : '当前浏览目录';
   $('#collapse').textContent = (cache.get(current)?.entries || []).some(item => item.directory && expanded.has(item.path)) ? '收起' : '展开';
 }
 let suppressClickUntil = 0;
@@ -289,13 +290,13 @@ function parseExclude(text) { return text.trim() === '无' || !text.trim() ? [] 
 function transfer(label, paths) {
   inputForm(`${label}到目录`, '手动填写服务器上的绝对目录路径', [['destination', '目标目录', current]], '下一步：确认操作', async inputs => {
     const destination = inputs.destination.value.trim();
-    if (!destination.startsWith('/')) throw new Error('请输入绝对目录路径');
-    const info = await request('stat', undefined, { path: destination }); if (!info.directory) throw new Error('目标路径不是目录');
+    if (!isAbsolutePath(destination)) throw new Error('请输入绝对目录路径');
+    const info = await request('stat', undefined, { path: normalizePath(destination) }); if (!info.directory) throw new Error('目标路径不是目录');
     if (paths.some(p => isWithin(info.path, p))) throw new Error('不能复制或移动到自身及子目录');
-    const listing = await request('list', undefined, { path: destination });
+    const listing = await request('list', undefined, { path: info.path });
     const nameSet = new Set();
-    for (const p of paths) { const name = p.split('/').pop(); if (nameSet.has(name) || listing.entries.some(item => item.name === name)) throw new Error(`目标存在同名条目：${name}`); nameSet.add(name); }
-    confirmation(`确认${label}`, [['来源', paths], ['目标目录', info.path], ['执行后的路径', paths.map(p => childPath(info.path, p.split('/').pop()))]], async () => startJob(label === '复制' ? 'copy' : 'move', { paths, destination: info.path }));
+    for (const p of paths) { const name = baseName(p); if (nameSet.has(name) || listing.entries.some(item => item.name === name)) throw new Error(`目标存在同名条目：${name}`); nameSet.add(name); }
+    confirmation(`确认${label}`, [['来源', paths], ['目标目录', info.path], ['执行后的路径', paths.map(p => childPath(info.path, baseName(p)))]], async () => startJob(label === '复制' ? 'copy' : 'move', { paths, destination: info.path }));
   });
 }
 function permissions(paths, item) {
@@ -331,7 +332,7 @@ async function compression(paths) {
       const error = errorBox();
       const next = button('下一步：确认压缩清单', async () => {
         name = input.value.trim();
-        if (!name.toLowerCase().endsWith('.zip') || name.includes('/') || !name) { error.textContent = '请输入有效的 .zip 文件名'; return; }
+        if (!name.toLowerCase().endsWith('.zip') || /[\\/]/.test(name) || !name) { error.textContent = '请输入有效的 .zip 文件名'; return; }
         if (!included.size) { error.textContent = '请至少保留一个条目'; return; }
         const excluded = compactPaths(initialPlan.included.filter(p => !included.has(p)));
         const showReview = plan => {
@@ -356,7 +357,7 @@ async function compression(paths) {
   });
 }
 
-let uploadDirectory = '/';
+let uploadDirectory = '';
 function uploadInto(p) { uploadDirectory = p; $('#upload').click(); }
 $('#upload').onchange = async event => {
   const files = [...event.target.files]; event.target.value = ''; if (!files.length) return;
@@ -392,7 +393,12 @@ const audioExtensions = /\.(mp3|ogg|wav)$/i;
 const htmlExtensions = /\.html?$/i;
 const markdownExtensions = /\.(md|markdown)$/i;
 // 后端 /site/<绝对路径> 把文件当静态网站提供，页面里的相对路径资源按所在目录解析。
-function siteUrl(p) { return `${hostBase}/site` + p.split('/').map(encodeURIComponent).join('/'); }
+// Windows 路径以 "/C:/Users/…" 的形式放进 URL：相对路径在浏览器里按 "/" 解析，服务端再还原。
+function siteUrl(p) {
+  const path = normalizePath(p), parts = segments(path);
+  const head = path.startsWith('/') ? '' : `/${rootOf(path).slice(0, 2)}`;
+  return `${hostBase}/site${head}/${parts.map(encodeURIComponent).join('/')}`;
+}
 // 指定窗口尺寸让桌面浏览器开独立窗口而非新标签；移动端浏览器会忽略尺寸并以新标签打开。
 // 只读查看源码：与预览相同的行号视图，但隐藏编辑入口。
 async function viewSource(item) { await preview(item); if (previewItem === item) $('#edit').hidden = true; }
@@ -473,10 +479,10 @@ $('#sheet').addEventListener('cancel', event => { if (taskInProgress) event.prev
 $('#preview').addEventListener('cancel', event => { event.preventDefault(); closePreview(); });
 window.addEventListener('beforeunload', event => { if (unsaved()) { event.preventDefault(); event.returnValue = ''; } });
 click($('#back'), () => { if (unsaved() && !window.confirm('当前文本未保存，是否放弃修改并返回终端？')) return; $('#preview-content').replaceChildren(); closeDialog($('#preview')); window.parent.postMessage({ type: 'files-close' }, location.origin); });
-click($('#directory-back'), back); click($('#up'), () => navigate(parent(current))); click($('#go-root'), () => navigate('/'));
+click($('#directory-back'), back); click($('#up'), () => navigate(parent(current))); click($('#go-root'), () => navigate(rootOf(current)));
 click($('#locate'), async () => { const result = await requestSessionPath(); await navigate(result); });
 click($('#copy-path'), () => copyText(current)); click($('#refresh'), refresh);
-$('#hidden').checked = false; $('#hidden').onchange = async () => { showHidden = $('#hidden').checked; for (const p of selected) if (!showHidden && p.split('/').some(part => part.startsWith('.'))) selected.delete(p); if (!showHidden && active?.name.startsWith('.')) active = cache.get(current).directory; render(); };
+$('#hidden').checked = false; $('#hidden').onchange = async () => { showHidden = $('#hidden').checked; for (const p of selected) if (!showHidden && segments(p).some(part => part.startsWith('.'))) selected.delete(p); if (!showHidden && active?.name.startsWith('.')) active = cache.get(current).directory; render(); };
 click($('#select'), () => { selecting = !selecting; if (!selecting) selected.clear(); render(); });
 click($('#collapse'), async () => {
   const children = (cache.get(current)?.entries || []).filter(item => item.directory);

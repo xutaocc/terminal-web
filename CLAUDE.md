@@ -54,6 +54,9 @@ psmux behaviours the code works around (each has a comment at its site):
 - The pty uses node-pty's bundled OpenConsole (`useConptyDll`): the inbox conhost mis-renders wide (CJK) characters. OpenConsole's opening DA1 query is answered by the server, and `destroy()` is never called on Windows (closing the pseudoconsole twice crashes the server).
 - One server per session: no `set-environment … ;` chain before `new-session`. `set-option` on a not-yet-ready session exits 0 with a "no active session" warning. `display-message` does not accept `-F`. `#{window_activity}` never advances (the screen poller compares screen contents instead).
 - Pane ids restart at `%1` in every session, so never target a bare pane id — use `=<session>:`. Hooks send `PSMUX_SESSION`; a report without a verified session name is dropped.
-- Paths are `C:\...`: use `path.isAbsolute` server-side and `isAbsolutePath()` (`web/hosts.ts`) client-side, never `startsWith('/')`.
+- Paths are `C:\...`: use `path.isAbsolute` server-side and `isAbsolutePath()` (`web/hosts.ts`) client-side, never `startsWith('/')`. The file browser's path logic (breadcrumbs, parent, containment) lives in `web/file-path.js`, which reads the style from the path itself because a remote host may be the other OS; server-side containment is `within()` in `file-api.ts` (`path.relative`, so case-insensitive on Windows).
+- File manager on Windows: zips are built by `scripts/zip-manifest.ps1` under pwsh (only its .NET flags UTF-8 names); chmod is refused (501); `/site/` URLs carry Windows paths as `/site/C:/…` (`sitePath()`).
 
-Not yet ported to Windows: the file manager (`file-api.ts` uses `/etc/passwd`, `zip`, chmod, `/` separators) and the bash service/deploy scripts. `tests/terminal-env.test.ts` shells out to a real `tmux` and fails where none is installed.
+Tests for the Windows paths: `node --import tsx --test tests/file-path.test.ts`, `node tests/file-api.windows.integration.mjs`, and `node tests/file-browser.windows.ui.mjs` (real Chrome + psmux from `.psmux/`).
+
+Not yet ported to Windows: the bash service/deploy scripts. `tests/terminal-env.test.ts` shells out to a real `tmux` and fails where none is installed; `tests/file-api.integration.mjs` and `tests/file-browser.ui.mjs` are Unix-only (they use `unzip`, chmod and symlinks).
