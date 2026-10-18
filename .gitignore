@@ -9,3 +9,9 @@ public/dist/
 
 # Local environment overrides
 .env
+
+# Claude Code local data (worktrees, session state)
+.claude/
+
+# psmux binaries for Windows runs (not part of the repo; see CLAUDE.md)
+.psmux/
