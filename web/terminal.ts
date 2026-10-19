@@ -674,6 +674,12 @@ const sidebar = new ProjectSidebar({
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
   pinSession: (name, pinned) => pinSession(name, pinned),
+  // Same order as the tab strip: one list, so the sidebar and the strip agree.
+  reorderSession: (name, target, after) => {
+    const from = sessions.find(x => x.name === name);
+    const to = sessions.find(x => x.name === target);
+    if (from && to) applyTabOrder(moveTab(sessions, from, to, after));
+  },
   attend: host => attendHost(host),
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
@@ -2746,6 +2752,9 @@ function applyTabOrder(ordered: Session[]): void {
   sessions.splice(0, sessions.length, ...ordered);
   orderTabStrip();
   saveTabs();
+  // The order the user arranged, kept on the server too (per device class), so
+  // it survives another browser or a cleared cache, not only this one.
+  savePrefs({ tabOrder: sessions.map(s => s.name) });
   refreshMobileUI();
 }
 
@@ -3897,6 +3906,8 @@ interface UiPrefs {
   activeTab?: string;
   /** The recently picked sessions, newest first (web/recent-tabs.ts). */
   recentTabs?: string[];
+  /** The order the user dragged tabs and sidebar sessions into. */
+  tabOrder?: string[];
   fontSize?: number;
   fontSizeMobile?: number;
   fontSizeDesktop?: number;
@@ -6408,7 +6419,12 @@ async function init(): Promise<void> {
   if (urlSession && !initialTabs.some((t) => t.name === urlSession)) {
     initialTabs = [{ name: urlSession, displayName: urlSession }, ...initialTabs];
   }
-  if (!TOUCH_DEVICE) initialTabs = restoreTabOrder(initialTabs, cached.tabs.map(tab => tab.name));
+  // This browser's order, else the one saved for this kind of device (which is
+  // what is left after another browser or a cleared cache).
+  const prefsForOrder = await prefsPromise;
+  const savedOrder = cached.tabs.length ? cached.tabs.map(tab => tab.name)
+    : Array.isArray(prefsForOrder?.tabOrder) ? prefsForOrder.tabOrder.filter((n): n is string => typeof n === 'string') : [];
+  initialTabs = restoreTabOrder(initialTabs, savedOrder);
   defaultSessionName = urlSession ?? initialTabs.find(t => !hostOfKey(t.name))?.name ?? 'web';
 
   // The stored prefs land before any tab is built, so a pane is created at the

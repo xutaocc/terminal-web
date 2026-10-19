@@ -43,6 +43,8 @@ export interface SidebarHooks {
   orderCards(folderId: string, cwds: string[]): void;
   /** Pin a session to the top of its directory card, or unpin it. */
   pinSession(name: string, pinned: boolean): void;
+  /** A chip was dragged onto another in the same card: put `name` before or after `target`. */
+  reorderSession(name: string, target: string, after: boolean): void;
   /** A host's attention pill was clicked: show the session that wants you most. */
   attend(host: string): void;
   openSettings(): void;
@@ -123,7 +125,11 @@ export class ProjectSidebar {
    * name (if it has one) and, for a whole card, its directory — which is what
    * lets it be dropped between other cards to reorder them.
    */
-  private dragging: { names: string[]; from: string; card?: { cwd: string; name: string }; cardCwd?: string } | null = null;
+  private dragging: {
+    names: string[]; from: string; card?: { cwd: string; name: string }; cardCwd?: string;
+    /** A single chip: the card (folder + directory) it was in, for reordering inside it. */
+    chipIn?: string;
+  } | null = null;
   private menu: HTMLElement | null = null;
 
   constructor(private readonly hooks: SidebarHooks) {
@@ -459,7 +465,7 @@ export class ProjectSidebar {
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
         chip.classList.toggle('pinned', !!session.pinned);
-        chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}（右键置顶或移动，可拖到文件夹）`;
+        chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
         chipDot.dataset.sessions = session.name;
@@ -477,7 +483,9 @@ export class ProjectSidebar {
           e.stopPropagation();
           this.hooks.activate(session.name);
         });
-        this.bindDrag(chip, [session.name], group.key);
+        const chipIn = `${group.key}\n${dir.cwd}`;
+        this.bindDrag(chip, [session.name], group.key, undefined, undefined, chipIn);
+        this.bindChipReorder(chip, session.name, chipIn);
         chip.addEventListener('contextmenu', e => {
           e.preventDefault();
           e.stopPropagation();
@@ -507,11 +515,12 @@ export class ProjectSidebar {
   // -------------------------------------------------------------------------
   // Moving sessions: drag a chip or a whole card onto a folder, or right-click.
   // -------------------------------------------------------------------------
-  private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }, cardCwd?: string): void {
+  private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }, cardCwd?: string,
+                   chipIn?: string): void {
     el.draggable = true;
     el.addEventListener('dragstart', e => {
       e.stopPropagation();
-      this.dragging = { names, from, card, cardCwd };
+      this.dragging = { names, from, card, cardCwd, chipIn };
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('application/x-terminal-sessions', names.join(' '));
@@ -525,6 +534,42 @@ export class ProjectSidebar {
       for (const t of this.list.querySelectorAll('.ps-drop-before, .ps-drop-after')) {
         t.classList.remove('ps-drop-before', 'ps-drop-after');
       }
+    });
+  }
+
+  /**
+   * A chip dropped onto another chip of the same card goes before or after it,
+   * by which half of it the pointer is over; a line on that side shows where.
+   * Dropped anywhere else it is a move to a folder, as before.
+   */
+  private bindChipReorder(chip: HTMLElement, name: string, chipIn: string): void {
+    const side = (e: DragEvent): boolean => {
+      const r = chip.getBoundingClientRect();
+      return e.clientX >= r.left + r.width / 2;
+    };
+    const mine = (): boolean => {
+      const d = this.dragging;
+      return !!d && d.chipIn === chipIn && d.names.length === 1 && d.names[0] !== name;
+    };
+    chip.addEventListener('dragover', e => {
+      if (!mine()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const after = side(e);
+      chip.classList.toggle('ps-drop-after', after);
+      chip.classList.toggle('ps-drop-before', !after);
+    });
+    chip.addEventListener('dragleave', e => {
+      if (!chip.contains(e.relatedTarget as Node)) chip.classList.remove('ps-drop-before', 'ps-drop-after');
+    });
+    chip.addEventListener('drop', e => {
+      const drag = this.dragging;
+      if (!mine() || !drag) return;
+      e.preventDefault();
+      e.stopPropagation();
+      chip.classList.remove('ps-drop-before', 'ps-drop-after');
+      this.hooks.reorderSession(drag.names[0], name, side(e));
     });
   }
 
