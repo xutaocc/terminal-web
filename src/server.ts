@@ -1946,23 +1946,37 @@ function attachSession(
     const input = inputQueue.shift();
     if (input === undefined) return;
     if (!isKeyboardInput(input)) {
-      // psmux enters copy-mode on any wheel and keeps every later wheel there,
-      // even over a program that reads the mouse itself (Claude Code, vim):
-      // tmux has a binding for that (web.tmux.conf), psmux has no bindings.
-      // Such a program, with nothing in tmux's history, was left unscrollable
-      // behind an empty "[copy mode]". So when the program asks for the mouse,
-      // leave copy-mode first and let the wheel go to it; a plain shell still
-      // scrolls tmux's history as before.
+      // psmux takes a wheel from its client for copy-mode even over a program
+      // that reads the mouse itself (Claude Code, vim) — tmux has a binding
+      // for that (web.tmux.conf), psmux has no bindings — and keeps every
+      // later wheel there. Such a program, with nothing in tmux's history, sat
+      // unscrollable behind an empty "[copy mode]". So when the program asks
+      // for the mouse, leave copy-mode and hand the wheel straight to the
+      // program with send-keys; a plain shell still scrolls tmux's history.
       if (IS_PSMUX && hasWheelInput(input)) {
         preparingInput = true;
         const target = `=${session}:`;
-        execFile(TMUX, ['if-shell', '-F', '-t', target,
-          '#{&&:#{mouse_any_flag},#{==:#{pane_mode},copy-mode}}', `send-keys -t ${target} -X cancel`],
-        { timeout: 3000 }, () => {
+        const done = (): void => {
           preparingInput = false;
           if (closed) { inputQueue.length = 0; return; }
-          proc.write(input);
           drainInput();
+        };
+        execFile(TMUX, ['display-message', '-p', '-t', target, '#{mouse_any_flag} #{pane_mode}'],
+        { timeout: 3000 }, (error, stdout) => {
+          const [mouse, mode] = String(stdout).trim().split(' ');
+          if (closed || error || mouse !== '1') {
+            if (!closed) proc.write(input);
+            done();
+            return;
+          }
+          const send = (): void => {
+            execFile(TMUX, ['send-keys', '-t', target, '-l', input], { timeout: 3000 }, done);
+          };
+          if (mode === 'copy-mode') {
+            execFile(TMUX, ['send-keys', '-t', target, '-X', 'cancel'], { timeout: 3000 }, send);
+          } else {
+            send();
+          }
         });
         return;
       }
