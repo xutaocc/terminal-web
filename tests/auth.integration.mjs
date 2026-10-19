@@ -64,9 +64,7 @@ try {
   }
   assert.equal((await fetch(base + '/api/sessions', { headers: { 'cf-ray': 'test' } })).status, 401);
   assert.equal((await fetch(base, { headers: { Cookie: 'tw_auth=%INVALID' } })).status, 401);
-  assert.equal((await fetch(base + '/?token=wrong')).status, 401);
   assert.equal((await fetch(base)).headers.get('referrer-policy'), 'same-origin');
-  assert.equal((await fetch(base + '/?token=wrong')).headers.get('referrer-policy'), 'same-origin');
   const wrongLogin = await fetch(base + '/auth/login', {
     method: 'POST', headers: { Origin: base }, body: 'token=wrong',
   });
@@ -84,9 +82,22 @@ try {
   assert(first.headers.get('set-cookie').includes('HttpOnly'));
   const a = cookie(first), b = cookie(await login());
   assert.notEqual(a, b);
+  // A token in the address never signs in: it is dropped from the address and
+  // the page asks for it again.
   const link = await fetch(base + '/?token=' + token + '&session=example', { redirect: 'manual' });
+  assert.equal(link.status, 302);
   assert.equal(link.headers.get('location'), '/?session=example');
+  assert.equal(link.headers.get('set-cookie'), null);
   assert.equal(link.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal((await fetch(base + '/?token=' + token)).status, 401); // followed: the login page
+  // A token is handed out only by POST, to a signed-in page.
+  assert.equal((await fetch(base + '/api/access', { method: 'POST', headers: { Origin: base }, body: '{}' })).status, 401);
+  const access = await fetch(base + '/api/access', { method: 'POST', headers: { Cookie: a, Origin: base }, body: '{}' });
+  assert.equal((await access.json()).token, token);
+  const viaGet = await fetch(base + '/api/access', { headers: { Cookie: a } });
+  assert.notEqual(viaGet.status, 200); // GET hands out nothing
+  assert(!(await viaGet.text()).includes(token));
+  assert.equal((await (await fetch(base + '/api/remotes', { headers: { Cookie: a } })).json()).self.token, undefined);
   assert.equal((await fetch(base + '/api/sessions', { headers: { Cookie: a } })).status, 200);
   assert.equal((await fetch(base + '/api/prefs', { method: 'POST', headers: { Cookie: a, Origin: 'http://evil.example' }, body: '{}' })).status, 403);
   await deniedWs('', base, 401);
@@ -100,12 +111,30 @@ try {
   assert.equal((await closedA2)[0], 4001);
   assert.equal(wb.readyState, WebSocket.OPEN);
   assert.equal((await fetch(base + '/api/sessions', { headers: { Cookie: b } })).status, 200);
+  // Six wrong tokens lock the address out, with the count shown on the way.
+  const bad = () => fetch(base + '/auth/login', {
+    method: 'POST', headers: { Origin: base, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: 'nope' }),
+  });
+  // The right token cleared the count; one wrong try (wrongLogin) came before
+  // that, and the Origin: null one is refused before counting. Start from 1.
+  for (let i = 1; i <= 5; i++) {
+    const r = await bad();
+    assert.equal(r.status, 401);
+    assert.match(await r.text(), new RegExp(`第 ${i} 次.*还可尝试 ${6 - i} 次`));
+  }
+  const lockedOut = await bad();
+  assert.equal(lockedOut.status, 429);
+  assert.match(await lockedOut.text(), /锁定 1 分钟/);
+  const stillLocked = await login(); // even the right token waits out the lock
+  assert.equal(stillLocked.status, 429);
   for (const ws of sockets) ws.terminate();
   await stop();
   await start();
   assert.equal(readFileSync(file, 'utf8').trim(), token);
   assert.equal((await fetch(base + '/api/sessions', { headers: { Cookie: b } })).status, 200);
-  console.log('PASS: mandatory auth, login, malformed cookie, origin checks, multi-device logout, persistent token and restart');
+  assert.equal((await login()).status, 302); // a restart forgets the lockout
+  console.log('PASS: mandatory auth, POST-only login, no ?token= sign-in, token by POST only, lockout after 6 tries, malformed cookie, origin checks, multi-device logout, persistent token and restart');
 } finally {
   for (const ws of sockets) ws.terminate();
   await stop();

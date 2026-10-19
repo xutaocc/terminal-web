@@ -50,7 +50,8 @@ try {
     ws.on('message', raw => { const m = JSON.parse(raw); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } if (m.method === 'Network.requestWillBeSent' && m.params.type === 'EventSource') streams.add(new URL(m.params.request.url).pathname); });
     const send = (method, params = {}) => new Promise(r => { const n = ++id; pending.set(n, r); ws.send(JSON.stringify({ id: n, method, params })); });
     await send('Network.enable'); await send('Runtime.enable');
-    await send('Page.navigate', { url: `${A.base}/?token=${A.token}` });
+    await send('Network.setCookie', { name: 'tw_auth', value: A.token, url: A.base, path: '/', httpOnly: true, sameSite: 'Lax' });
+    await send('Page.navigate', { url: `${A.base}/` });
     let loaded = false;
     for (let k = 0; k < 60 && !loaded; k++) {
       const r = await send('Runtime.evaluate', { expression: `document.querySelectorAll('.ps-host').length >= 6 || document.querySelectorAll('.ps-host-head, .ps-host').length >= 6`, returnByValue: true });

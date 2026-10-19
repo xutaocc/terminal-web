@@ -507,8 +507,8 @@ On first start, the server generates a random 32-byte token and saves it to
 An empty or unreadable token file causes startup to fail. `AUTH_TOKEN_FILE`
 overrides the path; a nonempty `AUTH_TOKEN` overrides the generated token.
 
-Every startup prints the current Token and token-bearing links for all non-loopback
-IPv4 interfaces. Links for addresses outside the configured listening host are
+Every startup prints the current Token and the plain address of every non-loopback
+IPv4 interface (no token in them). Links for addresses outside the configured listening host are
 marked as not listening; set `HOST=0.0.0.0` to listen on all IPv4 interfaces.
 With systemd, this output is available through `journalctl --user -u terminal-web`.
 
@@ -518,8 +518,13 @@ Read the generated token locally:
 cat ~/.config/terminal-web/auth-token
 ```
 
-Enter it in the login page (submitted by POST), or open `/?token=YOUR_TOKEN`
-once. The latter redirects to a clean URL. Credentials use HttpOnly,
+Enter it in the login page, which submits it by POST. A token in the address
+(`/?token=…`) is not accepted — it would be kept in browser history and in proxy
+and router logs; it is stripped from the address and the login page is shown.
+The login page lets the browser's password manager save the token. Six wrong
+tokens from one address lock it out for a minute (doubling each time, up to an
+hour), with the attempt count shown. The settings panel copies a host's address
+and token on request (fetched by POST at that moment). Credentials use HttpOnly,
 SameSite=Lax cookies, with Secure enabled behind HTTPS. Browser retention is
 400 days; the server does not expire logins. Clearing browser data requires
 signing in again. Multiple devices can use the same token simultaneously.

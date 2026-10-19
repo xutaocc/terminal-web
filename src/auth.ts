@@ -92,14 +92,47 @@ function safeNext(value: string | null | undefined): string {
   return value && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : "/";
 }
 
-function loginPage(error: string, next = "/"): string {
+// ---------------------------------------------------------------------------
+// Sign-in throttling. Six wrong tokens from one address lock it out for a
+// minute, and each further lockout doubles, up to an hour. A right token clears
+// it. Counted per client address — behind a proxy that is the proxy, which is
+// still better than no limit at all.
+// ---------------------------------------------------------------------------
+const MAX_FAILURES = 6;
+const LOCK_BASE_MS = 60_000;
+const LOCK_MAX_MS = 60 * 60_000;
+interface Attempts { failures: number; lockouts: number; lockedUntil: number; seen: number }
+const attempts = new Map<string, Attempts>();
+
+function clientKey(req: http.IncomingMessage): string {
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function attemptsFor(key: string, now: number): Attempts {
+  // Forget addresses that have been quiet for a day, so the map cannot grow for ever.
+  if (attempts.size > 1000) for (const [k, a] of attempts) if (now - a.seen > 86_400_000) attempts.delete(k);
+  let a = attempts.get(key);
+  if (!a) attempts.set(key, a = { failures: 0, lockouts: 0, lockedUntil: 0, seen: now });
+  a.seen = now;
+  return a;
+}
+
+function waitText(ms: number): string {
+  const s = Math.ceil(ms / 1000);
+  return s >= 60 ? `${Math.ceil(s / 60)} 分钟` : `${s} 秒`;
+}
+
+const escapeAttr = (v: string): string => v.replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`);
+
+function loginPage(error: string, next = "/", locked = false): string {
   const err = error
-    ? `<p class="err">${error.replace(/[<>&]/g, "")}</p>`
+    ? `<p class="err" role="alert">${error.replace(/[<>&]/g, "")}</p>`
     : "";
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
+<meta name="referrer" content="no-referrer" />
 <title>Web Terminal — sign in</title>
 <style>
   :root { color-scheme: dark; }
@@ -109,21 +142,29 @@ function loginPage(error: string, next = "/"): string {
   form { width:min(92vw,340px); background:#252526; border:1px solid #3a3a3a; border-radius:12px;
     padding:22px; box-shadow:0 8px 30px rgba(0,0,0,.5); }
   h1 { font-size:15px; margin:0 0 14px; color:#fff; }
+  .user { position:absolute; left:-9999px; width:1px; height:1px; opacity:0; }
   input { width:100%; box-sizing:border-box; background:#1e1e1e; color:#d4d4d4;
     border:1px solid #3a3a3a; border-radius:8px; padding:12px; font:inherit; font-size:15px; }
   button { width:100%; margin-top:12px; padding:12px; background:#2472c8; color:#fff;
     border:1px solid #3b8eea; border-radius:8px; font:inherit; font-size:15px; cursor:pointer; }
   button:active { background:#2069b8; }
-  .err { color:#f14c4c; font-size:13px; margin:10px 0 0; }
+  button:disabled { background:#3a3a3a; border-color:#4a4a4c; color:#999; cursor:not-allowed; }
+  .err { color:#f14c4c; font-size:13px; margin:10px 0 0; line-height:1.5; }
+  .hint { color:#8a8f98; font-size:11.5px; margin:10px 0 0; line-height:1.5; }
 </style></head>
 <body><div class="wrap">
-  <form id="f" method="post" action="/auth/login" autocomplete="off">
+  <form id="f" method="post" action="/auth/login">
     <h1>Web Terminal</h1>
-    <input id="t" type="password" name="token" placeholder="请输入访问 Token" autofocus
-      autocapitalize="off" autocomplete="current-password" spellcheck="false" />
-    <input type="hidden" name="next" value="${next.replace(/[&"<>]/g, c => `&#${c.charCodeAt(0)};`)}" />
-    <button type="submit">登录</button>
+    <!-- A fixed user name, so the browser's password manager offers to save the
+         token and fills it in next time; the field itself stays out of sight. -->
+    <input class="user" type="text" name="username" value="webterminal" autocomplete="username"
+      tabindex="-1" aria-hidden="true" readonly />
+    <input id="t" type="password" name="token" placeholder="请输入访问 Token" autofocus required
+      autocapitalize="off" autocomplete="current-password" spellcheck="false" ${locked ? "disabled" : ""} />
+    <input type="hidden" name="next" value="${escapeAttr(next)}" />
+    <button type="submit" ${locked ? "disabled" : ""}>登录</button>
     ${err}
+    <p class="hint">登录后浏览器会提示保存 Token，下次自动填充。连续输错 ${MAX_FAILURES} 次将暂时锁定。</p>
   </form>
 </div>
 
@@ -131,9 +172,13 @@ function loginPage(error: string, next = "/"): string {
 }
 
 /**
- * Gate an HTTP request when auth is enabled. Returns true when it fully handled
- * the response (redirect after login, or served the login page) and the caller
- * should stop; false when the request is authed and should proceed normally.
+ * Gate an HTTP request. Returns true when it fully handled the response (the
+ * login page, or the redirect after signing in) and the caller should stop;
+ * false when the request is signed in and should proceed normally.
+ *
+ * The token is accepted only in the body of POST /auth/login. A ?token= in the
+ * address is never honoured — an address ends up in history, synced history,
+ * proxy and router logs — and is taken out of the address before anything else.
  */
 export async function gateHttp(
   req: http.IncomingMessage,
@@ -145,9 +190,19 @@ export async function gateHttp(
   // no-referrer makes browser form POSTs send Origin: null. Keep same-origin
   // forms verifiable while withholding referrers from other sites.
   res.setHeader("Referrer-Policy", "same-origin");
-  let supplied = req.method === "GET" ? url.searchParams.get("token") : null;
-  let next: string | null = null;
+  // An old-style link: drop the token from the address (so it is not kept in
+  // history as the current page) and go on as if it was never there.
+  if (req.method === "GET" && url.searchParams.has("token")) {
+    url.searchParams.delete("token");
+    const qs = url.searchParams.toString();
+    res.writeHead(302, { "Referrer-Policy": "no-referrer", Location: safeNext(url.pathname + (qs ? `?${qs}` : "")) });
+    res.end();
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/auth/login") {
+    const now = Date.now();
+    const a = attemptsFor(clientKey(req), now);
     let body = "";
     for await (const chunk of req) {
       body += chunk.toString();
@@ -157,24 +212,37 @@ export async function gateHttp(
       }
     }
     const form = new URLSearchParams(body);
-    supplied = form.get("token") ?? ""; next = safeNext(form.get("next"));
-  }
-  if (supplied !== null) {
-    if (token && safeEqual(supplied, token)) {
-      // Never forward a token-bearing URL as a referrer after login.
+    const supplied = form.get("token") ?? "";
+    const next = safeNext(form.get("next"));
+    if (a.lockedUntil > now) {
+      res.writeHead(429, { "Content-Type": "text/html; charset=utf-8", "Retry-After": String(Math.ceil((a.lockedUntil - now) / 1000)) });
+      res.end(loginPage(`尝试次数过多，已锁定，请 ${waitText(a.lockedUntil - now)}后再试。`, next, true));
+      return true;
+    }
+    if (token && safeEqual(supplied.trim(), token)) {
+      attempts.delete(clientKey(req));
       res.setHeader("Referrer-Policy", "no-referrer");
-      url.searchParams.delete("token");
-      const qs = url.searchParams.toString();
       res.writeHead(302, {
         "Set-Cookie": [authCookie(token, reqIsHttps(req)),
           `tw_browser=${browserId(req) || randomBytes(16).toString("hex")}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000${reqIsHttps(req) ? "; Secure" : ""}`],
-        Location: next ?? (url.pathname === "/auth/login" ? "/" : safeNext(url.pathname + (qs ? `?${qs}` : ""))),
+        Location: next,
       });
       res.end();
       return true;
     }
+    a.failures += 1;
+    if (a.failures >= MAX_FAILURES) {
+      const lock = Math.min(LOCK_MAX_MS, LOCK_BASE_MS * 2 ** a.lockouts);
+      a.lockouts += 1;
+      a.failures = 0;
+      a.lockedUntil = now + lock;
+      console.warn(`[auth] ${clientKey(req)} locked out for ${Math.round(lock / 1000)}s after ${MAX_FAILURES} wrong tokens`);
+      res.writeHead(429, { "Content-Type": "text/html; charset=utf-8", "Retry-After": String(Math.ceil(lock / 1000)) });
+      res.end(loginPage(`Token 不正确，已连续错误 ${MAX_FAILURES} 次，锁定 ${waitText(lock)}。`, next, true));
+      return true;
+    }
     res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(loginPage("Token 不正确。", next ?? "/"));
+    res.end(loginPage(`Token 不正确（第 ${a.failures} 次），还可尝试 ${MAX_FAILURES - a.failures} 次。`, next));
     return true;
   }
 
@@ -182,7 +250,10 @@ export async function gateHttp(
 
   res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
   // Remember the requested page (e.g. a /site/ HTML link) so signing in returns there.
-  res.end(loginPage("", req.method === "GET" ? safeNext(url.pathname + url.search) : "/"));
+  const a = attempts.get(clientKey(req));
+  const locked = !!a && a.lockedUntil > Date.now();
+  res.end(loginPage(locked ? `尝试次数过多，已锁定，请 ${waitText(a!.lockedUntil - Date.now())}后再试。` : "",
+    req.method === "GET" ? safeNext(url.pathname + url.search) : "/", locked));
   return true;
 }
 

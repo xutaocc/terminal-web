@@ -4142,17 +4142,15 @@ async function loadRemotes(): Promise<void> {
   }
 }
 
-let selfToken = '';
 let selfIps: string[] = [];
 let selfPort = 0;
 function takeRemotes(data: {
   remotes?: unknown; health?: unknown;
-  self?: { name?: unknown; token?: unknown; ip?: unknown; ips?: unknown; port?: unknown };
+  self?: { name?: unknown; ip?: unknown; ips?: unknown; port?: unknown };
 }): void {
   if (!Array.isArray(data.remotes)) return;
   if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
-  if (typeof data.self?.token === 'string') selfToken = data.self.token;
   if (typeof data.self?.ip === 'string' && data.self.ip !== selfIp) { selfIp = data.self.ip; ipTails = shortIps(); }
   if (Array.isArray(data.self?.ips)) selfIps = data.self.ips.filter((ip): ip is string => typeof ip === 'string');
   if (typeof data.self?.port === 'number') selfPort = data.self.port;
@@ -5517,16 +5515,14 @@ const accessBox = document.createElement('div');
 accessBox.className = 'access-link';
 /** host -> the address its link was last set to use. */
 const accessIps = new Map<string, string>();
-/** host -> its token, fetched the first time its link is shown. */
-const remoteTokens = new Map<string, string>();
 
 /**
- * The link follows the session the settings are for: this server's own, or
+ * The address follows the session the settings are for: this server's own, or
  * the remote's — its own addresses (as it reports them) plus the one it was
- * added under, its port and its token.
+ * added under, and its port. No token: that is fetched when it is copied.
  */
-function accessTarget(host: string): { ips: string[]; port: number; token: string } {
-  if (!host) return { ips: selfIps.length ? selfIps : selfIp ? [selfIp] : [], port: selfPort, token: selfToken };
+function accessTarget(host: string): { ips: string[]; port: number } {
+  if (!host) return { ips: selfIps.length ? selfIps : selfIp ? [selfIp] : [], port: selfPort };
   const reported = remoteAddrs.get(host);
   let added = '', addedPort = 0;
   try {
@@ -5535,28 +5531,70 @@ function accessTarget(host: string): { ips: string[]; port: number; token: strin
     addedPort = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
   } catch { /* none */ }
   const ips = [...new Set([...(reported?.ips ?? []), added].filter(Boolean))];
-  return { ips, port: reported?.port || addedPort, token: remoteTokens.get(host) ?? '' };
+  return { ips, port: reported?.port || addedPort };
 }
 
-function accessUrl(ip: string, port: number, token: string, encode = true): string {
-  return `http://${ip}${port && port !== 80 ? `:${port}` : ''}/?token=${encode ? encodeURIComponent(token) : token}`;
+function accessUrl(ip: string, port: number): string {
+  return `http://${ip}${port && port !== 80 ? `:${port}` : ''}`;
 }
 
-async function loadRemoteToken(host: string): Promise<void> {
-  try {
-    const res = await fetch(`/api/remotes/access?id=${encodeURIComponent(host)}`, { cache: 'no-store' });
-    if (!res.ok) return;
-    const data = await res.json() as { token?: unknown };
-    if (typeof data.token !== 'string') return;
-    remoteTokens.set(host, data.token);
-    if (settingsHost() === host) renderAccessLink();
-  } catch { /* shown as still loading; the next open retries */ }
+/**
+ * A host's token, asked for with a POST at the moment it is copied and never
+ * kept: not in a URL, not in a GET a router could log, not in the page.
+ */
+async function fetchToken(host: string): Promise<string> {
+  const res = await fetch('/api/access', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(host ? { id: host } : {}),
+  });
+  const data = await res.json() as { token?: unknown; error?: unknown };
+  if (!res.ok || typeof data.token !== 'string') throw new Error(typeof data.error === 'string' ? data.error : '读取 Token 失败');
+  return data.token;
+}
+
+/**
+ * Copy text that is still on its way. Over HTTPS the clipboard write starts
+ * inside the click with the text arriving as a promise (WebKit refuses one
+ * started after an await). Over plain HTTP the only way is the old
+ * execCommand copy, which works inside the click alone — so the text is
+ * fetched, and the button asks for a second click that copies it at once.
+ * Returns 'copied', 'again' (click once more), or 'failed'.
+ */
+async function copyLater(text: () => Promise<string>, button: HTMLButtonElement): Promise<'copied' | 'again' | 'failed'> {
+  if (window.isSecureContext && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      const blob = text().then(t => new Blob([t], { type: 'text/plain' }));
+      void blob.catch(() => { /* reported by write */ });
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      return 'copied';
+    } catch { /* fall back below */ }
+  }
+  let value: string;
+  try { value = await text(); } catch { return 'failed'; }
+  const label = button.textContent ?? '';
+  button.textContent = '已读取，点击复制';
+  button.classList.add('armed');
+  return new Promise(resolve => {
+    const done = (result: 'copied' | 'again' | 'failed'): void => {
+      clearTimeout(timer);
+      button.removeEventListener('click', copyNow, true);
+      button.textContent = label;
+      button.classList.remove('armed');
+      value = ''; // not kept in the page
+      resolve(result);
+    };
+    const copyNow = (e: Event): void => {
+      e.stopImmediatePropagation();
+      void copyText(value).then(ok => done(ok ? 'copied' : 'failed'));
+    };
+    // Unclicked for 15 s: forget it, and the next click starts over.
+    const timer = window.setTimeout(() => done('again'), 15_000);
+    button.addEventListener('click', copyNow, true);
+  });
 }
 
 function renderAccessLink(): void {
   const host = settingsHost();
-  const { ips, port, token } = accessTarget(host);
-  if (host && !remoteTokens.has(host)) void loadRemoteToken(host);
+  const { ips, port } = accessTarget(host);
   if (host && !remoteAddrs.has(host)) void loadHostInfo(host);
   let ip = accessIps.get(host) ?? '';
   if (!ips.includes(ip)) ip = ips[0] ?? '';
@@ -5565,22 +5603,22 @@ function renderAccessLink(): void {
   const head = document.createElement('div');
   head.className = 'access-head';
   const title = document.createElement('span');
-  title.textContent = host ? `远程访问链接 · ${remoteHosts.find(r => r.id === host)?.name ?? host}` : '本机访问链接';
+  title.textContent = host ? `远程访问地址 · ${remoteHosts.find(r => r.id === host)?.name ?? host}` : '本机访问地址';
   head.append(hostBadge(host), title);
   accessBox.append(head);
-  if (!ip || !token) {
+  if (!ip) {
     const none = document.createElement('div');
     none.className = 'sheet-hint';
     none.textContent = host && offlineHosts.has(host) ? '远程主机暂时无法连接，恢复后可复制。' : '读取地址中…';
     accessBox.append(none);
     return;
   }
-  // Several addresses: pick which one the link uses (overlay network first).
+  // Several addresses: pick which one is copied (overlay network first).
   if (ips.length > 1) {
     const pick = document.createElement('div');
     pick.className = 'access-ips';
     pick.setAttribute('role', 'radiogroup');
-    pick.setAttribute('aria-label', '链接使用的地址');
+    pick.setAttribute('aria-label', '使用的地址');
     for (const option of ips) {
       const kind = option.startsWith('10.144.') ? '组网' : option.startsWith('192.168.') ? '局域网' : '其他';
       const b = document.createElement('button');
@@ -5601,27 +5639,34 @@ function renderAccessLink(): void {
     }
     accessBox.append(pick);
   }
+  const url = accessUrl(ip, port);
   const shown = document.createElement('code');
   shown.className = 'access-url';
-  shown.textContent = accessUrl(ip, port, `${token.slice(0, 4)}••••${token.slice(-4)}`, false);
-  shown.title = '链接中含访问 Token（已遮挡显示），复制得到完整链接';
+  shown.textContent = `访问地址：${url}\n登录页token：••••••••`;
+  shown.title = 'Token 不显示在页面上，点击下方按钮复制';
   const where = host ? '远程' : '本机';
   const row = document.createElement('div');
   row.className = 'access-actions';
-  const copyLink = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn primary', textContent: '复制访问链接' });
-  copyLink.addEventListener('click', () => {
-    void copyText(accessUrl(ip, port, token)).then(ok =>
-      flashStatus(ok ? `${where}访问链接已复制（含 Token，请勿外传）` : '复制失败', 2200));
+  const copyBoth = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn primary', textContent: '复制地址和 Token' });
+  copyBoth.title = '复制为两行：访问地址，以及在登录页输入的 Token';
+  copyBoth.addEventListener('click', () => {
+    void copyLater(() => fetchToken(host).then(token => `访问地址：${url}\n登录页token：${token}`), copyBoth).then(result => {
+      if (result === 'copied') flashStatus(`${where}访问地址和 Token 已复制（Token 等同密码，请勿外传）`, 2400);
+      else if (result === 'failed') flashStatus('复制失败，请重试', 2000);
+    });
   });
   const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn', textContent: '仅复制 Token' });
   copyToken.title = host ? '该远程主机的访问 Token' : '在另一台主机的「远程主机」里添加本机时使用';
   copyToken.addEventListener('click', () => {
-    void copyText(token).then(ok => flashStatus(ok ? `${where} Token 已复制` : '复制失败', 1800));
+    void copyLater(() => fetchToken(host), copyToken).then(result => {
+      if (result === 'copied') flashStatus(`${where} Token 已复制`, 1800);
+      else if (result === 'failed') flashStatus('复制失败，请重试', 2000);
+    });
   });
-  row.append(copyLink, copyToken);
+  row.append(copyBoth, copyToken);
   const hint = document.createElement('div');
   hint.className = 'sheet-hint';
-  hint.textContent = `随当前会话切换：现在是${hostLabel(host)}。在其他设备的浏览器打开即自动登录；链接含 Token，等同于密码，请勿发给他人。`;
+  hint.textContent = `随当前会话切换：现在是${hostLabel(host)}。在其他设备打开访问地址，于登录页粘贴 Token 即可；浏览器可保存 Token 供下次自动填充。Token 等同于密码，请勿发给他人。`;
   accessBox.append(shown, row, hint);
 }
 

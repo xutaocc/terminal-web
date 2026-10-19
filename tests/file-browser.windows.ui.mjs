@@ -64,7 +64,8 @@ try {
   await send('Page.enable'); await send('Runtime.enable');
 
   // --- 1) file browser breadcrumbs -----------------------------------------
-  await send('Page.navigate', { url: `${base}/file-browser.html?token=${token}&session=${names[0]}` });
+  await send('Network.setCookie', { name: 'tw_auth', value: token, url: base, path: '/', httpOnly: true, sameSite: 'Lax' });
+  await send('Page.navigate', { url: `${base}/file-browser.html?session=${names[0]}` });
   await until(`return doc.querySelectorAll('#breadcrumbs .crumb').length > 1`);
   const crumbLabels = await evaluate(`return [...doc.querySelectorAll('#breadcrumbs .crumb')].map(b => b.textContent)`);
   const expected = [path.parse(fixture).root, ...fixture.slice(path.parse(fixture).root.length).split('\\')];
@@ -92,7 +93,7 @@ try {
   const hookFire = await fetch(`${base}/api/agent-hook`, { method: 'POST', headers: { Cookie: `tw_auth=${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ pane: '%1', session: names[1], event: 'Stop' }) });
   assert.equal((await hookFire.json()).used, true, 'hook accepted');
-  await send('Page.navigate', { url: `${base}/?token=${token}&session=${names[0]}` });
+  await send('Page.navigate', { url: `${base}/?session=${names[0]}` });
   await until(`return document.querySelectorAll('.ps-card').length > 0 && !!document.querySelector('.ps-chip.active')`);
   await until(`return [...document.querySelectorAll('.ps-chip')].some(c => c.textContent.includes(${JSON.stringify(names[1])}) && c.querySelector('.tab-dot.unread'))`);
   const activeBefore = await evaluate(`return document.querySelector('.ps-chip.active .ps-chip-name')?.textContent`);

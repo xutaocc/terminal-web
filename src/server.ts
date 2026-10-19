@@ -1308,7 +1308,8 @@ async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse
   const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
     remotes: RemoteStore.view(await remotes.list()),
     health: remoteMonitor.snapshot(),
-    self: { ...hostInfo(), token: config.authToken },
+    // No token here: a page asks for one only when it copies it (POST /api/access).
+    self: hostInfo(),
   });
   if (req.method === "GET") { await reply(); return; }
   let body: Record<string, unknown>;
@@ -1381,7 +1382,9 @@ const server = http.createServer((req, res) => {
         const remote = await remotes.get(viaRemote.id);
         if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
         // A remote's remote list carries its own token; this page has no use for it.
-        if (viaRemote.rest.startsWith('/api/remotes')) { sendJsonHttp(res, 404, { error: 'not available through a remote' }); return; }
+        if (viaRemote.rest.startsWith('/api/remotes') || viaRemote.rest.startsWith('/api/access')) {
+          sendJsonHttp(res, 404, { error: 'not available through a remote' }); return;
+        }
         proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search, remoteMonitor);
         return;
       }
@@ -1394,13 +1397,20 @@ const server = http.createServer((req, res) => {
         handleRemoteEvents(req, res);
         return;
       }
-      if (method === 'GET' && requestUrl.pathname === '/api/remotes/access') {
-        // A remote's sign-in token, for the settings panel's access link. Whoever
-        // is signed in here can already drive that remote through this server.
+      if (method === 'POST' && requestUrl.pathname === '/api/access') {
+        // A host's sign-in token, for "复制地址和 Token" in the settings panel:
+        // this server's ({}), or a remote's ({ id }). POST only, asked for at
+        // the moment of copying, so a token never sits in a URL, a GET or a
+        // page's state. Whoever is signed in here can already drive that remote
+        // through this server.
         res.setHeader('Cache-Control', 'no-store');
-        const remote = await remotes.get(requestUrl.searchParams.get('id') ?? '');
+        let body: { id?: unknown };
+        try { body = JSON.parse((await readBody(req, 1024)).toString('utf8') || '{}'); }
+        catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
+        if (body?.id === undefined || body.id === '') { sendJsonHttp(res, 200, { token: config.authToken }); return; }
+        const remote = await remotes.get(typeof body.id === 'string' ? body.id : '');
         if (!remote) { sendJsonHttp(res, 404, { error: '远程主机不存在' }); return; }
-        sendJsonHttp(res, 200, { url: remote.url, token: remote.token });
+        sendJsonHttp(res, 200, { token: remote.token });
         return;
       }
       if ((method === 'GET' || method === 'POST') && requestUrl.pathname === '/api/remotes') {
@@ -2397,16 +2407,17 @@ snapshotTimer.unref();
 
 function logStartup(): void {
   const port = config.port;
-  const tokenQuery = `?token=${encodeURIComponent(config.authToken)}`;
+  // Addresses only: a token in a link ends up in history and logs. Open one,
+  // and paste the token printed above it into the login page.
   const accessUrl = (host: string): string =>
-    `http://${host.includes(":") ? `[${host}]` : host}:${port}/${tokenQuery}`;
+    `http://${host.includes(":") ? `[${host}]` : host}:${port}/`;
   const allInterfaces = config.host === "0.0.0.0" || config.host === "::";
 
   console.log("");
   console.log("  terminal-web is running.");
   console.log(`  Listening: ${config.host}:${port}`);
   console.log(`  Token: ${config.authToken}`);
-  console.log("  快速访问链接：");
+  console.log("  访问地址（打开后在登录页输入上面的 Token）：");
   if (allInterfaces || config.host === "127.0.0.1" || config.host === "localhost") {
     console.log(`  Local: ${accessUrl("127.0.0.1")}`);
   }
