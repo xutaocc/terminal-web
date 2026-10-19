@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rule: one codebase for macOS, Linux and Windows (this branch)
+
+On the `multi-platform` branch, every change must work on **all three** of macOS, Linux and native Windows, from the same code. This is a requirement, not a nice-to-have:
+
+- No per-platform forks of a feature. Shared logic stays shared; where a platform truly differs, branch at the narrowest point (`IS_PSMUX` / `process.platform` server-side, the server's reported `platform` or the path itself client-side — never the browser's own OS) and keep the other platforms' behaviour unchanged.
+- A server may be any of the three, and so may each remote it drives and each browser looking at it: a Windows page shows a Linux remote and the other way round. Paths, shell quoting, home shortening, file names, line endings and permissions must follow the system that owns them (`web/platform.ts`, `web/file-path.js`, `within()` in `src/file-api.ts`).
+- Nothing may assume Unix-only tools or locations (`/etc/passwd`, `zip`, `/bin/sh`, `curl`, `ps`, `/proc`) or Windows-only ones without a working path on the other platforms. Scripts that must run everywhere are Node (`.mjs`), not bash or PowerShell alone.
+- New tests must pass, or skip with a stated reason, on all three. Platform-only tests say so (`t.skip(...)`) instead of failing elsewhere.
+- Before calling a change done, check it on Windows and on Linux or macOS. A real machine is best (an Ubuntu VM and Windows have been used together through the remote-hosts feature); at minimum run `npx tsc`, the unit tests and the integration tests on the platforms available.
+
+This rule applies to the `multi-platform` branch only.
+
 ## Project
 
 terminal-web: a browser terminal (xterm.js front end, Node + `ws` + `node-pty` back end) where every session is a **tmux** session, so disconnecting only detaches. Requires Node 18+ and tmux on the host (macOS / Linux / WSL2). On native Windows the same code drives **psmux** (a native Windows tmux clone that ships a `tmux.exe`) instead — see "Windows (psmux)" below. User-facing docs are in `README.md` and `docs/` (Chinese deployment guide and session-status design notes). Commit messages and recent docs are written in Chinese.
