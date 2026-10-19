@@ -4755,6 +4755,11 @@ interface KeyDef {
   action?: 'copy' | 'paste' | 'select' | 'commands' | 'up' | 'down' | 'bottom' | 'keyboard';
   /** Force a line break here (mobile only): the keys after it wrap to a new row. */
   rowBreak?: boolean;
+  /**
+   * What the key is on a phone instead, when that differs: a label and the
+   * bytes it sends (the PC bar keeps `label` / `action`).
+   */
+  mobile?: { label: string; seq: string; title: string };
 }
 const KEYS: KeyDef[] = [
   { label: 'Esc', seq: '\x1b' },
@@ -4767,15 +4772,31 @@ const KEYS: KeyDef[] = [
   // On a phone the arrows get their own second row; everything else stays on the first.
   { rowBreak: true },
   // Ctrl+End: jump to the bottom in Claude Code's fullscreen view (CSI 1;5F).
-  { label: '上页', action: 'up', mobileOrder: 2 },
-  { label: '下页', action: 'down', mobileOrder: 3 },
-  { label: '底部', action: 'bottom', mobileOrder: 4 },
+  // On a phone these three edit the line being typed instead — paging has the
+  // floating buttons there: Home / End move to the start / end of the input
+  // (Claude Code, Codex, opencode, a shell all take ESC[H / ESC[F), and ^U
+  // clears it (Ctrl+U: delete to the start of the line).
+  { label: '上页', action: 'up', mobileOrder: 2, mobile: { label: 'Home', seq: '\x1b[H', title: '光标移到输入行开头（Home）' } },
+  { label: '下页', action: 'down', mobileOrder: 3, mobile: { label: 'End', seq: '\x1b[F', title: '光标移到输入行末尾（End）' } },
+  { label: '底部', action: 'bottom', mobileOrder: 4, mobile: { label: '^U', seq: '\x15', title: '清空输入行（Ctrl+U）' } },
   { label: '键盘', action: 'keyboard', mobileOrder: 11 },
   { label: '←', seq: '\x1b[D' },
   { label: '↑', seq: '\x1b[A' },
   { label: '↓', seq: '\x1b[B' },
   { label: '→', seq: '\x1b[C' },
 ];
+
+/** Keys that are something else on a phone (KeyDef.mobile): relabelled with the layout. */
+const dualKeys: { b: HTMLButtonElement; def: KeyDef }[] = [];
+function labelDualKeys(): void {
+  const phone = mobileMQ.matches;
+  for (const { b, def } of dualKeys) {
+    const m = phone && def.mobile;
+    b.textContent = m ? m.label : def.label ?? '';
+    b.title = m ? m.title : def.label ?? '';
+    b.setAttribute('aria-label', b.title);
+  }
+}
 
 let ctrlArmed = false;
 let shiftArmed = false;
@@ -4825,6 +4846,7 @@ for (const [index, def] of KEYS.entries()) {
   b.type = 'button';
   b.textContent = def.label ?? '';
   b.title = def.label ?? '';
+  if (def.mobile) dualKeys.push({ b, def });
   if (def.mod) modButtons[def.mod] = b;
   if (def.action === 'commands') {
     b.title = '快捷命令';
@@ -4844,6 +4866,11 @@ for (const [index, def] of KEYS.entries()) {
   b.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     activeSession?.stopTouchScroll();
+    // A phone's own key for this place (Home / End / ^U): straight to the program.
+    if (def.mobile && mobileMQ.matches) {
+      activeSession?.sendSeq(def.mobile.seq);
+      return;
+    }
     if (def.action === 'up' || def.action === 'down' || def.action === 'bottom') {
       void activeSession?.scrollHistory(def.action);
       return;
@@ -4892,6 +4919,8 @@ for (const [index, def] of KEYS.entries()) {
   });
   keybarEl.append(b);
 }
+labelDualKeys();
+mobileMQ.addEventListener('change', labelDualKeys);
 
 // ---------------------------------------------------------------------------
 // Mobile UI: a compact top bar + a bottom "Sessions" drawer + an actions
