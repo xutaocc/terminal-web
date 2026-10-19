@@ -12,7 +12,7 @@ import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
 import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors } from './terminal-env.js';
-import { isKeyboardInput } from './history-input.js';
+import { hasWheelInput, isKeyboardInput } from './history-input.js';
 import {
   TMUX,
   psmuxEnv,
@@ -1946,6 +1946,26 @@ function attachSession(
     const input = inputQueue.shift();
     if (input === undefined) return;
     if (!isKeyboardInput(input)) {
+      // psmux enters copy-mode on any wheel and keeps every later wheel there,
+      // even over a program that reads the mouse itself (Claude Code, vim):
+      // tmux has a binding for that (web.tmux.conf), psmux has no bindings.
+      // Such a program, with nothing in tmux's history, was left unscrollable
+      // behind an empty "[copy mode]". So when the program asks for the mouse,
+      // leave copy-mode first and let the wheel go to it; a plain shell still
+      // scrolls tmux's history as before.
+      if (IS_PSMUX && hasWheelInput(input)) {
+        preparingInput = true;
+        const target = `=${session}:`;
+        execFile(TMUX, ['if-shell', '-F', '-t', target,
+          '#{&&:#{mouse_any_flag},#{==:#{pane_mode},copy-mode}}', `send-keys -t ${target} -X cancel`],
+        { timeout: 3000 }, () => {
+          preparingInput = false;
+          if (closed) { inputQueue.length = 0; return; }
+          proc.write(input);
+          drainInput();
+        });
+        return;
+      }
       proc.write(input);
       drainInput();
       return;

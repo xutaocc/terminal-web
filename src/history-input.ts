@@ -5,3 +5,8 @@ export function isKeyboardInput(input: string): boolean {
     '',
   ).length > 0;
 }
+
+/** Whether a chunk carries mouse-wheel reports (SGR buttons 64/65, either direction). */
+export function hasWheelInput(input: string): boolean {
+  return /\x1b\[<6[45];\d+;\d+M/.test(input);
+}
