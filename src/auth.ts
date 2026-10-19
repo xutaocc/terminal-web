@@ -132,7 +132,6 @@ function loginPage(error: string, next = "/", locked = false): string {
 <html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<meta name="referrer" content="no-referrer" />
 <title>Web Terminal — sign in</title>
 <style>
   :root { color-scheme: dark; }

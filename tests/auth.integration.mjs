@@ -77,6 +77,10 @@ try {
     method: 'POST', redirect: 'manual', headers: { Origin: base, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ token }),
   });
+  // The login page itself must not make the browser hide its origin: a form
+  // posted from a no-referrer page carries Origin: null, which is refused.
+  const page = await (await fetch(base)).text();
+  assert(!/name="referrer"\s+content="no-referrer"/.test(page), 'login page must not set no-referrer');
   const first = await login();
   assert.equal(first.status, 302);
   assert(first.headers.get('set-cookie').includes('HttpOnly'));
