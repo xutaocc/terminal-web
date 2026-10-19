@@ -5539,8 +5539,8 @@ function accessUrl(ip: string, port: number): string {
 }
 
 /**
- * A host's token, asked for with a POST at the moment it is copied and never
- * kept: not in a URL, not in a GET a router could log, not in the page.
+ * A host's token, asked for with a POST when 显示 Token is pressed: never in a
+ * URL, never in a GET a router could log.
  */
 async function fetchToken(host: string): Promise<string> {
   const res = await fetch('/api/access', {
@@ -5551,53 +5551,34 @@ async function fetchToken(host: string): Promise<string> {
   return data.token;
 }
 
-/**
- * Copy text that is still on its way. Over HTTPS the clipboard write starts
- * inside the click with the text arriving as a promise (WebKit refuses one
- * started after an await). Over plain HTTP the only way is the old
- * execCommand copy, which works inside the click alone — so the text is
- * fetched, and the button asks for a second click that copies it at once.
- * Returns 'copied', 'again' (click once more), or 'failed'.
- */
-async function copyLater(text: () => Promise<string>, button: HTMLButtonElement): Promise<'copied' | 'again' | 'failed'> {
-  if (window.isSecureContext && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
-    try {
-      const blob = text().then(t => new Blob([t], { type: 'text/plain' }));
-      void blob.catch(() => { /* reported by write */ });
-      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
-      return 'copied';
-    } catch { /* fall back below */ }
-  }
-  let value: string;
-  try { value = await text(); } catch { return 'failed'; }
-  const label = button.textContent ?? '';
-  button.textContent = '已读取，点击复制';
-  button.classList.add('armed');
-  return new Promise(resolve => {
-    const done = (result: 'copied' | 'again' | 'failed'): void => {
-      clearTimeout(timer);
-      button.removeEventListener('click', copyNow, true);
-      button.textContent = label;
-      button.classList.remove('armed');
-      value = ''; // not kept in the page
-      resolve(result);
-    };
-    const copyNow = (e: Event): void => {
-      e.stopImmediatePropagation();
-      void copyText(value).then(ok => done(ok ? 'copied' : 'failed'));
-    };
-    // Unclicked for 15 s: forget it, and the next click starts over.
-    const timer = window.setTimeout(() => done('again'), 15_000);
-    button.addEventListener('click', copyNow, true);
-  });
+// The token on show, and for which host. Hidden again after a minute, when the
+// settings close, or when the panel moves to another host.
+let shownToken: { host: string; token: string } | null = null;
+let hideTokenTimer = 0;
+const TOKEN_SHOWN_MS = 60_000;
+function hideToken(): void {
+  window.clearTimeout(hideTokenTimer);
+  if (!shownToken) return;
+  shownToken = null;
+  renderAccessLink();
 }
+
+// What the panel shows last time it was drawn. The page refreshes its UI every
+// second or two; redrawing the panel each time would replace its button and its
+// text under the user's finger — the panel is redrawn only when this changes.
+let accessDrawn = '';
 
 function renderAccessLink(): void {
   const host = settingsHost();
+  if (shownToken && shownToken.host !== host) { shownToken = null; window.clearTimeout(hideTokenTimer); }
   const { ips, port } = accessTarget(host);
   if (host && !remoteAddrs.has(host)) void loadHostInfo(host);
   let ip = accessIps.get(host) ?? '';
   if (!ips.includes(ip)) ip = ips[0] ?? '';
+  const drawn = JSON.stringify([host, ips, ip, port, shownToken?.token ?? '', offlineHosts.has(host),
+    remoteHosts.find(r => r.id === host)?.name ?? '', selfName]);
+  if (drawn === accessDrawn) return;
+  accessDrawn = drawn;
   accessBox.replaceChildren();
   accessBox.classList.toggle('remote', !!host);
   const head = document.createElement('div');
@@ -5609,11 +5590,11 @@ function renderAccessLink(): void {
   if (!ip) {
     const none = document.createElement('div');
     none.className = 'sheet-hint';
-    none.textContent = host && offlineHosts.has(host) ? '远程主机暂时无法连接，恢复后可复制。' : '读取地址中…';
+    none.textContent = host && offlineHosts.has(host) ? '远程主机暂时无法连接，恢复后可查看。' : '读取地址中…';
     accessBox.append(none);
     return;
   }
-  // Several addresses: pick which one is copied (overlay network first).
+  // Several addresses: pick which one is shown (overlay network first).
   if (ips.length > 1) {
     const pick = document.createElement('div');
     pick.className = 'access-ips';
@@ -5639,35 +5620,56 @@ function renderAccessLink(): void {
     }
     accessBox.append(pick);
   }
-  const url = accessUrl(ip, port);
-  const shown = document.createElement('code');
-  shown.className = 'access-url';
-  shown.textContent = `访问地址：${url}\n登录页token：••••••••`;
-  shown.title = 'Token 不显示在页面上，点击下方按钮复制';
-  const where = host ? '远程' : '本机';
+  // A read-only text box: select it and copy by hand (any browser, HTTP or not;
+  // a long press on a phone). Focusing it selects everything.
+  const box = document.createElement('textarea');
+  box.className = 'access-url';
+  box.readOnly = true;
+  box.rows = 2;
+  box.spellcheck = false;
+  box.setAttribute('aria-label', '访问地址和登录页 Token');
+  box.value = `访问地址：${accessUrl(ip, port)}\n登录页token：${shownToken?.token ?? '••••••••'}`;
+  box.classList.toggle('revealed', !!shownToken);
+  box.addEventListener('focus', () => box.select());
+  box.addEventListener('keydown', e => e.stopPropagation());
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'access-btn' + (shownToken ? '' : ' primary');
+  toggle.textContent = shownToken ? '隐藏 Token' : '显示 Token';
+  toggle.addEventListener('click', () => {
+    if (shownToken) { hideToken(); return; }
+    toggle.disabled = true;
+    toggle.textContent = '读取中…';
+    void fetchToken(host).then(token => {
+      if (settingsHost() !== host) return; // moved to another host meanwhile
+      shownToken = { host, token };
+      window.clearTimeout(hideTokenTimer);
+      hideTokenTimer = window.setTimeout(hideToken, TOKEN_SHOWN_MS);
+      renderAccessLink();
+    }, () => {
+      flashStatus('读取 Token 失败，请重试', 2000);
+      accessDrawn = '';
+      renderAccessLink();
+    });
+  });
   const row = document.createElement('div');
   row.className = 'access-actions';
-  const copyBoth = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn primary', textContent: '复制地址和 Token' });
-  copyBoth.title = '复制为两行：访问地址，以及在登录页输入的 Token';
-  copyBoth.addEventListener('click', () => {
-    void copyLater(() => fetchToken(host).then(token => `访问地址：${url}\n登录页token：${token}`), copyBoth).then(result => {
-      if (result === 'copied') flashStatus(`${where}访问地址和 Token 已复制（Token 等同密码，请勿外传）`, 2400);
-      else if (result === 'failed') flashStatus('复制失败，请重试', 2000);
-    });
-  });
-  const copyToken = Object.assign(document.createElement('button'), { type: 'button', className: 'access-btn', textContent: '仅复制 Token' });
-  copyToken.title = host ? '该远程主机的访问 Token' : '在另一台主机的「远程主机」里添加本机时使用';
-  copyToken.addEventListener('click', () => {
-    void copyLater(() => fetchToken(host), copyToken).then(result => {
-      if (result === 'copied') flashStatus(`${where} Token 已复制`, 1800);
-      else if (result === 'failed') flashStatus('复制失败，请重试', 2000);
-    });
-  });
-  row.append(copyBoth, copyToken);
+  row.append(toggle);
   const hint = document.createElement('div');
   hint.className = 'sheet-hint';
-  hint.textContent = `随当前会话切换：现在是${hostLabel(host)}。在其他设备打开访问地址，于登录页粘贴 Token 即可；浏览器可保存 Token 供下次自动填充。Token 等同于密码，请勿发给他人。`;
-  accessBox.append(shown, row, hint);
+  hint.textContent = `随当前会话切换：现在是${hostLabel(host)}。点「显示 Token」后选中上面的文字自行复制（1 分钟后自动隐藏）；在其他设备打开访问地址，于登录页粘贴 Token 即可。Token 等同于密码，请勿发给他人。`;
+  accessBox.append(box, row, hint);
+  fitAccessBox();
+}
+
+/** Tall enough for the whole text: the token wraps over several lines when shown. */
+function fitAccessBox(): void {
+  requestAnimationFrame(() => {
+    const box = accessBox.querySelector<HTMLTextAreaElement>('.access-url');
+    if (!box || !box.isConnected || !box.offsetParent) return; // not laid out: the sheet is closed
+    box.style.height = 'auto';
+    box.style.height = `${box.scrollHeight + 2}px`;
+  });
 }
 
 function renderRemoteList(): void {
@@ -5806,9 +5808,11 @@ function openSheet(): void {
   updateFontVal();
   updateFullscreenButton();
   sheetOverlay.classList.remove('hidden');
+  fitAccessBox(); // measured now that the sheet is on screen
 }
 function closeSheet(): void {
   queueMicrotask(refreshPager);
+  hideToken(); // a token on show goes when the settings do
   sheetOverlay.classList.add('hidden');
 }
 

@@ -1972,6 +1972,9 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 }
 .access-url {
   display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
   padding: 6px 8px;
   border-radius: 6px;
   background: var(--ui-surface, #1e1e1e);
@@ -1979,11 +1982,14 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--ui-text, #e5e5e5);
   word-break: break-all;
-  user-select: none;
-  -webkit-user-select: none;
+  white-space: pre-wrap;
+  overflow: hidden;
 }
+.access-url:focus { outline: 1px solid #3b8eea; }
+/* Shown: room for a long token on two lines, and selectable by hand. */
+.access-url.revealed { border-color: color-mix(in srgb, #3b8eea 55%, var(--ui-border, #333)); }
 /* Two equal buttons side by side, the main one in the accent colour. */
-.access-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.access-actions { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .access-btn {
   appearance: none;
   -webkit-appearance: none;
@@ -1999,8 +2005,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   touch-action: manipulation;
 }
 .access-btn.primary { background: #2472c8; border-color: #3b8eea; color: #fff; }
-.access-btn.armed { background: #176b35; border-color: #3fa66b; color: #fff; }
-.access-url { white-space: pre-wrap; }
+
 .access-btn:active { filter: brightness(0.92); }
 .access-link .sheet-hint { padding: 0; }
 .access-link.remote { border-color: color-mix(in srgb, var(--host-remote) 45%, transparent); background: color-mix(in srgb, var(--host-remote) 6%, transparent); }
