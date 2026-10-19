@@ -1,0 +1,5 @@
+# Files that run under bash / tmux on macOS and Linux must keep LF endings,
+# even in a checkout made on Windows (core.autocrlf=true would turn them CRLF
+# and break `bash scripts/*.sh` if that directory is later used on Unix).
+*.sh text eol=lf
+tmux/web.tmux.conf text eol=lf

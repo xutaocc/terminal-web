@@ -16,7 +16,7 @@ This rule applies to the `multi-platform` branch only.
 
 ## Project
 
-terminal-web: a browser terminal (xterm.js front end, Node + `ws` + `node-pty` back end) where every session is a **tmux** session, so disconnecting only detaches. Requires Node 18+ and tmux on the host (macOS / Linux / WSL2). On native Windows the same code drives **psmux** (a native Windows tmux clone that ships a `tmux.exe`) instead — see "Windows (psmux)" below. User-facing docs are in `README.md` and `docs/` (Chinese deployment guide and session-status design notes). Commit messages and recent docs are written in Chinese.
+terminal-web: a browser terminal (xterm.js front end, Node + `ws` + `node-pty` back end) where every session is a **tmux** session, so disconnecting only detaches. Requires Node 20+ and tmux on the host (macOS / Linux / WSL2). On native Windows the same code drives **psmux** (a native Windows tmux clone that ships a `tmux.exe`) instead — see "Windows (psmux)" below. User-facing docs are in `README.md` and `docs/` (Chinese deployment guide and session-status design notes). Commit messages and recent docs are written in Chinese.
 
 ## Commands
 

@@ -122,16 +122,15 @@ node tests/file-browser.ui.mjs      # 本机 Chrome 验证页面切换与编辑�
 
 ## Prerequisites
 
-中文安装与使用文档：[Ubuntu、Windows WSL2 与 macOS 部署指南](docs/部署与使用指南.md)。原生 Windows 暂未适配。
+中文安装与使用文档：[macOS、Linux（含 WSL2）与原生 Windows 部署指南](docs/部署与使用指南.md)。原生 Windows 使用 psmux 代替 tmux（见指南第 10 节）；三个平台可以互相添加为远程主机（第 11 节）。
 
 These are CLI prerequisites — they are **not** bundled or installed by this
 project:
 
-- **Node.js 18+** (ESM, runs the server via `tsx`)
+- **Node.js 20+** (22 recommended; the client build's `marked` needs 20+)
 - **tmux** — the session backend (`brew install tmux` on macOS,
-  `sudo apt install tmux` on Debian/Ubuntu)
-- **Linux only:** a C/C++ toolchain + Python 3 to build `node-pty`
-  (`sudo apt install -y build-essential python3`) — see [Install](#install)
+  `sudo apt install tmux` on Debian/Ubuntu); on native Windows, **psmux**
+  placed in `.psmux\` (see the deployment guide, section 10.2)
 - **tailscale** — **optional**. Only used to auto-detect which IP to bind to.
   Not installed? It's fine — set `HOST` yourself (see
   [Without Tailscale](#without-tailscale-lan--intranet)).
@@ -146,13 +145,13 @@ Development was done on macOS.
 npm install
 ```
 
-> **Note:** `node-pty` is a native addon. It ships **prebuilt** binaries for
-> macOS and Windows, but on **Linux it compiles from source on install** — so
-> you need a C/C++ toolchain + Python 3
-> (`sudo apt install -y build-essential python3` on Debian/Ubuntu). On macOS,
-> if no prebuilt matches your Node version it also compiles, which needs the
-> Xcode Command Line Tools (`xcode-select --install`). See
-> [Troubleshooting](#troubleshooting) if install fails.
+> **Note:** `node-pty` is a native addon, but its package ships **prebuilt**
+> binaries for macOS, Linux and Windows (x64 and arm64), so no compiler is
+> needed. Only on other architectures, or with `npm_config_build_from_source`,
+> does it compile — then install a C/C++ toolchain + Python 3
+> (`sudo apt install -y build-essential python3`, or `xcode-select --install`).
+> Install on each machine separately; never copy `node_modules` between OSes.
+> See [Troubleshooting](#troubleshooting) if install fails.
 
 ---
 
