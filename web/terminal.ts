@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { mouseWheelReports } from './mouse-wheel.js';
 import { bindIntentionalClick } from './intentional-click.js';
@@ -876,6 +877,14 @@ class Session {
     });
     this.term.loadAddon(this.fitAddon);
     this.term.loadAddon(new WebLinksAddon());
+    // Count character widths the way tmux does. xterm's default is Unicode 6,
+    // where most emoji (✅ ❌ ⭐ ✨, and ⚠️ with its variation selector) take one
+    // cell; tmux gives them two. One such character near the right edge wraps
+    // the line in tmux but not here, and every relative cursor move Claude Code
+    // or Codex makes after it lands a row off: lines drawn twice, the input box
+    // pushed out of sight, until a reload repaints the whole screen.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = '11';
 
     this.el = document.createElement('div');
     this.el.className = 'term-pane hidden';
