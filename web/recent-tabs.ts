@@ -5,7 +5,7 @@
  */
 
 /** How many recent sessions are marked. Change it here and nowhere else. */
-export const RECENT_TABS_MAX = 6;
+export const RECENT_TABS_MAX = 10;
 
 /** `list` with `name` moved to the front, at most `max` long (the oldest drops off). */
 export function touchRecent(list: readonly string[], name: string, max = RECENT_TABS_MAX): string[] {

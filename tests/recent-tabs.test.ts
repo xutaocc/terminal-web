@@ -10,10 +10,10 @@ test('the most recent comes first; picking one again moves it up, never doubles 
 });
 
 test(`at most ${RECENT_TABS_MAX}: the oldest one drops off`, () => {
-  assert.equal(RECENT_TABS_MAX, 6);
+  assert.equal(RECENT_TABS_MAX, 10);
   let list: string[] = [];
-  for (const n of ['1', '2', '3', '4', '5', '6', '7']) list = touchRecent(list, n);
-  assert.deepEqual(list, ['7', '6', '5', '4', '3', '2']);
+  for (const n of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11']) list = touchRecent(list, n);
+  assert.deepEqual(list, ['11', '10', '9', '8', '7', '6', '5', '4', '3', '2']);
   assert.deepEqual(touchRecent(['b', 'a'], 'c', 2), ['c', 'b']);
 });
 
@@ -22,9 +22,9 @@ test('closed sessions leave the list', () => {
 });
 
 test('the underline fades with age: full for the newest, faint for the sixth, none outside', () => {
-  const list = ['1', '2', '3', '4', '5', '6'];
+  const list = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
   assert.equal(recentStrength(list, '1'), 1);
-  assert.ok(Math.abs(recentStrength(list, '6') - 0.3) < 1e-9);
+  assert.ok(Math.abs(recentStrength(list, '10') - 0.3) < 1e-9);
   assert.ok(recentStrength(list, '2') > recentStrength(list, '3'));
   assert.equal(recentStrength(list, 'x'), 0);
 });
