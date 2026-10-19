@@ -915,6 +915,8 @@ interface UiPrefs {
   keyboardLocked?: boolean;
   /** Floating page buttons on touch devices; defaults to on there. */
   pager?: boolean;
+  /** ⌘ / Ctrl = − and pinch size the terminal font; defaults to on. */
+  zoomKeys?: boolean;
   /** Key bar and keyboard lock, kept apart for the phone and the PC layout. */
   keybarMobile?: boolean;
   keybarDesktop?: boolean;
@@ -1006,6 +1008,7 @@ async function handleSetPrefs(
   if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
   if (typeof obj.pager === "boolean") next.pager = obj.pager;
+  if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
   for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
     if (typeof obj[key] === "boolean") next[key] = obj[key];
   }

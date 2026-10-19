@@ -22,6 +22,7 @@ import { ICONS, ProjectSidebar, type SidebarSection, type SidebarSession } from 
 import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
+import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { lastSegment, platformLabel, quotePathForShell } from './platform.js';
@@ -959,6 +960,11 @@ class Session {
       if (!ANDROID_DEVICE && e.type === 'keydown' && (e.isComposing || e.keyCode === 229)) {
         return false; // composition keystroke — ours, not xterm's
       }
+      // ⌘ / Ctrl with = or − zooms the font, here as on the rest of the page.
+      if (zoomShortcutsEnabled && zoomKey(e, isMac) !== null) {
+        if (e.type === 'keydown') zoomFromKey(e);
+        return false;
+      }
       if (isMac) return true; // ⌘ needs no remapping; the chords below are Ctrl
       if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey) {
         return true; // not a copy/paste chord — let xterm handle it normally
@@ -1490,6 +1496,9 @@ class Session {
     // Touch-capable Windows laptops can also have a mouse. Handle actual wheel
     // events on every device; finger scrolling never goes through this hook.
     this.term.attachCustomWheelEventHandler((event) => {
+      // ⌘ / Ctrl + wheel, and a trackpad pinch (sent as a Ctrl wheel): font
+      // size, not scrolling. The page-level listener stops the browser zoom.
+      if (zoomShortcutsEnabled && (event.ctrlKey || event.metaKey)) return false;
       this.mouseWheelMultiplier = this.term.modes.mouseTrackingMode === 'none' ? 1
         : mouseWheelReports(event.deltaY, event.deltaMode, this.term.rows);
       // Mouse reports are emitted synchronously inside xterm's wheel handler.
@@ -1585,8 +1594,14 @@ class Session {
           tracking = false;
           selecting = false;
           cancelPress();
+          // Two fingers: a pinch sizes the font (it was never anything else here).
+          if (e.touches.length === 2 && zoomShortcutsEnabled) {
+            this.stopTouchScroll();
+            pinch.start(fingerDistance(e.touches));
+          }
           return;
         }
+        pinch.end();
         cancelPress();
         this.lastInputWasTouch = true;
         const t = e.touches[0];
@@ -1646,6 +1661,13 @@ class Session {
     this.el.addEventListener(
       'touchmove',
       (e: TouchEvent) => {
+        if (e.touches.length === 2 && pinch.active) {
+          e.preventDefault();
+          e.stopPropagation();
+          const steps = pinch.move(fingerDistance(e.touches));
+          if (steps) zoomBy(steps);
+          return;
+        }
         if (e.touches.length !== 1) return;
         const t = e.touches[0];
         if (selecting) {
@@ -3807,6 +3829,7 @@ interface UiPrefs {
   keybar?: boolean;
   keyboardLocked?: boolean;
   pager?: boolean;
+  zoomKeys?: boolean;
   keybarMobile?: boolean;
   keybarDesktop?: boolean;
   keyboardLockedMobile?: boolean;
@@ -4346,6 +4369,58 @@ function makeButton(
   parent.append(b);
   return b;
 }
+
+// ---------------------------------------------------------------------------
+// Font zoom shortcuts (web/font-zoom.ts): ⌘ / Ctrl with = or −, ⌘ / Ctrl with
+// the wheel or a trackpad pinch, and a two-finger pinch on a phone. They size
+// the terminal's font for the layout on screen — the same value as A− / A+ —
+// instead of the browser zooming the whole page. ⌘ / Ctrl 0 stays the
+// browser's. A switch in the settings turns them off for programs that want
+// those chords.
+// ---------------------------------------------------------------------------
+let zoomShortcutsEnabled = (() => {
+  try { return localStorage.getItem('tw.zoomKeys') !== '0'; } catch { return true; }
+})();
+const wheelZoom = new WheelZoom();
+const pinch = new PinchZoom();
+
+function fingerDistance(touches: TouchList): number {
+  const [a, b] = [touches[0], touches[1]];
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+/** Grow (+) or shrink (−) the on-screen layout's font, and say what it is now. */
+function zoomBy(steps: number): void {
+  const kind = currentLayout();
+  const before = fontSizes[kind];
+  setFontSize(before + steps, kind);
+  const now = fontSizes[kind];
+  flashStatus(now === before ? (steps > 0 ? `字号已是最大 ${now}px` : `字号已是最小 ${now}px`)
+    : `字号 ${now}px（${LAYOUT_LABEL[kind]}）`, 1000);
+}
+
+function zoomFromKey(e: KeyboardEvent): void {
+  const step = zoomKey(e, isMac);
+  if (step === null) return;
+  e.preventDefault();
+  zoomBy(step);
+}
+
+// Anywhere on the page (the sidebar, a button that has focus): the chord sizes
+// the terminal, never the page. Capture, so it comes before anything else.
+window.addEventListener('keydown', e => {
+  if (!zoomShortcutsEnabled || zoomKey(e, isMac) === null) return;
+  zoomFromKey(e);
+  e.stopPropagation();
+}, true);
+// ⌘ / Ctrl + wheel and trackpad pinches over the terminal: the browser would
+// zoom the page; the font is sized instead. Not passive, so it can be stopped.
+window.addEventListener('wheel', e => {
+  if (!zoomShortcutsEnabled || !(e.ctrlKey || e.metaKey) || !termArea.contains(e.target as Node)) return;
+  e.preventDefault();
+  const steps = wheelZoom.feed(e.deltaY, e.deltaMode, performance.now());
+  if (steps) zoomBy(steps);
+}, { passive: false, capture: true });
 
 /** Change one layout's font size (the one on screen by default). */
 function changeFont(delta: number, kind: LayoutKind = currentLayout()): void {
@@ -5296,6 +5371,27 @@ function setPagerEnabled(on: boolean): void {
 }
 setPagerEnabled(pagerEnabled);
 
+const zoomKeysButton = sheetRow('±', '快捷键缩放字号', () => {
+  zoomKeysChanged = true;
+  setZoomShortcuts(!zoomShortcutsEnabled);
+});
+zoomKeysButton.setAttribute('role', 'checkbox');
+zoomKeysButton.title = isMac
+  ? '⌘ = / ⌘ − 与 ⌘ + 滚轮（触控板捏合）缩放终端字号；手机双指捏合。⌘ 0 仍为浏览器重置页面缩放'
+  : 'Ctrl = / Ctrl − 与 Ctrl + 滚轮缩放终端字号；手机双指捏合。Ctrl 0 仍为浏览器重置页面缩放';
+let zoomKeysChanged = false;
+function setZoomShortcuts(on: boolean): void {
+  zoomShortcutsEnabled = on;
+  zoomKeysButton.setAttribute('aria-checked', String(on));
+  const icon = zoomKeysButton.querySelector('.sheet-ico');
+  if (icon) icon.textContent = on ? '☑' : '☐';
+  const label = zoomKeysButton.querySelector('span:last-child');
+  if (label) label.textContent = TOUCH_DEVICE ? '双指捏合缩放字号' : `快捷键缩放字号（${isMac ? '⌘' : 'Ctrl'} = / −）`;
+  try { localStorage.setItem('tw.zoomKeys', on ? '1' : '0'); } catch { /* server prefs keep it */ }
+  savePrefs({ zoomKeys: on });
+}
+setZoomShortcuts(zoomShortcutsEnabled);
+
 selectBtn = sheetRow('↔', '拖动选择文字', () => {
   closeSheet();
   setTouchSelectMode(!touchSelectMode);
@@ -5617,6 +5713,7 @@ sheet.append(
   }),
   sheetGroup('显示'),
   fontRow,
+  zoomKeysButton,
   splitRow,
   themeRow,
   fullscreenButton,
@@ -6083,6 +6180,9 @@ async function init(): Promise<void> {
     if (typeof keybar === 'boolean') setKeybarVisible(keybar, kind, false);
     const locked = prefs[`keyboardLocked${suffix}`] ?? (kind === deviceKind ? prefs.keyboardLocked : undefined);
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
+  }
+  if (!zoomKeysChanged && typeof prefs.zoomKeys === 'boolean' && prefs.zoomKeys !== zoomShortcutsEnabled) {
+    setZoomShortcuts(prefs.zoomKeys);
   }
   if (!pagerChanged && typeof prefs.pager === 'boolean' && prefs.pager !== pagerEnabled) {
     setPagerEnabled(prefs.pager);
