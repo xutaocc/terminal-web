@@ -2254,3 +2254,17 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 /* The recent-pick underline stays on the open tab: thick pale yellow under the corners. */
 /* Sidebar chips are only 22px tall: shorter corners, so they read as corners. */
 #sidebar .ps-chip.active { --l: 6px; --w: 2px; }
+
+/* The open session shows its four corners and nothing else around it: no
+   full outline, and no recent-pick underline (it is the newest pick anyway,
+   and a thick bar under the corners read as clutter). The light blue tint
+   behind it stays, so it still reads as one block. */
+#tabs .tab.active,
+#sidebar .ps-chip.active,
+.drawer-list .drawer-row.active,
+#tabs .tab.active.recent,
+#sidebar .ps-chip.active.recent,
+.drawer-list .drawer-row.active.recent {
+  border-color: transparent;
+  border-bottom-width: 1px;
+}
