@@ -917,6 +917,8 @@ interface UiPrefs {
   pager?: boolean;
   /** ⌘ / Ctrl = − and pinch size the terminal font; defaults to on. */
   zoomKeys?: boolean;
+  /** The recently picked sessions on this kind of device, newest first. */
+  recentTabs?: string[];
   /** Key bar and keyboard lock, kept apart for the phone and the PC layout. */
   keybarMobile?: boolean;
   keybarDesktop?: boolean;
@@ -1009,6 +1011,12 @@ async function handleSetPrefs(
   if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
   if (typeof obj.pager === "boolean") next.pager = obj.pager;
   if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
+  if (Array.isArray(obj.recentTabs)) {
+    // Page keys: a session name, or "@<host>/<name>" for a remote one.
+    next.recentTabs = obj.recentTabs
+      .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
+      .slice(0, 20);
+  }
   for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
     if (typeof obj[key] === "boolean") next[key] = obj[key];
   }

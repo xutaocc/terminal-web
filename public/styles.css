@@ -2195,3 +2195,23 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .label-swatch .host-badge { font-size: 11px; line-height: 16px; padding: 1px 6px; }
 .remote-row-text .remote-note { font-weight: 500; overflow: hidden; text-overflow: ellipsis; color: var(--ui-text, #e5e5e5); }
 .remote-row-text .remote-note:empty { display: none; }
+
+/* Recently picked sessions (web/recent-tabs.ts): the title alone is underlined,
+   in the text's own colour, darker the more recent (--recent 1 → 0.3). Thin,
+   so it does not read as the settings' bold "current layout" underline. */
+.tab .tab-label.recent,
+.ps-chip-name.recent,
+.drawer-name.recent {
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor calc(var(--recent, 1) * 100%), transparent);
+}
+/* In the strip the title is clamped to two 13px lines with overflow hidden: an
+   underline drawn below the line box would be clipped away. Draw it just under
+   the glyphs and give the box a pixel more at the bottom. */
+.tab .tab-label.recent {
+  text-underline-offset: 1px;
+  padding-bottom: 2px;
+  max-height: 28px;
+}

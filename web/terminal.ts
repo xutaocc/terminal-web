@@ -23,6 +23,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
+import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { lastSegment, platformLabel, quotePathForShell } from './platform.js';
@@ -650,7 +651,7 @@ const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   activate: name => {
     const s = sessions.find(x => x.name === name);
-    if (s) activateSession(s);
+    if (s) pickSession(s);
   },
   activateDirectory: names => {
     const inDir = sessions.filter(x => names.includes(x.name));
@@ -664,11 +665,11 @@ const sidebar = new ProjectSidebar({
     ];
     if (wanting.length) {
       const at = wanting.findIndex(x => x === activeTab);
-      activateSession(wanting[at >= 0 ? (at + 1) % wanting.length : 0]);
+      pickSession(wanting[at >= 0 ? (at + 1) % wanting.length : 0]);
       return;
     }
     const s = inDir.find(x => x.name === lastUsedIn.get(x.cwd ?? '')) ?? inDir[0];
-    if (s) activateSession(s);
+    if (s) pickSession(s);
   },
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
@@ -2550,7 +2551,7 @@ function attendHost(host: string): void {
   if (!list.length) return;
   const at = list.findIndex(x => x.s === activeTab);
   const next = list[at >= 0 ? (at + 1) % list.length : 0].s;
-  activateSession(next);
+  pickSession(next);
   requestAnimationFrame(() => sidebar.reveal(next.name));
   if (mobileMQ.matches) flashStatus(`已切换到：${next.displayName}`, 1400);
 }
@@ -3053,7 +3054,7 @@ function buildTab(s: Session): void {
   onTap(tab, (e) => {
     if (draggedTab || performance.now() < suppressTabTapUntil) return;
     if (e.target === close) return; // the × has its own handler
-    activateSession(s);
+    pickSession(s);
   }, tabsEl);
   onTap(close, (e) => {
     e.stopPropagation();
@@ -3089,6 +3090,68 @@ function addSession(name: string, makeActive: boolean, displayName?: string): Se
   if (makeActive) activateSession(s);
   saveTabs();
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Recently picked sessions (web/recent-tabs.ts): the last RECENT_TABS_MAX the
+// user chose by hand — a tab, a sidebar chip or card, the phone list, an
+// attention pill, a new session — have their titles underlined, darker the
+// more recent. Opening the page, or a closed tab handing over to its
+// neighbour, is not a pick. Kept per device class on the server, like the
+// other prefs, so a phone and a PC each keep their own.
+// ---------------------------------------------------------------------------
+let recentTabs: string[] = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('tw.recentTabs') ?? '[]');
+    return Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX) : [];
+  } catch { return []; }
+})();
+let recentTabsChanged = false;
+
+function setRecentTabs(next: string[], save = true): void {
+  if (next.length === recentTabs.length && next.every((n, i) => n === recentTabs[i])) return;
+  recentTabs = next;
+  if (save) {
+    try { localStorage.setItem('tw.recentTabs', JSON.stringify(next)); } catch { /* server prefs keep it */ }
+    savePrefs({ recentTabs: next });
+  }
+  paintRecentTabs();
+}
+
+/** The user chose this session: it becomes the most recent, then it is shown. */
+function pickSession(s: Session): void {
+  recentTabsChanged = true;
+  setRecentTabs(touchRecent(recentTabs, s.name));
+  activateSession(s);
+}
+
+/**
+ * Underline the titles of the recent sessions, in the strip, the sidebar and
+ * the phone list. --recent (0–1) sets how dark: the newest full, the sixth faint.
+ */
+function paintRecentTabs(): void {
+  const mark = (el: Element | null | undefined, name: string): void => {
+    if (!(el instanceof HTMLElement)) return;
+    const strength = recentStrength(recentTabs, name);
+    el.classList.toggle('recent', strength > 0);
+    if (strength > 0) el.style.setProperty('--recent', strength.toFixed(2));
+    else el.style.removeProperty('--recent');
+  };
+  for (const s of sessions) mark(s.tabLabel, s.name);
+  for (const dot of sidebar.dots()) {
+    const name = dot.dataset.sessions ?? '';
+    if (dot.closest('.ps-chip')) mark(dot.closest('.ps-chip')?.querySelector('.ps-chip-name'), name);
+  }
+  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
+    mark(row.querySelector('.drawer-name'), row.dataset.session ?? '');
+  }
+}
+
+/** Sessions that are gone leave the list (closed here or on another device). */
+function pruneRecentTabs(): void {
+  const alive = new Set(sessions.map(s => s.name));
+  // A remote that is only offline keeps its place: its tabs come back with it.
+  setRecentTabs(keepRecent(recentTabs, n => alive.has(n) || (hostOfKey(n) !== '' && offlineHosts.has(hostOfKey(n)))));
 }
 
 function activateSession(s: Session): void {
@@ -3192,6 +3255,7 @@ function addFallbackTab(): void {
 }
 
 function closeSession(s: Session): void {
+  queueMicrotask(pruneRecentTabs);
   const idx = sessions.indexOf(s);
   if (idx < 0) return;
   // The confirm box already said this takes the folder with it.
@@ -3424,7 +3488,7 @@ async function promptAddSession(
     folderMembers = { ...folderMembers, [name]: folderId };
     void editFolders({ action: 'move', sessions: [name], folder: folderId });
   }
-  activateSession(session);
+  pickSession(session);
 }
 
 /**
@@ -3447,7 +3511,7 @@ async function openTerminalIn(directory: string, dirName: string): Promise<void>
     folderMembers = { ...folderMembers, [name]: folderId };
     void editFolders({ action: 'move', sessions: [name], folder: folderId });
   }
-  activateSession(session);
+  pickSession(session);
 }
 
 // ---------------------------------------------------------------------------
@@ -3832,6 +3896,8 @@ const PREF_SCOPE = TOUCH_DEVICE ? 'touch' : 'desktop';
 interface UiPrefs {
   theme?: ThemeName;
   activeTab?: string;
+  /** The recently picked sessions, newest first (web/recent-tabs.ts). */
+  recentTabs?: string[];
   fontSize?: number;
   fontSizeMobile?: number;
   fontSizeDesktop?: number;
@@ -3925,6 +3991,7 @@ window.addEventListener('pagehide', () => {
 // closeSession this sends NO kill (the session is already gone server-side) —
 // it just removes the tab and frees the terminal locally.
 function removeLocalSession(s: Session): void {
+  queueMicrotask(pruneRecentTabs);
   const idx = sessions.indexOf(s);
   if (idx < 0) return;
   sessions.splice(idx, 1);
@@ -4990,7 +5057,7 @@ function renderDrawer(): void {
     enter.setAttribute('aria-label', `进入会话：${s.displayName}`);
     onTap(enter, () => {
       selectDrawerSession(s);
-      activateSession(s);
+      pickSession(s);
       closeDrawer();
     }, drawer);
 
@@ -5953,6 +6020,7 @@ function closeSheet(): void {
 // re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
   refreshPager();
+  queueMicrotask(paintRecentTabs); // after the sidebar and the drawer are redrawn
   const s = activeTab;
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
@@ -6369,6 +6437,11 @@ async function init(): Promise<void> {
     if (typeof keybar === 'boolean') setKeybarVisible(keybar, kind, false);
     const locked = prefs[`keyboardLocked${suffix}`] ?? (kind === deviceKind ? prefs.keyboardLocked : undefined);
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
+  }
+  if (!recentTabsChanged && Array.isArray(prefs.recentTabs)) {
+    const list = prefs.recentTabs.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX);
+    setRecentTabs(list, false);
+    try { localStorage.setItem('tw.recentTabs', JSON.stringify(list)); } catch { /* ignore */ }
   }
   if (!zoomKeysChanged && typeof prefs.zoomKeys === 'boolean' && prefs.zoomKeys !== zoomShortcutsEnabled) {
     setZoomShortcuts(prefs.zoomKeys);
