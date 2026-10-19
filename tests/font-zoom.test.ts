@@ -5,14 +5,15 @@ import { PinchZoom, WheelZoom, zoomKey } from '../web/font-zoom.js';
 const key = (k: string, code: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean }>) =>
   ({ key: k, code, ctrlKey: false, metaKey: false, altKey: false, ...mods });
 
-test('⌘ on a Mac and Ctrl elsewhere zoom with = + and −; 0 is left to the browser', () => {
+test('⌘ on a Mac and Ctrl elsewhere zoom with = + and −, and reset with 0', () => {
   assert.equal(zoomKey(key('=', 'Equal', { metaKey: true }), true), 1);
   assert.equal(zoomKey(key('+', 'Equal', { metaKey: true }), true), 1);
   assert.equal(zoomKey(key('-', 'Minus', { metaKey: true }), true), -1);
   assert.equal(zoomKey(key('=', 'Equal', { ctrlKey: true }), false), 1);
   assert.equal(zoomKey(key('-', 'NumpadSubtract', { ctrlKey: true }), false), -1);
-  assert.equal(zoomKey(key('0', 'Digit0', { metaKey: true }), true), null);
-  assert.equal(zoomKey(key('0', 'Digit0', { ctrlKey: true }), false), null);
+  assert.equal(zoomKey(key('0', 'Digit0', { metaKey: true }), true), 0);
+  assert.equal(zoomKey(key('0', 'Numpad0', { ctrlKey: true }), false), 0);
+  assert.equal(zoomKey(key('0', 'Digit0', { ctrlKey: true }), true), null); // Ctrl 0 on a Mac is the terminal's
 });
 
 test('the terminal keeps its own chords: Ctrl on a Mac, ⌘ elsewhere, Alt, plain keys', () => {

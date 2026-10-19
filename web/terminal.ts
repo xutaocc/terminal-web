@@ -961,10 +961,9 @@ class Session {
         return false; // composition keystroke — ours, not xterm's
       }
       // ⌘ / Ctrl with = or − zooms the font, here as on the rest of the page.
-      if (zoomShortcutsEnabled && zoomKey(e, isMac) !== null) {
-        if (e.type === 'keydown') zoomFromKey(e);
-        return false;
-      }
+      // ⌘ / Ctrl with = − 0 sizes the font. The page-level listener has already
+      // acted on it (it runs first, in capture); this only keeps xterm off it.
+      if (zoomShortcutsEnabled && zoomKey(e, isMac) !== null) return false;
       if (isMac) return true; // ⌘ needs no remapping; the chords below are Ctrl
       if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey) {
         return true; // not a copy/paste chord — let xterm handle it normally
@@ -4374,9 +4373,10 @@ function makeButton(
 // Font zoom shortcuts (web/font-zoom.ts): ⌘ / Ctrl with = or −, ⌘ / Ctrl with
 // the wheel or a trackpad pinch, and a two-finger pinch on a phone. They size
 // the terminal's font for the layout on screen — the same value as A− / A+ —
-// instead of the browser zooming the whole page. ⌘ / Ctrl 0 stays the
-// browser's. A switch in the settings turns them off for programs that want
-// those chords.
+// instead of the browser zooming the whole page. ⌘ / Ctrl 0 puts the font back
+// to its default and still reaches the browser, which resets any page zoom
+// left from before. A switch in the settings turns them off for programs that
+// want those chords.
 // ---------------------------------------------------------------------------
 let zoomShortcutsEnabled = (() => {
   try { return localStorage.getItem('tw.zoomKeys') !== '0'; } catch { return true; }
@@ -4402,8 +4402,16 @@ function zoomBy(steps: number): void {
 function zoomFromKey(e: KeyboardEvent): void {
   const step = zoomKey(e, isMac);
   if (step === null) return;
+  if (step === 0) { resetFont(); return; } // not prevented: the browser resets its page zoom too
   e.preventDefault();
   zoomBy(step);
+}
+
+/** Back to the on-screen layout's default size. */
+function resetFont(): void {
+  const kind = currentLayout();
+  setFontSize(DEFAULT_FONT[kind], kind);
+  flashStatus(`字号已恢复默认 ${fontSizes[kind]}px（${LAYOUT_LABEL[kind]}）`, 1200);
 }
 
 // Anywhere on the page (the sidebar, a button that has focus): the chord sizes
@@ -4411,7 +4419,6 @@ function zoomFromKey(e: KeyboardEvent): void {
 window.addEventListener('keydown', e => {
   if (!zoomShortcutsEnabled || zoomKey(e, isMac) === null) return;
   zoomFromKey(e);
-  e.stopPropagation();
 }, true);
 // ⌘ / Ctrl + wheel and trackpad pinches over the terminal: the browser would
 // zoom the page; the font is sized instead. Not passive, so it can be stopped.
@@ -5377,8 +5384,8 @@ const zoomKeysButton = sheetRow('±', '快捷键缩放字号', () => {
 });
 zoomKeysButton.setAttribute('role', 'checkbox');
 zoomKeysButton.title = isMac
-  ? '⌘ = / ⌘ − 与 ⌘ + 滚轮（触控板捏合）缩放终端字号；手机双指捏合。⌘ 0 仍为浏览器重置页面缩放'
-  : 'Ctrl = / Ctrl − 与 Ctrl + 滚轮缩放终端字号；手机双指捏合。Ctrl 0 仍为浏览器重置页面缩放';
+  ? '⌘ = / ⌘ − 与 ⌘ + 滚轮（触控板捏合）缩放终端字号，⌘ 0 恢复默认字号（同时重置网页缩放）；手机双指捏合'
+  : 'Ctrl = / Ctrl − 与 Ctrl + 滚轮缩放终端字号，Ctrl 0 恢复默认字号（同时重置网页缩放）；手机双指捏合';
 let zoomKeysChanged = false;
 function setZoomShortcuts(on: boolean): void {
   zoomShortcutsEnabled = on;
@@ -5386,7 +5393,7 @@ function setZoomShortcuts(on: boolean): void {
   const icon = zoomKeysButton.querySelector('.sheet-ico');
   if (icon) icon.textContent = on ? '☑' : '☐';
   const label = zoomKeysButton.querySelector('span:last-child');
-  if (label) label.textContent = TOUCH_DEVICE ? '双指捏合缩放字号' : `快捷键缩放字号（${isMac ? '⌘' : 'Ctrl'} = / −）`;
+  if (label) label.textContent = TOUCH_DEVICE ? '双指捏合缩放字号' : `快捷键缩放字号（${isMac ? '⌘' : 'Ctrl'} = / − / 0）`;
   try { localStorage.setItem('tw.zoomKeys', on ? '1' : '0'); } catch { /* server prefs keep it */ }
   savePrefs({ zoomKeys: on });
 }

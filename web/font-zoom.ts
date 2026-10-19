@@ -2,21 +2,23 @@
  * Zooming the terminal's font, not the page. On a computer: ⌘ / Ctrl with = or
  * + to grow it and − to shrink it — the keys every browser and terminal zooms
  * with — and ⌘ / Ctrl with the wheel (a trackpad pinch arrives as that too).
- * ⌘ / Ctrl 0 is left to the browser, so a page zoomed by accident can still be
- * reset. On a phone: a two-finger pinch over the terminal.
+ * ⌘ / Ctrl 0 puts the font back to its default, and is also let through to the
+ * browser, so a page zoomed by accident is reset by the same key. On a phone: a
+ * two-finger pinch over the terminal.
  *
  * Pure decisions only; terminal.ts owns the font and the event listeners.
  */
 
-/** +1 / −1 for a zoom chord, null for anything else. */
+/** +1 / −1 for a zoom chord, 0 for the reset chord, null for anything else. */
 export function zoomKey(e: {
   key: string; code: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean;
-}, mac: boolean): 1 | -1 | null {
+}, mac: boolean): 1 | -1 | 0 | null {
   // ⌘ on a Mac (Ctrl there is the terminal's), Ctrl elsewhere; Shift is allowed,
   // since + is Shift-= on most layouts.
   if (e.altKey || (mac ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey)) return null;
   if (e.key === '=' || e.key === '+' || e.code === 'Equal' || e.code === 'NumpadAdd') return 1;
   if (e.key === '-' || e.key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract') return -1;
+  if (e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0') return 0;
   return null;
 }
 
