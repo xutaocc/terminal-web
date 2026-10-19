@@ -2196,22 +2196,17 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .remote-row-text .remote-note { font-weight: 500; overflow: hidden; text-overflow: ellipsis; color: var(--ui-text, #e5e5e5); }
 .remote-row-text .remote-note:empty { display: none; }
 
-/* Recently picked sessions (web/recent-tabs.ts): the title alone is underlined,
-   in the text's own colour, darker the more recent (--recent 1 → 0.3). Thin,
-   so it does not read as the settings' bold "current layout" underline. */
-.tab .tab-label.recent,
-.ps-chip-name.recent,
-.drawer-name.recent {
-  text-decoration-line: underline;
-  text-decoration-thickness: 1.5px;
-  text-underline-offset: 3px;
-  text-decoration-color: color-mix(in srgb, currentColor calc(var(--recent, 1) * 100%), transparent);
-}
-/* In the strip the title is clamped to two 13px lines with overflow hidden: an
-   underline drawn below the line box would be clipped away. Draw it just under
-   the glyphs and give the box a pixel more at the bottom. */
-.tab .tab-label.recent {
-  text-underline-offset: 1px;
-  padding-bottom: 2px;
-  max-height: 28px;
+/* Recently picked sessions (web/recent-tabs.ts): a thick pale-yellow bottom
+   border on the tab itself — in the strip, the sidebar and the phone list —
+   strong for the newest, fading to faint for the sixth (--recent 1 → 0.3).
+   A real border rather than an inset shadow, so it sits on the tab's own edge
+   and does not draw a second outline inside the blue one of the open tab. The
+   id in the selector lets it win over the open / pinned tabs' border colour. */
+:root { --recent-tab: #f3d77a; }
+:root[data-theme="light"] { --recent-tab: #c9a227; }
+#tabs .tab.recent,
+#sidebar .ps-chip.recent,
+.drawer-list .drawer-row.recent {
+  border-bottom-width: 3px;
+  border-bottom-color: color-mix(in srgb, var(--recent-tab) calc(var(--recent, 1) * 100%), transparent);
 }

@@ -3095,8 +3095,8 @@ function addSession(name: string, makeActive: boolean, displayName?: string): Se
 // ---------------------------------------------------------------------------
 // Recently picked sessions (web/recent-tabs.ts): the last RECENT_TABS_MAX the
 // user chose by hand — a tab, a sidebar chip or card, the phone list, an
-// attention pill, a new session — have their titles underlined, darker the
-// more recent. Opening the page, or a closed tab handing over to its
+// attention pill, a new session — have a pale-yellow bottom border, stronger
+// the more recent. Opening the page, or a closed tab handing over to its
 // neighbour, is not a pick. Kept per device class on the server, like the
 // other prefs, so a phone and a PC each keep their own.
 // ---------------------------------------------------------------------------
@@ -3126,8 +3126,9 @@ function pickSession(s: Session): void {
 }
 
 /**
- * Underline the titles of the recent sessions, in the strip, the sidebar and
- * the phone list. --recent (0–1) sets how dark: the newest full, the sixth faint.
+ * Mark the recent sessions in the strip, the sidebar and the phone list: a
+ * thick pale-yellow bottom border on the tab itself (the title is left alone).
+ * --recent (0–1) sets how strong: the newest full, the sixth faint.
  */
 function paintRecentTabs(): void {
   const mark = (el: Element | null | undefined, name: string): void => {
@@ -3137,14 +3138,12 @@ function paintRecentTabs(): void {
     if (strength > 0) el.style.setProperty('--recent', strength.toFixed(2));
     else el.style.removeProperty('--recent');
   };
-  for (const s of sessions) mark(s.tabLabel, s.name);
+  for (const s of sessions) mark(s.tabEl, s.name);
   for (const dot of sidebar.dots()) {
-    const name = dot.dataset.sessions ?? '';
-    if (dot.closest('.ps-chip')) mark(dot.closest('.ps-chip')?.querySelector('.ps-chip-name'), name);
+    const chip = dot.closest('.ps-chip');
+    if (chip) mark(chip, dot.dataset.sessions ?? '');
   }
-  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
-    mark(row.querySelector('.drawer-name'), row.dataset.session ?? '');
-  }
+  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) mark(row, row.dataset.session ?? '');
 }
 
 /** Sessions that are gone leave the list (closed here or on another device). */
