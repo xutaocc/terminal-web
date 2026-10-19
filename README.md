@@ -523,8 +523,9 @@ Enter it in the login page, which submits it by POST. A token in the address
 and router logs; it is stripped from the address and the login page is shown.
 The login page lets the browser's password manager save the token. Six wrong
 tokens from one address lock it out for a minute (doubling each time, up to an
-hour), with the attempt count shown. The settings panel copies a host's address
-and token on request (fetched by POST at that moment). Credentials use HttpOnly,
+hour), with the attempt count shown. The settings panel shows a host's address
+with its token masked; 显示 Token fetches it by POST and shows it for a minute,
+to be copied by hand. Credentials use HttpOnly,
 SameSite=Lax cookies, with Secure enabled behind HTTPS. Browser retention is
 400 days; the server does not expire logins. Clearing browser data requires
 signing in again. Multiple devices can use the same token simultaneously.
