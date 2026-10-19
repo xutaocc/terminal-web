@@ -3,6 +3,7 @@ import './theme.css';
 import './hosts.css';
 import { applyDocumentTheme, isTheme } from './theme.js';
 import { brandMark } from './brand-mark.js';
+import { labelBadge } from './hosts.js';
 import { baseName, childPath, crumbs, isAbsolutePath, isRoot, isWithin as within, normalizePath, parentPath, rootOf, samePath, segments } from './file-path.js';
 
 // Runs in a same-origin embedded page; cookies and all APIs belong to the terminal server.
@@ -509,9 +510,10 @@ $('#session-label').textContent = query.get('label') || session || '当前会话
   const where = query.get('hostLabel'), ip = query.get('hostIp');
   if (where || ip) {
     const tag = el('span', 'host-tag');
-    tag.append(el('span', `host-badge ${host ? 'remote' : 'local'}`, host ? '远程' : '本地'));
+    // The server's own tag (name and colour), as on the terminal page.
+    tag.append(labelBadge(query.get('tagName') || (host ? '远程' : '本地'), query.get('tagColor') || (host ? 'amber' : 'green'), query.get('tagNote') || ''));
     if (ip) tag.append(el('span', `host-ip ${host ? 'remote' : 'local'}`, ip));
-    tag.title = [where, ip].filter(Boolean).join(' · ');
+    tag.title = [where, ip, query.get('tagNote')].filter(Boolean).join(' · ');
     $('#session-label').after(tag);
     document.body.classList.toggle('remote-files', !!host);
     document.title = `文件管理 · ${tag.title}`;

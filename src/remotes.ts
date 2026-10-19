@@ -13,8 +13,36 @@ import { randomBytes } from 'node:crypto';
  * reaches the browser, every page stays same-origin, and a phone outside the
  * LAN reaches the remote through whatever already reaches this server.
  */
-export interface Remote { id: string; name: string; url: string; token: string }
+/**
+ * A server as it is labelled in the page: `name` is its tag (本地 / 远程 badges
+ * show it), at most LABEL_MAX characters and unique among the servers one page
+ * shows; `note` says what it is for; `color` is one of LABEL_COLORS.
+ */
+export interface Remote { id: string; name: string; url: string; token: string; note?: string; color?: string }
 export type PublicRemote = Omit<Remote, 'token'>;
+
+/** Characters a server's tag may have: short enough for a tab. */
+export const LABEL_MAX = 6;
+/** The tag colours on offer, far enough apart to tell at a glance. */
+export const LABEL_COLORS = ['green', 'amber', 'blue', 'purple', 'red', 'teal'] as const;
+const NOTE_MAX = 200;
+
+/** A tag as typed: control characters out, trimmed, at most LABEL_MAX characters; null if empty. */
+export function cleanLabel(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = Array.from(raw.replace(/[\x00-\x1f\x7f]/g, '').trim()).slice(0, LABEL_MAX).join('');
+  return name || null;
+}
+export function cleanNote(raw: unknown): string {
+  return typeof raw === 'string' ? Array.from(raw.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').trim()).slice(0, NOTE_MAX).join('') : '';
+}
+export function cleanColor(raw: unknown): string | undefined {
+  return typeof raw === 'string' && (LABEL_COLORS as readonly string[]).includes(raw) ? raw : undefined;
+}
+/** Tags compare without case or surrounding space: "Mac" and "mac " are the same tag. */
+export function sameLabel(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
 
 const PREFIX = /^\/remote\/([a-z0-9]{1,16})(\/.*)$/;
 // A remote may itself drive remotes; this stops two servers that list each
@@ -298,11 +326,6 @@ export function validRemoteUrl(raw: unknown): string | null {
   } catch { return null; }
 }
 
-function cleanName(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const name = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 32);
-  return name || null;
-}
 
 function cleanToken(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -321,7 +344,14 @@ export class RemoteStore {
       const parsed: unknown = JSON.parse(await fsp.readFile(this.file, 'utf8'));
       this.cache = Array.isArray(parsed) ? parsed.filter((r): r is Remote =>
         !!r && typeof r.id === 'string' && /^[a-z0-9]{1,16}$/.test(r.id) && typeof r.name === 'string' &&
-        typeof r.url === 'string' && !!validRemoteUrl(r.url) && typeof r.token === 'string') : [];
+        typeof r.url === 'string' && !!validRemoteUrl(r.url) && typeof r.token === 'string')
+        // Names from before tags were capped: shortened, kept unique with a digit.
+        .map((r, i, all) => {
+          let name = cleanLabel(r.name) ?? r.id.slice(0, LABEL_MAX);
+          const before = all.slice(0, i).map(x => cleanLabel(x.name) ?? '');
+          for (let n = 2; before.some(b => sameLabel(b, name)); n++) name = Array.from(name).slice(0, LABEL_MAX - 1).join('') + n;
+          return { ...r, name };
+        }) : [];
     } catch { this.cache = []; }
     return this.cache;
   }
@@ -331,7 +361,7 @@ export class RemoteStore {
   }
 
   static view(remotes: Remote[]): PublicRemote[] {
-    return remotes.map(({ id, name, url }) => ({ id, name, url }));
+    return remotes.map(({ id, name, url, note, color }) => ({ id, name, url, note: note ?? '', color: color ?? 'amber' }));
   }
 
   private async save(next: Remote[]): Promise<void> {
@@ -345,13 +375,20 @@ export class RemoteStore {
     await this.write;
   }
 
-  /** Apply one edit from the settings UI; throws with a message for the user. */
-  async edit(body: Record<string, unknown>): Promise<Remote[]> {
+  /**
+   * Apply one edit from the settings UI; throws with a message for the user.
+   * `taken` are tags already in use elsewhere (this server's own), which a
+   * remote's tag must not repeat any more than another remote's may.
+   */
+  async edit(body: Record<string, unknown>, taken: string[] = []): Promise<Remote[]> {
     const all = [...await this.list()];
     if (body.action === 'add' || body.action === 'update') {
       const existing = body.action === 'update' ? all.find(r => r.id === body.id) : undefined;
       if (body.action === 'update' && !existing) throw new Error('远程主机不存在');
-      const name = cleanName(body.name) ?? existing?.name;
+      const name = body.name === undefined && existing ? existing.name : cleanLabel(body.name);
+      if (name && [...taken, ...all.filter(r => r.id !== existing?.id).map(r => r.name)].some(t => sameLabel(t, name))) {
+        throw new Error(`保存失败：名称「${name}」已存在，请换一个`);
+      }
       const url = body.url === undefined && existing ? existing.url : validRemoteUrl(body.url);
       const token = (body.token === undefined || body.token === '') && existing ? existing.token : cleanToken(body.token);
       if (!name) throw new Error('请填写名称');
@@ -359,7 +396,11 @@ export class RemoteStore {
       if (!token) throw new Error('请填写远程访问 Token');
       const probe = await probeRemote(url, token);
       if (probe !== 'ok') throw new Error(probe);
-      const remote: Remote = { id: existing?.id ?? randomBytes(4).toString('hex'), name, url, token };
+      const remote: Remote = {
+        id: existing?.id ?? randomBytes(4).toString('hex'), name, url, token,
+        note: body.note === undefined ? existing?.note ?? '' : cleanNote(body.note),
+        color: cleanColor(body.color) ?? existing?.color ?? 'amber',
+      };
       await this.save(existing ? all.map(r => r.id === remote.id ? remote : r) : [...all, remote]);
       return this.list();
     }

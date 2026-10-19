@@ -1,6 +1,6 @@
 import { type FolderGroup, groupByDirectory, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { brandMark } from './brand-mark.js';
-import { hostOfKey } from './hosts.js';
+import { hostOfKey, labelBadge } from './hosts.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null; pinned?: boolean }
@@ -15,6 +15,8 @@ export interface SidebarSection {
   title: string;
   /** The address it is known by (LAN / Tailscale IP), shown beside the title. */
   ip: string;
+  /** Its tag: the badge's name, colour and the note shown on hover. */
+  tag: { name: string; color: string; note: string };
   remote: boolean;
   online: boolean;
   home: string;
@@ -201,7 +203,7 @@ export class ProjectSidebar {
     this.dirNames = dirNames;
     this.cardOrder = cardOrder;
     const signature = JSON.stringify([active, [...this.folded], dirNames, cardOrder, sections.map(sec => [
-      sec.host, sec.title, sec.ip, sec.online, sec.home, sec.groups.map(g => [
+      sec.host, sec.title, sec.ip, sec.tag, sec.online, sec.home, sec.groups.map(g => [
         g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd, !!s.pinned]),
       ])])]);
     this.lastRender = { sections, groups: sections.flatMap(sec => sec.groups), active };
@@ -246,13 +248,11 @@ export class ProjectSidebar {
     el.classList.toggle('folded', folded);
     const head = document.createElement('div');
     head.className = 'ps-host-head';
-    head.title = section.remote ? `远程主机：${section.title}` : '本机上的会话';
+    head.title = [section.remote ? `远程主机：${section.title}` : '本机上的会话', section.tag.note].filter(Boolean).join('\n');
     const chevron = document.createElement('span');
     chevron.className = 'ps-chevron';
     chevron.innerHTML = ICONS.chevron;
-    const badge = document.createElement('span');
-    badge.className = `host-badge ${section.remote ? 'remote' : 'local'}`;
-    badge.textContent = section.remote ? '远程' : '本地';
+    const badge = labelBadge(section.tag.name, section.tag.color, section.tag.note);
     const name = document.createElement('span');
     name.className = 'ps-host-name';
     name.textContent = section.title;

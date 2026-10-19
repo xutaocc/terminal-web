@@ -8,7 +8,26 @@
  * page has always stored), a remote one's is "@<host>/<name>". Neither a tmux
  * session name nor a folder id can contain "@" or "/".
  */
-export interface RemoteHost { id: string; name: string; url: string }
+export interface RemoteHost { id: string; name: string; url: string; note?: string; color?: string }
+
+/**
+ * The tag colours a server can have (src/remotes.ts LABEL_COLORS), with their
+ * names for the picker. Six far apart, so servers tell apart at a glance.
+ */
+export const LABEL_COLORS = [
+  ['green', '绿'], ['amber', '橙'], ['blue', '蓝'], ['purple', '紫'], ['red', '红'], ['teal', '青'],
+] as const;
+export const LABEL_MAX = 6;
+
+/** A server's tag as a badge: its name, coloured. `title` goes on hover. */
+export function labelBadge(name: string, color: string | undefined, title = ''): HTMLElement {
+  const badge = document.createElement('span');
+  const known = LABEL_COLORS.some(([c]) => c === color);
+  badge.className = `host-badge label-${known ? color : 'amber'}`;
+  badge.textContent = name;
+  if (title) badge.title = title;
+  return badge;
+}
 
 const KEY = /^@([a-z0-9]{1,16})\/(.*)$/s;
 

@@ -35,3 +35,17 @@
 /* Pinned: a small pin in the accent colour, never in the way of the name. */
 .pin-mark { display: inline-flex; flex: none; color: #3b8eea; }
 .pin-mark svg { display: block; }
+
+/* A server's own tag colour (see LABEL_COLORS in web/hosts.ts). The old 本地 /
+   远程 colours stay as two of them: green and amber. */
+.host-badge.label-green  { --tag: var(--host-local); }
+.host-badge.label-amber  { --tag: var(--host-remote); }
+.host-badge.label-blue   { --tag: #4a9eff; }
+.host-badge.label-purple { --tag: #b07cf0; }
+.host-badge.label-red    { --tag: #f06a6a; }
+.host-badge.label-teal   { --tag: #2fbfb0; }
+:root[data-theme="light"] .host-badge.label-blue   { --tag: #1f6fd1; }
+:root[data-theme="light"] .host-badge.label-purple { --tag: #7a45c4; }
+:root[data-theme="light"] .host-badge.label-red    { --tag: #c23b3b; }
+:root[data-theme="light"] .host-badge.label-teal   { --tag: #13857a; }
+.host-badge[class*="label-"] { color: var(--tag); background: color-mix(in srgb, var(--tag) 13%, transparent); }

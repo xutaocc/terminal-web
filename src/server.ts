@@ -39,7 +39,7 @@ import { handleFileApi, handleSite } from "./file-api.js";
 import { QuickCommandStore, validQuickCommands } from './quick-commands.js';
 import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
-import { RemoteMonitor, RemoteStatusHub, RemoteStore, proxyHttp, proxyUpgrade, remoteRoute } from './remotes.js';
+import { RemoteMonitor, RemoteStatusHub, RemoteStore, cleanColor, cleanLabel, cleanNote, proxyHttp, proxyUpgrade, remoteRoute, sameLabel } from './remotes.js';
 
 const config = loadConfig();
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
@@ -1303,13 +1303,46 @@ function hostInfo(): { name: string; ip: string; ips: string[]; port: number; pl
   return { name: os.hostname(), ip: lanAddress(), ips: lanAddresses(), port: config.port, platform: process.platform };
 }
 
+// This server's own tag: the name its 本地 badge shows (and other servers
+// see when they list it), a note on what it is, and a colour. Kept beside the
+// remote list so every device shows the same.
+interface SelfLabel { name: string; note: string; color: string }
+const SELF_LABEL_FILE = path.join(path.dirname(process.env.REMOTES_FILE || path.join(os.homedir(), ".terminal-web", "remotes.json")), "self-label.json");
+let selfLabelCache: SelfLabel | null = null;
+async function selfLabel(): Promise<SelfLabel> {
+  if (selfLabelCache) return selfLabelCache;
+  try {
+    const d = JSON.parse(await fsp.readFile(SELF_LABEL_FILE, "utf8")) as Partial<SelfLabel>;
+    selfLabelCache = { name: cleanLabel(d.name) ?? "本地", note: cleanNote(d.note), color: cleanColor(d.color) ?? "green" };
+  } catch {
+    selfLabelCache = { name: "本地", note: "", color: "green" };
+  }
+  return selfLabelCache;
+}
+async function saveSelfLabel(body: Record<string, unknown>): Promise<void> {
+  const before = await selfLabel();
+  const name = body.name === undefined ? before.name : cleanLabel(body.name);
+  if (!name) throw new Error("请填写名称");
+  if ((await remotes.list()).some(r => sameLabel(r.name, name))) throw new Error(`保存失败：名称「${name}」已存在，请换一个`);
+  const next: SelfLabel = {
+    name,
+    note: body.note === undefined ? before.note : cleanNote(body.note),
+    color: cleanColor(body.color) ?? before.color,
+  };
+  await fsp.mkdir(path.dirname(SELF_LABEL_FILE), { recursive: true, mode: 0o700 });
+  const tmp = `${SELF_LABEL_FILE}.${process.pid}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  await fsp.rename(tmp, SELF_LABEL_FILE);
+  selfLabelCache = next;
+}
+
 async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   res.setHeader("Cache-Control", "no-store");
   const reply = async (): Promise<void> => sendJsonHttp(res, 200, {
     remotes: RemoteStore.view(await remotes.list()),
     health: remoteMonitor.snapshot(),
     // No token here: a page asks for one only when it copies it (POST /api/access).
-    self: hostInfo(),
+    self: { ...hostInfo(), label: await selfLabel() },
   });
   if (req.method === "GET") { await reply(); return; }
   let body: Record<string, unknown>;
@@ -1322,7 +1355,13 @@ async function handleRemotes(req: http.IncomingMessage, res: http.ServerResponse
     await reply();
     return;
   }
-  try { await remotes.edit(body ?? {}); }
+  if (body?.action === "self") {
+    try { await saveSelfLabel(body); }
+    catch (err) { sendJsonHttp(res, 400, { error: (err as Error).message }); return; }
+    await reply();
+    return;
+  }
+  try { await remotes.edit(body ?? {}, [(await selfLabel()).name]); }
   catch (err) { sendJsonHttp(res, 400, { error: (err as Error).message }); return; }
   await remoteMonitor.sync();
   await remoteStatus.sync();

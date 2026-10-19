@@ -24,7 +24,7 @@ import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
-import { hostOfKey, hostUrl, isAbsolutePath, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
+import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { lastSegment, platformLabel, quotePathForShell } from './platform.js';
 
 // ---------------------------------------------------------------------------
@@ -548,21 +548,28 @@ const hostPlatforms = new Map<string, string>();
 // were added, and which of them did not answer the last sync.
 let remoteHosts: RemoteHost[] = [];
 let selfName = '';
+/** This server's own tag: what its badge says, a note, a colour (POST /api/remotes, action self). */
+let selfLabel = { name: '本地', note: '', color: 'green' };
 const offlineHosts = new Set<string>();
 
-/** "本地 · mac" or "远程 · 119": which server a session, setting or file view belongs to. */
-function hostLabel(host: string): string {
-  if (!host) return selfName ? `本地 · ${selfName}` : '本地';
-  return `远程 · ${remoteHosts.find(r => r.id === host)?.name ?? host}`;
+/** A server's tag: its name (≤ 6 characters), note and colour. */
+function hostTag(host: string): { name: string; note: string; color: string } {
+  if (!host) return selfLabel;
+  const r = remoteHosts.find(x => x.id === host);
+  return { name: r?.name ?? host, note: r?.note ?? '', color: r?.color ?? 'amber' };
 }
 
-/** The small 本地 / 远程 tag put in front of a session's name. */
+/** "本地 · mac" or "119 · 远程": which server a session, setting or file view belongs to. */
+function hostLabel(host: string): string {
+  const { name } = hostTag(host);
+  if (!host) return selfName ? `${name} · 本机 ${selfName}` : name;
+  return `${name} · 远程`;
+}
+
+/** The server's tag, in its colour, put in front of a session's name. Its note shows on hover. */
 function hostBadge(host: string): HTMLElement {
-  const badge = document.createElement('span');
-  badge.className = `host-badge ${host ? 'remote' : 'local'}`;
-  badge.textContent = host ? '远程' : '本地';
-  badge.title = hostTitle(host);
-  return badge;
+  const tag = hostTag(host);
+  return labelBadge(tag.name, tag.color, [hostTitle(host), tag.note].filter(Boolean).join('\n'));
 }
 
 /** "Windows" / "macOS" / "Linux" for a server's row; empty (and so invisible) until it has said. */
@@ -2972,7 +2979,9 @@ function buildTab(s: Session): void {
   pin.innerHTML = ICONS.pin;
   pin.title = '已置顶';
   const ip = ipSuffix(s.host);
-  tab.append(dot, pin, hostBadge(s.host), label, ip, close);
+  const badge = hostBadge(s.host);
+  badge.dataset.host = s.host; // redrawn in place when the server's tag changes
+  tab.append(dot, pin, badge, label, ip, close);
   tab.classList.toggle('remote', !!s.host);
   s.tabIp = ip;
   // Right-click (or a long press on touch): pin, edit, close.
@@ -3471,6 +3480,7 @@ function refreshSidebar(): void {
       host,
       title: host ? remoteHosts.find(r => r.id === host)?.name ?? host : selfName ? `本机 · ${selfName}` : '本机',
       ip: hostIp(host),
+      tag: hostTag(host),
       remote: !!host,
       online: !offlineHosts.has(host),
       home: homeDirs.get(host) ?? '',
@@ -4128,6 +4138,23 @@ setInterval(() => {
   tickAt = now;
 }, 5_000);
 
+/**
+ * A server's tag changed (name, colour, note): put the new one on the badges
+ * built once and kept — the tabs. Everything else is redrawn by its own render.
+ */
+function refreshHostBadges(): void {
+  for (const old of tabsEl.querySelectorAll<HTMLElement>('.host-badge[data-host]')) {
+    const host = old.dataset.host ?? '';
+    const fresh = hostBadge(host);
+    fresh.dataset.host = host;
+    if (fresh.outerHTML !== old.outerHTML) old.replaceWith(fresh);
+  }
+  refreshMobileUI();
+  refreshSettingsTarget();
+  accessDrawn = ''; // the access panel's title carries the tag too
+  renderAccessLink();
+}
+
 // ---------------------------------------------------------------------------
 // Remote hosts: the servers this one forwards to. Their list lives on this
 // server (see src/remotes.ts); a remote's sessions come and go with it.
@@ -4146,16 +4173,23 @@ let selfIps: string[] = [];
 let selfPort = 0;
 function takeRemotes(data: {
   remotes?: unknown; health?: unknown;
-  self?: { name?: unknown; ip?: unknown; ips?: unknown; port?: unknown };
+  self?: { name?: unknown; ip?: unknown; ips?: unknown; port?: unknown; label?: unknown };
 }): void {
   if (!Array.isArray(data.remotes)) return;
   if (data.health && typeof data.health === 'object') takeHealth(data.health as Record<string, RemoteHealth>);
   if (typeof data.self?.name === 'string') selfName = data.self.name;
   if (typeof data.self?.ip === 'string' && data.self.ip !== selfIp) { selfIp = data.self.ip; ipTails = shortIps(); }
+  const label = data.self?.label as { name?: unknown; note?: unknown; color?: unknown } | undefined;
+  if (label && typeof label.name === 'string') {
+    selfLabel = { name: label.name, note: typeof label.note === 'string' ? label.note : '',
+      color: typeof label.color === 'string' ? label.color : 'green' };
+  }
   if (Array.isArray(data.self?.ips)) selfIps = data.self.ips.filter((ip): ip is string => typeof ip === 'string');
   if (typeof data.self?.port === 'number') selfPort = data.self.port;
   const next = data.remotes.filter((r): r is RemoteHost =>
     !!r && typeof r.id === 'string' && typeof r.name === 'string' && typeof r.url === 'string');
+  // Tags may have changed (name, colour): redraw every badge already on the page.
+  queueMicrotask(refreshHostBadges);
   const kept = new Set(next.map(r => r.id));
   // A remote taken off the list takes its tabs off this page; its sessions
   // themselves are left running over there.
@@ -5439,10 +5473,43 @@ const remoteForm = document.createElement('form');
 remoteForm.className = 'remote-form';
 remoteForm.hidden = true;
 const remoteInputs = {
-  name: Object.assign(document.createElement('input'), { placeholder: '名称，如 119 桌面', maxLength: 32 }),
+  name: Object.assign(document.createElement('input'), { placeholder: `标签名称（最多 ${LABEL_MAX} 个字，如 119桌面）`, maxLength: LABEL_MAX }),
+  note: Object.assign(document.createElement('input'), { placeholder: '备注（可选）：这台服务器是做什么的', maxLength: 200 }),
   url: Object.assign(document.createElement('input'), { placeholder: 'http://192.168.88.119:8090' }),
   token: Object.assign(document.createElement('input'), { placeholder: '远程的访问 Token', type: 'password' }),
 };
+
+/**
+ * The six tag colours as a row of swatches, each showing what the badge will
+ * look like. Returns the row and a way to read / set the choice.
+ */
+function colorPicker(): { el: HTMLElement; get: () => string; set: (c: string) => void; preview: (name: string) => void } {
+  const el = document.createElement('div');
+  el.className = 'label-colors';
+  el.setAttribute('role', 'radiogroup');
+  el.setAttribute('aria-label', '标签颜色');
+  let chosen = 'amber';
+  let shown = '';
+  const draw = (): void => {
+    el.replaceChildren();
+    for (const [color, title] of LABEL_COLORS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'label-swatch';
+      b.classList.toggle('active', color === chosen);
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(color === chosen));
+      b.title = title;
+      b.append(labelBadge(shown || title, color));
+      b.addEventListener('click', () => { chosen = color; draw(); });
+      el.append(b);
+    }
+  };
+  draw();
+  return { el, get: () => chosen, set: c => { chosen = c; draw(); }, preview: name => { shown = name; draw(); } };
+}
+const remoteColor = colorPicker();
+remoteInputs.name.addEventListener('input', () => remoteColor.preview(remoteInputs.name.value.trim()));
 for (const input of Object.values(remoteInputs)) {
   input.autocapitalize = 'off';
   input.autocomplete = 'off';
@@ -5458,12 +5525,18 @@ const remoteCancel = Object.assign(document.createElement('button'), { type: 'bu
 const remoteFormRow = document.createElement('div');
 remoteFormRow.className = 'paste-row';
 remoteFormRow.append(remoteCancel, remoteSave);
-remoteForm.append(remoteInputs.name, remoteInputs.url, remoteInputs.token, remoteFormRow);
+remoteForm.append(remoteInputs.name, remoteInputs.note, remoteColor.el, remoteInputs.url, remoteInputs.token, remoteFormRow);
 let remoteEditing: string | null = null; // id being edited, '' for a new one
 
 function openRemoteForm(remote?: RemoteHost): void {
+  selfForm.hidden = true;
   remoteEditing = remote?.id ?? '';
   remoteInputs.name.value = remote?.name ?? '';
+  remoteInputs.note.value = remote?.note ?? '';
+  // A new server gets the first colour no other server has yet.
+  const used = new Set([selfLabel.color, ...remoteHosts.filter(r => r.id !== remote?.id).map(r => r.color ?? 'amber')]);
+  remoteColor.set(remote?.color ?? LABEL_COLORS.find(([c]) => !used.has(c))?.[0] ?? 'amber');
+  remoteColor.preview(remoteInputs.name.value.trim());
   remoteInputs.url.value = remote?.url ?? '';
   remoteInputs.token.value = '';
   remoteInputs.token.placeholder = remote ? '留空则不修改 Token' : '远程的访问 Token';
@@ -5497,12 +5570,65 @@ async function editRemotes(body: Record<string, unknown>, busy: string): Promise
 remoteForm.addEventListener('submit', e => {
   e.preventDefault();
   const editing = remoteEditing;
+  const name = remoteInputs.name.value.trim();
+  const clash = [selfLabel.name, ...remoteHosts.filter(r => r.id !== editing).map(r => r.name)]
+    .find(n => n.trim().toLowerCase() === name.toLowerCase());
+  if (clash) { remoteStatus.textContent = `保存失败：名称「${name}」已存在，请换一个`; remoteInputs.name.focus(); return; }
   const body = {
     action: editing ? 'update' : 'add', id: editing || undefined,
-    name: remoteInputs.name.value, url: remoteInputs.url.value, token: remoteInputs.token.value,
+    name, note: remoteInputs.note.value, color: remoteColor.get(),
+    url: remoteInputs.url.value, token: remoteInputs.token.value,
   };
   void editRemotes(body, '正在连接远程主机…').then(ok => {
     if (ok) { remoteForm.hidden = true; flashStatus(editing ? '远程主机已更新' : '远程主机已添加，会话已并入侧栏', 2500); }
+  });
+});
+
+// This server's own tag: name, note, colour. Saved on this server (its 本地
+// badge, on every device) and checked against the remotes' names.
+const selfForm = document.createElement('form');
+selfForm.className = 'remote-form';
+selfForm.hidden = true;
+const selfInputs = {
+  name: Object.assign(document.createElement('input'), { placeholder: `本机标签名称（最多 ${LABEL_MAX} 个字）`, maxLength: LABEL_MAX }),
+  note: Object.assign(document.createElement('input'), { placeholder: '备注（可选）：这台服务器是做什么的', maxLength: 200 }),
+};
+for (const input of Object.values(selfInputs)) {
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.className = 'prompt-input';
+  input.addEventListener('keydown', e => e.stopPropagation());
+}
+const selfColor = colorPicker();
+selfInputs.name.addEventListener('input', () => selfColor.preview(selfInputs.name.value.trim()));
+const selfSave = Object.assign(document.createElement('button'), { type: 'submit', className: 'tb-btn primary', textContent: '保存' });
+const selfCancel = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '取消' });
+const selfRow = document.createElement('div');
+selfRow.className = 'paste-row';
+selfRow.append(selfCancel, selfSave);
+selfForm.append(selfInputs.name, selfInputs.note, selfColor.el, selfRow);
+selfCancel.addEventListener('click', () => { selfForm.hidden = true; remoteStatus.textContent = ''; });
+function openSelfForm(): void {
+  remoteForm.hidden = true;
+  selfInputs.name.value = selfLabel.name;
+  selfInputs.note.value = selfLabel.note;
+  selfColor.set(selfLabel.color);
+  selfColor.preview(selfLabel.name);
+  selfForm.hidden = false;
+  remoteStatus.textContent = '';
+  selfInputs.name.focus();
+}
+selfForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const name = selfInputs.name.value.trim();
+  if (!name) { remoteStatus.textContent = '请填写名称'; return; }
+  if (remoteHosts.some(r => r.name.trim().toLowerCase() === name.toLowerCase())) {
+    remoteStatus.textContent = `保存失败：名称「${name}」已存在，请换一个`;
+    selfInputs.name.focus();
+    return;
+  }
+  void editRemotes({ action: 'self', name, note: selfInputs.note.value, color: selfColor.get() }, '正在保存…').then(ok => {
+    if (ok) { selfForm.hidden = true; flashStatus('本机标签已保存', 1800); }
   });
 });
 
@@ -5680,7 +5806,11 @@ function renderRemoteList(): void {
   const selfText = document.createElement('span');
   selfText.className = 'remote-row-text';
   selfText.append(hostBadge(''), selfName ? `本机 · ${selfName}` : '本机', ipSuffix('', true), platformTag(''));
-  self.append(selfText);
+  if (selfLabel.note) selfText.title = selfLabel.note;
+  const selfEdit = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '编辑' });
+  selfEdit.title = '修改本机的标签名称、备注和颜色';
+  selfEdit.addEventListener('click', () => openSelfForm());
+  self.append(selfText, selfEdit);
   remoteList.append(self);
   for (const remote of remoteHosts) {
     const row = document.createElement('div');
@@ -5688,8 +5818,11 @@ function renderRemoteList(): void {
     row.classList.toggle('offline', offlineHosts.has(remote.id));
     const text = document.createElement('span');
     text.className = 'remote-row-text';
+    // The badge carries the name now; beside it, what the server is for.
     const name = document.createElement('b');
-    name.textContent = remote.name;
+    name.className = 'remote-note';
+    name.textContent = remote.note || '';
+    name.title = remote.note || '';
     let retryButton: HTMLButtonElement | null = null;
     const url = document.createElement('small');
     url.textContent = `${remote.url}${offlineHosts.has(remote.id) ? ` · 无法连接${hostErrors.get(remote.id) ? `（${hostErrors.get(remote.id)}）` : ''}` : ''}`;
@@ -5716,7 +5849,7 @@ function renderRemoteList(): void {
   add.addEventListener('click', () => openRemoteForm());
   remoteList.append(add);
 }
-remoteGroup.append(accessBox, remoteList, remoteForm, remoteStatus);
+remoteGroup.append(accessBox, remoteList, selfForm, remoteForm, remoteStatus);
 renderRemoteList();
 
 // Ordered by how often each is reached for: everyday actions first, then the
@@ -6332,6 +6465,10 @@ function openFileBrowser(): void {
     if (session.host) query.host = session.host;
     // The file manager always says whose files these are, and at which address.
     query.hostLabel = hostLabel(session.host);
+    const tag = hostTag(session.host);
+    query.tagName = tag.name;
+    query.tagColor = tag.color;
+    if (tag.note) query.tagNote = tag.note;
     if (hostIp(session.host)) query.hostIp = hostIp(session.host);
     fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams(query)}`;
   }

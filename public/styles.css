@@ -2178,3 +2178,20 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .sheet-fonts { display: flex; flex-direction: column; }
 .sheet-fonts .sheet-font .sf-val { flex: 1 1 auto; text-align: left; }
 .sheet-fonts .sheet-font.current .sf-val { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px; }
+
+/* Tag editor (settings → 远程主机): six colour swatches, each a preview badge. */
+.label-colors { display: flex; flex-wrap: wrap; gap: 6px; }
+.label-swatch {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.label-swatch.active { border-color: var(--ui-text, #e5e5e5); }
+.label-swatch .host-badge { font-size: 11px; line-height: 16px; padding: 1px 6px; }
+.remote-row-text .remote-note { font-weight: 500; overflow: hidden; text-overflow: ellipsis; color: var(--ui-text, #e5e5e5); }
+.remote-row-text .remote-note:empty { display: none; }
