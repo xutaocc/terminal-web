@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupByDirectory, groupByFolder, orderCards, reorderCards, shortCwd, wouldEmpty } from '../web/project-groups.js';
+import { groupByDirectory, groupByFolder, orderBy, orderCards, reorderCards, shortCwd, wouldEmpty } from '../web/project-groups.js';
 
 const folders = [{ id: 'f1', name: 'Alpha' }, { id: 'f2', name: 'Beta' }];
 
@@ -69,4 +69,11 @@ test('dropping a card before or after another reorders around it', () => {
   assert.deepEqual(reorderCards(order, '/b', '/b', true), order);
   assert.deepEqual(reorderCards(order, '/x', '/b', false), ['/a', '/x', '/b', '/c', '/d']);
   assert.deepEqual(order, ['/a', '/b', '/c', '/d']);
+});
+
+test('orderBy puts saved keys first and keeps the rest in their natural order', () => {
+  const items = [{ k: 'a' }, { k: 'b' }, { k: 'c' }, { k: 'd' }];
+  assert.deepEqual(orderBy(items, x => x.k, ['c', 'a']).map(x => x.k), ['c', 'a', 'b', 'd']);
+  assert.deepEqual(orderBy(items, x => x.k, undefined).map(x => x.k), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(orderBy(items, x => x.k, ['zz']).map(x => x.k), ['a', 'b', 'c', 'd']);
 });

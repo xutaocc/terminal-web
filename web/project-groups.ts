@@ -62,12 +62,20 @@ export function groupByDirectory<T>(items: readonly T[], cwdOf: (item: T) => str
  * cards it does not mention keep their natural order after the ones it does.
  */
 export function orderCards<T extends { cwd: string }>(cards: readonly T[], order: readonly string[] | undefined): T[] {
-  if (!order?.length) return [...cards];
-  const rank = new Map(order.map((cwd, i) => [cwd, i]));
-  return cards
-    .map((card, i) => ({ card, i, r: rank.get(card.cwd) }))
+  return orderBy(cards, card => card.cwd, order);
+}
+
+/**
+ * `items` in the order the keys were saved in (`order`); items it does not
+ * mention keep their natural order after the ones it does.
+ */
+export function orderBy<T>(items: readonly T[], keyOf: (item: T) => string, order: readonly string[] | undefined): T[] {
+  if (!order?.length) return [...items];
+  const rank = new Map(order.map((key, i) => [key, i]));
+  return items
+    .map((item, i) => ({ item, i, r: rank.get(keyOf(item)) }))
     .sort((a, b) => (a.r ?? Infinity) - (b.r ?? Infinity) || a.i - b.i)
-    .map(x => x.card);
+    .map(x => x.item);
 }
 
 /** The new card order after dropping `moving` before or after `target`. */

@@ -1,4 +1,4 @@
-import { type FolderGroup, groupByDirectory, orderCards, reorderCards, shortCwd } from './project-groups.js';
+import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { brandMark } from './brand-mark.js';
 import { hostOfKey, labelBadge } from './hosts.js';
 
@@ -45,6 +45,8 @@ export interface SidebarHooks {
   pinSession(name: string, pinned: boolean): void;
   /** A chip was dragged onto another in the same card: put `name` before or after `target`. */
   reorderSession(name: string, target: string, after: boolean): void;
+  /** A server's block was dragged into a new place among the others (host keys, first to last). */
+  orderHosts(hosts: string[]): void;
   /** A host's attention pill was clicked: show the session that wants you most. */
   attend(host: string): void;
   openSettings(): void;
@@ -129,6 +131,8 @@ export class ProjectSidebar {
     names: string[]; from: string; card?: { cwd: string; name: string }; cardCwd?: string;
     /** A single chip: the card (folder + directory) it was in, for reordering inside it. */
     chipIn?: string;
+    /** A server's whole block, dragged by its header to another place among the servers. */
+    hostBlock?: string;
   } | null = null;
   private menu: HTMLElement | null = null;
 
@@ -202,13 +206,18 @@ export class ProjectSidebar {
   private dirNames: Record<string, Record<string, string>> = {};
   /** folder id -> the cwds of its cards, in the order the user dragged them into. */
   private cardOrder: Record<string, string[]> = {};
+  /** The servers' host keys, in the order the user dragged their blocks into ('' is this server). */
+  private hostOrder: string[] = [];
 
-  render(sections: SidebarSection[], active: string | null,
+  render(unordered: SidebarSection[], active: string | null,
          dirNames: Record<string, Record<string, string>> = this.dirNames,
-         cardOrder: Record<string, string[]> = this.cardOrder): void {
+         cardOrder: Record<string, string[]> = this.cardOrder,
+         hostOrder: string[] = this.hostOrder): void {
     this.dirNames = dirNames;
     this.cardOrder = cardOrder;
-    const signature = JSON.stringify([active, [...this.folded], dirNames, cardOrder, sections.map(sec => [
+    this.hostOrder = hostOrder;
+    const sections = orderBy(unordered, sec => sec.host, hostOrder);
+    const signature = JSON.stringify([active, [...this.folded], dirNames, cardOrder, hostOrder, sections.map(sec => [
       sec.host, sec.title, sec.ip, sec.tag, sec.online, sec.home, sec.groups.map(g => [
         g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd, !!s.pinned]),
       ])])]);
@@ -252,9 +261,11 @@ export class ProjectSidebar {
     el.classList.toggle('offline', !section.online);
     const folded = this.folded.has(key);
     el.classList.toggle('folded', folded);
+    this.bindHostReorder(el, section.host);
     const head = document.createElement('div');
     head.className = 'ps-host-head';
     head.title = [section.remote ? `远程主机：${section.title}` : '本机上的会话', section.tag.note].filter(Boolean).join('\n');
+    this.bindHostDrag(head, section.host);
     const chevron = document.createElement('span');
     chevron.className = 'ps-chevron';
     chevron.innerHTML = ICONS.chevron;
@@ -306,6 +317,60 @@ export class ProjectSidebar {
     body.className = 'ps-host-body';
     el.append(body);
     return body;
+  }
+
+  /** Dragging a server's header takes its whole block along (see bindHostReorder). */
+  private bindHostDrag(head: HTMLElement, host: string): void {
+    head.draggable = true;
+    head.addEventListener('dragstart', e => {
+      e.stopPropagation();
+      this.dragging = { names: [], from: '', hostBlock: host };
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('application/x-terminal-host', host);
+      }
+    });
+    head.addEventListener('dragend', () => {
+      this.dragging = null;
+      this.list.querySelectorAll('.ps-host').forEach(el => el.classList.remove('ps-drop-before', 'ps-drop-after'));
+    });
+  }
+
+  /**
+   * A server's block dropped onto another goes before or after it, by which
+   * half of it the pointer is over; a line shows where. Its folders and cards
+   * go with it. Sessions dropped here are left to the folders inside.
+   */
+  private bindHostReorder(el: HTMLElement, host: string): void {
+    const side = (e: DragEvent): boolean => {
+      const r = el.getBoundingClientRect();
+      return e.clientY >= r.top + r.height / 2;
+    };
+    const mine = (): boolean => !!this.dragging?.hostBlock && this.dragging.hostBlock !== host;
+    el.addEventListener('dragover', e => {
+      if (!mine()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const after = side(e);
+      el.classList.toggle('ps-drop-after', after);
+      el.classList.toggle('ps-drop-before', !after);
+    });
+    el.addEventListener('dragleave', e => {
+      if (!el.contains(e.relatedTarget as Node)) el.classList.remove('ps-drop-before', 'ps-drop-after');
+    });
+    el.addEventListener('drop', e => {
+      const drag = this.dragging;
+      if (!drag?.hostBlock || !mine()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.remove('ps-drop-before', 'ps-drop-after');
+      const current = this.lastRender?.sections.map(sec => sec.host) ?? [];
+      const next = reorderCards(current, drag.hostBlock, host, side(e));
+      this.hostOrder = next;
+      this.rerender();
+      this.hooks.orderHosts(next);
+    });
   }
 
   /** Each server's attention pill (data-host), for the caller to paint. */
@@ -613,7 +678,7 @@ export class ProjectSidebar {
   }
 
   private bindDrop(el: HTMLElement, folderId: string): void {
-    const movable = (): boolean => !!this.dragging && this.dragging.from !== folderId &&
+    const movable = (): boolean => !!this.dragging && this.dragging.names.length > 0 && this.dragging.from !== folderId &&
       hostOfKey(this.dragging.names[0]) === hostOfKey(folderId);
     el.addEventListener('dragover', e => {
       if (!movable()) return;

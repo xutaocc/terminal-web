@@ -541,6 +541,8 @@ let folderMembers: Record<string, string> = {};
 let dirNames: Record<string, Record<string, string>> = {};
 /** folder id ('' for none) -> its directory cards' cwds, in the order the user dragged them into. */
 let cardOrder: Record<string, string[]> = {};
+/** The order of the servers' sidebar blocks ('' is this server), kept per device class on the server. */
+let hostOrder: string[] = [];
 /** host -> that server's home directory, for shortening card paths. */
 const homeDirs = new Map<string, string>();
 /** host -> its server's operating system (Node's process.platform), once it has said. */
@@ -687,6 +689,11 @@ const sidebar = new ProjectSidebar({
   orderCards: (folderId, cwds) => {
     cardOrder = { ...cardOrder, [folderId]: cwds };
     void editFolders({ action: 'orderCards', folder: folderId, cwds });
+  },
+  // Kept per device class on the server, like the tab order, so it survives a refresh.
+  orderHosts: hosts => {
+    hostOrder = hosts;
+    savePrefs({ hostOrder: hosts });
   },
   openSettings: () => openSheet(),
   openHelp: () => openHelp(),
@@ -3559,7 +3566,7 @@ function refreshSidebar(): void {
       groups,
     };
   });
-  sidebar.render(sections, activeTab?.name ?? null, dirNames, cardOrder);
+  sidebar.render(sections, activeTab?.name ?? null, dirNames, cardOrder, hostOrder);
   orderTabStrip();
   for (const s of sessions) {
     s.tabEl?.classList.toggle('pinned', isPinned(s));
@@ -3908,6 +3915,8 @@ interface UiPrefs {
   recentTabs?: string[];
   /** The order the user dragged tabs and sidebar sessions into. */
   tabOrder?: string[];
+  /** The order the servers' blocks were dragged into in the sidebar ('' is this server). */
+  hostOrder?: string[];
   fontSize?: number;
   fontSizeMobile?: number;
   fontSizeDesktop?: number;
@@ -6487,6 +6496,7 @@ async function init(): Promise<void> {
     setRecentTabs(list, false);
     try { localStorage.setItem('tw.recentTabs', JSON.stringify(list)); } catch { /* ignore */ }
   }
+  if (Array.isArray(prefs.hostOrder)) hostOrder = prefs.hostOrder.filter((h): h is string => typeof h === 'string');
   if (!zoomKeysChanged && typeof prefs.zoomKeys === 'boolean' && prefs.zoomKeys !== zoomShortcutsEnabled) {
     setZoomShortcuts(prefs.zoomKeys);
   }

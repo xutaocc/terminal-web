@@ -921,6 +921,8 @@ interface UiPrefs {
   recentTabs?: string[];
   /** The order the user arranged the tabs in on this kind of device. */
   tabOrder?: string[];
+  /** The order of the servers' blocks in the sidebar ('' is this server), on this kind of device. */
+  hostOrder?: string[];
   /** Key bar and keyboard lock, kept apart for the phone and the PC layout. */
   keybarMobile?: boolean;
   keybarDesktop?: boolean;
@@ -1023,6 +1025,12 @@ async function handleSetPrefs(
     next.tabOrder = obj.tabOrder
       .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
       .slice(0, 500);
+  }
+  if (Array.isArray(obj.hostOrder)) {
+    // A server's key: '' for this one, else its remote id (see remotes.ts).
+    next.hostOrder = obj.hostOrder
+      .filter((h): h is string => typeof h === "string" && /^[a-z0-9]{0,16}$/.test(h))
+      .slice(0, 100);
   }
   for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
     if (typeof obj[key] === "boolean") next[key] = obj[key];

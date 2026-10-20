@@ -1835,6 +1835,9 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 
 /* PC sidebar: one top-level folder per server. */
 .ps-host + .ps-host { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--ui-border, #333); }
+/* A server's block dropped beside another: a line on that side (see bindHostReorder). */
+.ps-host.ps-drop-before { box-shadow: inset 0 2px 0 #3b8eea; }
+.ps-host.ps-drop-after { box-shadow: inset 0 -2px 0 #3b8eea; }
 .ps-host-head {
   position: relative;
   display: flex;
