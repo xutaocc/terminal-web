@@ -346,7 +346,7 @@ export class ProjectSidebar {
       const r = el.getBoundingClientRect();
       return e.clientY >= r.top + r.height / 2;
     };
-    const mine = (): boolean => !!this.dragging?.hostBlock && this.dragging.hostBlock !== host;
+    const mine = (): boolean => this.dragging?.hostBlock !== undefined && this.dragging.hostBlock !== host;
     el.addEventListener('dragover', e => {
       if (!mine()) return;
       e.preventDefault();
@@ -361,7 +361,7 @@ export class ProjectSidebar {
     });
     el.addEventListener('drop', e => {
       const drag = this.dragging;
-      if (!drag?.hostBlock || !mine()) return;
+      if (drag?.hostBlock === undefined || !mine()) return;
       e.preventDefault();
       e.stopPropagation();
       el.classList.remove('ps-drop-before', 'ps-drop-after');

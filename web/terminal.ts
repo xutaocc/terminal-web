@@ -542,8 +542,9 @@ let folderMembers: Record<string, string> = {};
 let dirNames: Record<string, Record<string, string>> = {};
 /** folder id ('' for none) -> its directory cards' cwds, in the order the user dragged them into. */
 let cardOrder: Record<string, string[]> = {};
-/** The order of the servers' sidebar blocks ('' is this server), kept per device class on the server. */
+/** Shared order of the servers' sidebar blocks ('' is this server). */
 let hostOrder: string[] = [];
+let hostOrderChanged = false;
 /** host -> that server's home directory, for shortening card paths. */
 const homeDirs = new Map<string, string>();
 /** host -> its server's operating system (Node's process.platform), once it has said. */
@@ -691,8 +692,9 @@ const sidebar = new ProjectSidebar({
     cardOrder = { ...cardOrder, [folderId]: cwds };
     void editFolders({ action: 'orderCards', folder: folderId, cwds });
   },
-  // Kept per device class on the server, like the tab order, so it survives a refresh.
+  // Shared by all browsers and device classes on this server.
   orderHosts: hosts => {
+    hostOrderChanged = true;
     hostOrder = hosts;
     savePrefs({ hostOrder: hosts });
   },
@@ -3974,17 +3976,43 @@ function prefsBody(): string {
   return body;
 }
 
-function flushPrefs(): void {
+let prefsSaving = false;
+let prefsRetryDelay = 1000;
+let prefsSaveWarned = false;
+
+async function flushPrefs(): Promise<void> {
   window.clearTimeout(prefsTimer);
-  if (!Object.keys(pendingPrefs).length) return;
-  void fetch('/api/prefs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: prefsBody(),
-    keepalive: true,
-  }).catch(() => {
-    /* ignore — a lost pref is a cosmetic loss, and the next change retries */
-  });
+  if (prefsSaving || !Object.keys(pendingPrefs).length) return;
+  const patch = pendingPrefs;
+  pendingPrefs = {};
+  prefsSaving = true;
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch('/api/prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: PREF_SCOPE, ...patch }),
+      keepalive: true,
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`prefs: ${res.status}`);
+    prefsRetryDelay = 1000;
+    if (prefsSaveWarned) flashStatus('设置已保存', 2000);
+    prefsSaveWarned = false;
+  } catch {
+    // Newer edits win over the failed request when it is retried.
+    pendingPrefs = { ...patch, ...pendingPrefs };
+    if (!prefsSaveWarned) flashStatus('设置保存失败，将自动重试', 4000);
+    prefsSaveWarned = true;
+    prefsRetryDelay = Math.min(prefsRetryDelay * 2, 30000);
+  } finally {
+    window.clearTimeout(timer);
+    prefsSaving = false;
+    if (Object.keys(pendingPrefs).length) {
+      prefsTimer = window.setTimeout(() => void flushPrefs(), prefsRetryDelay);
+    }
+  }
 }
 
 // Coalesced: holding A− down, or walking through tabs, is one write.
@@ -3993,6 +4021,24 @@ function savePrefs(patch: UiPrefs): void {
   Object.assign(pendingPrefs, patch);
   window.clearTimeout(prefsTimer);
   prefsTimer = window.setTimeout(flushPrefs, 400);
+}
+
+// A slow first request must not permanently leave this browser at the default order.
+async function retryHostOrder(): Promise<void> {
+  let delay = 1000;
+  while (!hostOrderChanged) {
+    await new Promise(resolve => window.setTimeout(resolve, delay));
+    const prefs = await fetchServerPrefs(10000);
+    if (hostOrderChanged) return;
+    if (prefs) {
+      if (Array.isArray(prefs.hostOrder)) {
+        hostOrder = prefs.hostOrder.filter((h): h is string => typeof h === 'string');
+        refreshSidebar();
+      }
+      return;
+    }
+    delay = Math.min(delay * 2, 30000);
+  }
 }
 
 // Closing the app is exactly when the debounce would still be pending, and on
@@ -6510,7 +6556,7 @@ async function init(): Promise<void> {
     setRecentTabs(list, false);
     try { localStorage.setItem('tw.recentTabs', JSON.stringify(list)); } catch { /* ignore */ }
   }
-  if (Array.isArray(prefs.hostOrder)) hostOrder = prefs.hostOrder.filter((h): h is string => typeof h === 'string');
+  if (!hostOrderChanged && Array.isArray(prefs.hostOrder)) hostOrder = prefs.hostOrder.filter((h): h is string => typeof h === 'string');
   if (!zoomKeysChanged && typeof prefs.zoomKeys === 'boolean' && prefs.zoomKeys !== zoomShortcutsEnabled) {
     setZoomShortcuts(prefs.zoomKeys);
   }
@@ -6549,6 +6595,8 @@ async function init(): Promise<void> {
 
   // Everything restored: from here on, changes are the user's and get saved.
   prefsReady = true;
+  if (hostOrderChanged) savePrefs({ hostOrder });
+  if (!prefsForOrder) void retryHostOrder();
   if (themeChanged) savePrefs({ theme: currentTheme });
   if (keyboardLockChanged) {
     savePrefs({ keyboardLockedMobile: layoutSettings.keyboardLocked.mobile,

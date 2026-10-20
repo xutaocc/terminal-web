@@ -921,7 +921,7 @@ interface UiPrefs {
   recentTabs?: string[];
   /** The order the user arranged the tabs in on this kind of device. */
   tabOrder?: string[];
-  /** The order of the servers' blocks in the sidebar ('' is this server), on this kind of device. */
+  /** Shared order of the servers' blocks in the sidebar ('' is this server). */
   hostOrder?: string[];
   /** Key bar and keyboard lock, kept apart for the phone and the PC layout. */
   keybarMobile?: boolean;
@@ -930,7 +930,7 @@ interface UiPrefs {
   keyboardLockedDesktop?: boolean;
 }
 
-/** device class ("touch" | "desktop") -> that class's prefs. */
+/** Device class prefs, plus shared fields under "shared". */
 type PrefsByScope = Record<string, UiPrefs>;
 
 let prefsCache: PrefsByScope | null = null;
@@ -974,7 +974,10 @@ async function handleGetPrefs(
     return;
   }
   const all = await loadPrefs();
-  sendJsonHttp(res, 200, { prefs: all[scope] ?? {} });
+  // Host blocks are shared across device classes. Prefer the old desktop
+  // order when migrating a file that predates the shared scope.
+  const hostOrder = all.shared?.hostOrder ?? all.desktop?.hostOrder ?? all.touch?.hostOrder;
+  sendJsonHttp(res, 200, { prefs: { ...(all[scope] ?? {}), ...(hostOrder ? { hostOrder } : {}) } });
 }
 
 /** Merge a partial update into one scope's prefs ({ scope, ...fields }). */
@@ -995,55 +998,64 @@ async function handleSetPrefs(
     sendJsonHttp(res, 400, { error: "bad scope" });
     return;
   }
-  const all = await loadPrefs();
-  const next: UiPrefs = { ...(all[scope] ?? {}) };
-  // Only the fields actually present change; everything else is left alone, so
-  // a client that knows about one pref can't blank the ones it doesn't.
-  if (typeof obj.activeTab === "string" && obj.activeTab.trim()) {
-    // A tab on a remote host is remembered by its page key, "@<host>/<name>".
-    const remote = /^(@[a-z0-9]{1,16}\/)(.+)$/.exec(obj.activeTab.trim());
-    next.activeTab = remote ? remote[1] + sanitizeSession(remote[2]) : sanitizeSession(obj.activeTab);
+  const operation = prefsWrite.then(async () => {
+    const all = { ...await loadPrefs() };
+    const next: UiPrefs = { ...(all[scope] ?? {}) };
+    // Only the fields actually present change; everything else is left alone, so
+    // a client that knows about one pref can't blank the ones it doesn't.
+    if (typeof obj.activeTab === "string" && obj.activeTab.trim()) {
+      // A tab on a remote host is remembered by its page key, "@<host>/<name>".
+      const remote = /^(@[a-z0-9]{1,16}\/)(.+)$/.exec(obj.activeTab.trim());
+      next.activeTab = remote ? remote[1] + sanitizeSession(remote[2]) : sanitizeSession(obj.activeTab);
+    }
+    if (typeof obj.fontSize === "number" && Number.isFinite(obj.fontSize)) {
+      next.fontSize = Math.min(28, Math.max(8, Math.round(obj.fontSize)));
+    }
+    for (const key of ["fontSizeMobile", "fontSizeDesktop"] as const) {
+      const v = obj[key];
+      if (typeof v === "number" && Number.isFinite(v)) next[key] = Math.min(28, Math.max(8, Math.round(v)));
+    }
+    if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
+    if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
+    if (typeof obj.pager === "boolean") next.pager = obj.pager;
+    if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
+    if (Array.isArray(obj.recentTabs)) {
+      // Page keys: a session name, or "@<host>/<name>" for a remote one.
+      next.recentTabs = obj.recentTabs
+        .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
+        .slice(0, 20);
+    }
+    if (Array.isArray(obj.tabOrder)) {
+      next.tabOrder = obj.tabOrder
+        .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
+        .slice(0, 500);
+    }
+    if (Array.isArray(obj.hostOrder)) {
+      // A server's key: '' for this one, else its remote id (see remotes.ts).
+      next.hostOrder = obj.hostOrder
+        .filter((h): h is string => typeof h === "string" && /^[a-z0-9]{0,16}$/.test(h))
+        .slice(0, 100);
+    }
+    for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
+      if (typeof obj[key] === "boolean") next[key] = obj[key];
+    }
+    if (obj.theme === "dark" || obj.theme === "light") next.theme = obj.theme;
+    if (Array.isArray(obj.hostOrder)) {
+      all.shared = { ...all.shared, hostOrder: next.hostOrder };
+    }
+    all[scope] = next;
+    await writePrefs(all);
+    prefsCache = all;
+  });
+  // Serialize the entire read/merge/write, and keep the queue usable on failure.
+  prefsWrite = operation.catch(() => {});
+  try {
+    await operation;
+    sendJsonHttp(res, 200, { ok: true });
+  } catch (err) {
+    console.error("[prefs] write failed:", err);
+    sendJsonHttp(res, 500, { error: "preferences could not be saved" });
   }
-  if (typeof obj.fontSize === "number" && Number.isFinite(obj.fontSize)) {
-    next.fontSize = Math.min(28, Math.max(8, Math.round(obj.fontSize)));
-  }
-  for (const key of ["fontSizeMobile", "fontSizeDesktop"] as const) {
-    const v = obj[key];
-    if (typeof v === "number" && Number.isFinite(v)) next[key] = Math.min(28, Math.max(8, Math.round(v)));
-  }
-  if (typeof obj.keybar === "boolean") next.keybar = obj.keybar;
-  if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
-  if (typeof obj.pager === "boolean") next.pager = obj.pager;
-  if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
-  if (Array.isArray(obj.recentTabs)) {
-    // Page keys: a session name, or "@<host>/<name>" for a remote one.
-    next.recentTabs = obj.recentTabs
-      .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
-      .slice(0, 20);
-  }
-  if (Array.isArray(obj.tabOrder)) {
-    next.tabOrder = obj.tabOrder
-      .filter((n): n is string => typeof n === "string" && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n))
-      .slice(0, 500);
-  }
-  if (Array.isArray(obj.hostOrder)) {
-    // A server's key: '' for this one, else its remote id (see remotes.ts).
-    next.hostOrder = obj.hostOrder
-      .filter((h): h is string => typeof h === "string" && /^[a-z0-9]{0,16}$/.test(h))
-      .slice(0, 100);
-  }
-  for (const key of ["keybarMobile", "keybarDesktop", "keyboardLockedMobile", "keyboardLockedDesktop"] as const) {
-    if (typeof obj[key] === "boolean") next[key] = obj[key];
-  }
-  if (obj.theme === "dark" || obj.theme === "light") next.theme = obj.theme;
-  all[scope] = next;
-  prefsCache = all;
-  prefsWrite = prefsWrite
-    .then(() => writePrefs(all))
-    .catch((err: Error) => {
-      console.error("[prefs] write failed:", err.message);
-    });
-  sendJsonHttp(res, 200, { ok: true });
 }
 
 // Matches the files we generate (clip-<ISO-stamp>-<rand>...), regardless of the
