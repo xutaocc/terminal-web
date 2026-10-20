@@ -26,6 +26,7 @@ import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
 import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
+import { mergePins } from './pin-order.js';
 import { lastSegment, platformLabel, quotePathForShell } from './platform.js';
 
 // ---------------------------------------------------------------------------
@@ -2701,10 +2702,20 @@ function pinnedFirst(list: readonly Session[]): Session[] {
   return list.map((s, i) => ({ s, i, r: rank(s) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.s);
 }
 
+/** Every server, in the order the sidebar shows them: the dragged order first, then the rest. */
+function serverOrder(): string[] {
+  return [...hostOrder, '', ...remoteHosts.map(r => r.id)];
+}
+
 function pinSession(name: string, pinned: boolean): void {
   const s = sessions.find(x => x.name === name);
   if (!s) return;
-  pinnedKeys = pinned ? [name, ...pinnedKeys.filter(n => n !== name)] : pinnedKeys.filter(n => n !== name);
+  // Only this server's run changes; the others keep their place (see mergePins).
+  const host = hostOfKey(name);
+  const raw = splitKey(name).raw;
+  const mineNow = pinnedKeys.filter(key => hostOfKey(key) === host).map(key => splitKey(key).raw);
+  const mineNext = pinned ? [raw, ...mineNow.filter(n => n !== raw)] : mineNow.filter(n => n !== raw);
+  pinnedKeys = mergePins(pinnedKeys, host, mineNext, serverOrder());
   refreshMobileUI();
   flashStatus(pinned ? `已置顶：${s.displayName}` : `已取消置顶：${s.displayName}`, 1400);
   void editFolders({ action: 'pin', sessions: [name], pinned });
@@ -3142,24 +3153,26 @@ function pickSession(s: Session): void {
 }
 
 /**
- * Mark the recent sessions in the strip, the sidebar and the phone list: a
- * thick pale-yellow bottom border on the tab itself (the title is left alone).
- * --recent (0–1) sets how strong: the newest full, the sixth faint.
+ * Mark one tab, chip or row as recent: a thick pale-yellow bottom border on the
+ * tab itself (the title is left alone). --recent (0–1) sets how strong: the
+ * newest full, the sixth faint.
  */
+function markRecent(el: Element | null | undefined, name: string): void {
+  if (!(el instanceof HTMLElement)) return;
+  const strength = recentStrength(recentTabs, name);
+  el.classList.toggle('recent', strength > 0);
+  if (strength > 0) el.style.setProperty('--recent', strength.toFixed(2));
+  else el.style.removeProperty('--recent');
+}
+
+/** Mark the recent sessions in the strip, the sidebar and the phone list. */
 function paintRecentTabs(): void {
-  const mark = (el: Element | null | undefined, name: string): void => {
-    if (!(el instanceof HTMLElement)) return;
-    const strength = recentStrength(recentTabs, name);
-    el.classList.toggle('recent', strength > 0);
-    if (strength > 0) el.style.setProperty('--recent', strength.toFixed(2));
-    else el.style.removeProperty('--recent');
-  };
-  for (const s of sessions) mark(s.tabEl, s.name);
+  for (const s of sessions) markRecent(s.tabEl, s.name);
   for (const dot of sidebar.dots()) {
     const chip = dot.closest('.ps-chip');
-    if (chip) mark(chip, dot.dataset.sessions ?? '');
+    if (chip) markRecent(chip, dot.dataset.sessions ?? '');
   }
-  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) mark(row, row.dataset.session ?? '');
+  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) markRecent(row, row.dataset.session ?? '');
 }
 
 /** Sessions that are gone leave the list (closed here or on another device). */
@@ -3628,10 +3641,8 @@ function setFolders(host: string, data: FolderReply): void {
     ...(data.cardOrder && typeof data.cardOrder === 'object' ? keyedBy(host, data.cardOrder as typeof cardOrder) : {}),
   };
   if (Array.isArray(data.pinned)) {
-    pinnedKeys = [
-      ...pinnedKeys.filter(key => !mine(key)),
-      ...data.pinned.filter((n): n is string => typeof n === 'string').map(n => makeKey(host, n)),
-    ];
+    // Each server's run stays where the servers are in the sidebar, whichever answered first.
+    pinnedKeys = mergePins(pinnedKeys, host, data.pinned.filter((n): n is string => typeof n === 'string'), serverOrder());
   }
   if (typeof data.home === 'string') homeDirs.set(host, data.home);
   if (gone.length) flashStatus(`文件夹「${gone.map(f => f.name).join('」「')}」已无会话，已删除`, 3500);
@@ -5057,6 +5068,9 @@ function renderDrawer(): void {
     const row = document.createElement('div');
     row.className = 'drawer-row' + (s === drawerSelected ? ' active' : '') + (isPinned(s) ? ' pinned' : '');
     row.dataset.session = s.name;
+    // Marked as it is built, not later by paintRecentTabs: a list drawn without
+    // its marks and given them a moment after looks like a change.
+    markRecent(row, s.name);
 
     const body = document.createElement('div');
     body.className = 'drawer-body';
