@@ -498,7 +498,7 @@ export class ProjectSidebar {
       dot.dataset.sessions = names.join(' ');
       const glyph = document.createElement('span');
       glyph.className = 'ps-card-icon';
-      glyph.innerHTML = ICONS.terminal;
+      glyph.innerHTML = ICONS.folder;
       const label = document.createElement('span');
       label.className = 'ps-card-name';
       const ownName = dir.cwd ? dir.cwd.split(/[\\/]/).filter(Boolean).pop() ?? '/' : '目录未知';
