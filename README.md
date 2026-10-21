@@ -352,13 +352,21 @@ session (with a live connection dot).
 - Open tabs and the active tab are remembered **on the server** and restored on
   reload — see below.
 
+Tab names and working directories survive computer reboots even without tmux
+plugins. The server imports existing web tabs on startup and samples working
+directories every 5 seconds (also on session-list and directory requests).
+Opening a saved tab creates a fresh shell in its saved directory if tmux is gone;
+missing directories fall back to the home directory. Terminal output and running
+programs are not restored by this registry. Only explicitly closing a tab removes
+its saved entry; a shell exiting or a remote host being offline does not.
+
 ### What the server remembers
 
 Nothing that has to survive lives in the browser alone:
 
 | What | Where it lives |
 |---|---|
-| Which sessions are tabs, and their labels | the tmux sessions themselves (a `@twtab` option) |
+| Session IDs, labels and latest working directories | `~/.terminal-web/sessions.json` (override with `SESSIONS_FILE`) |
 | Font size, key bar shown, the tab you were on | `~/.terminal-web/prefs.json`, via `GET`/`POST /api/prefs` |
 
 `localStorage` still holds a copy of all of it, because it is instant and it is

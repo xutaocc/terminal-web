@@ -41,7 +41,11 @@ import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
 import { RemoteMonitor, RemoteStatusHub, RemoteStore, cleanColor, cleanLabel, cleanNote, proxyHttp, proxyUpgrade, remoteRoute, sameLabel } from './remotes.js';
 
+import { SessionStore } from './session-store.js';
+
 const config = loadConfig();
+const sessionStore = new SessionStore(process.env.SESSIONS_FILE ||
+  path.join(os.homedir(), '.terminal-web', 'sessions.json'));
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'quick-commands.json'));
 const agentStatus = new AgentStatusMonitor(process.env.AGENT_STATUS_FILE ||
@@ -53,11 +57,12 @@ void agentStatus.start();
 const folders = new FolderStore(process.env.PROJECTS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'projects.json'), async () => {
   const cwds = await listSessionCwds();
-  return cwds && new Map([...cwds].filter(([name]) => !name.endsWith('__b')));
+  const combined = new Map(sessionStore.list().filter(tab => tab.cwd).map(tab => [tab.name, tab.cwd!]));
+  for (const [name, cwd] of cwds ?? []) if (!name.endsWith('__b')) combined.set(name, cwd);
+  return combined;
 });
 
-// The cross-device tab list lives on the tmux sessions themselves (a @twtab
-// user option), so it can't drift from reality — see tmux.ts. This set just
+// Tab names and directories live on disk independently of tmux. This set just
 // tracks sessions with a live WebSocket right now, so a freshly-connected tab
 // shows up in /api/sessions immediately, before its tag write has landed.
 const liveSessions = new Set<string>();
@@ -180,7 +185,10 @@ function saveClosedTabs(): void {
 
 function markClosed(names: string[]): void {
   const now = Date.now();
-  for (const n of names) closedTabs.set(n, now);
+  for (const n of names) {
+    closedTabs.set(n, now);
+    sessionStore.remove(n);
+  }
   saveClosedTabs();
 }
 
@@ -500,13 +508,6 @@ async function readBody(
 // server so any browser sees the same sessions; display names persist here too.
 // ---------------------------------------------------------------------------
 
-/**
- * Return the web tabs, sourced from tmux (sessions carrying the @twtab tag),
- * unioned with sessions that have a live WebSocket right now (covering the
- * brief window between a tab connecting and its tag write completing). When
- * tmux can't be queried, reply with `tabs: null` so the client keeps its
- * current tabs instead of wrongly clearing them.
- */
 async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
   let body: { name?: unknown; text?: unknown; tags?: unknown; displayName?: unknown } = {};
@@ -537,7 +538,10 @@ async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResp
   if (!await setSessionNote(name, note)) {
     sendJsonHttp(res, 409, { error: 'Could not save session note' }); return;
   }
-  if (typeof body.displayName === 'string') setWebTabLabel(name, body.displayName.trim());
+  if (typeof body.displayName === 'string') {
+    sessionStore.update({ name, displayName: body.displayName.trim() });
+    setWebTabLabel(name, body.displayName.trim());
+  }
   sendJsonHttp(res, 200, { ...note, displayName: body.displayName });
 }
 
@@ -556,32 +560,37 @@ async function handleQuickCommands(req: http.IncomingMessage, res: http.ServerRe
 }
 
 async function handleListSessions(res: http.ServerResponse): Promise<void> {
-  const [tagged, cwds] = await Promise.all([listWebTabs(), listSessionCwds()]);
-  if (tagged === null) {
-    sendJsonHttp(res, 200, { tabs: null }); // unknown -> client keeps its state
-    return;
-  }
-  const byName = new Map(tagged.map((t) => [t.name, t]));
-  for (const name of liveSessions) {
-    if (!byName.has(name)) byName.set(name, { name, displayName: name });
-  }
-  // The second half of a split is not a tab — it belongs to the one it is named
-  // after. Only while that one is here, though: a second half whose first is
-  // gone answers to nobody, and hiding it would strand whatever is running in
-  // it with no way to reach it.
-  for (const name of [...byName.keys()]) {
-    if (name.endsWith(MATE_SUFFIX) && byName.has(name.slice(0, -MATE_SUFFIX.length))) {
-      byName.delete(name);
-    }
-  }
-  // Where each session is working now, so the sidebar can group it by directory.
-  const tabs = [...byName.values()].map(tab => ({ ...tab, cwd: cwds?.get(tab.name) }));
-  // A session gone (closed anywhere, or its program exited) leaves its folder,
-  // and a folder left empty goes too. Only with a full listing in hand — a
-  // failed query must never read as "everything is gone".
-  if (cwds) await folders.prune(new Set(cwds.keys())).catch(() => {});
+  const tabs = await collectSavedSessions();
+  await folders.prune(new Set(tabs.map(tab => tab.name))).catch(() => {});
   sendJsonHttp(res, 200, { tabs });
 }
+
+/** Querying tmux enriches the registry; an empty/dead server never deletes tabs. */
+async function collectSavedSessions() {
+  const [tagged, cwds] = await Promise.all([listWebTabs(), listSessionCwds()]);
+  const current = new Map((tagged ?? []).map(tab => [tab.name, tab]));
+  for (const name of liveSessions) {
+    if (!current.has(name)) current.set(name, { name, displayName: name });
+  }
+  for (const tab of current.values()) {
+    if (isClosed(tab.name) || tab.name.endsWith(MATE_SUFFIX)) continue;
+    const saved = sessionStore.get(tab.name);
+    sessionStore.update({ ...tab, displayName: saved?.displayName ?? tab.displayName,
+      cwd: cwds?.get(tab.name) });
+  }
+  // Include saved tabs whose tmux tag is still being applied, too.
+  for (const tab of sessionStore.list()) {
+    const cwd = cwds?.get(tab.name);
+    if (cwd && !isClosed(tab.name)) sessionStore.update({ ...tab, cwd });
+  }
+  return sessionStore.list().filter(tab => !isClosed(tab.name));
+}
+
+void collectSavedSessions().catch(error => console.error('[sessions] initial save failed:', error));
+const sessionDirectoryTimer = setInterval(() => {
+  void collectSavedSessions().catch(error => console.error('[sessions] save failed:', error));
+}, 5000);
+sessionDirectoryTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Agent status (see agent-status.ts). Hooks report in from inside tmux panes;
@@ -775,6 +784,8 @@ async function handleRenameSession(
   const name = sanitizeSession(obj.name);
   const displayName =
     typeof obj.displayName === "string" ? obj.displayName : name;
+  if (!isClosed(name)) sessionStore.update({ name,
+    displayName: displayName.replace(/[\x00-\x1f]/g, ' ').trim().slice(0, 64) || name });
   setWebTabLabel(name, displayName);
   sendJsonHttp(res, 200, { ok: true });
 }
@@ -1202,7 +1213,10 @@ async function handleSessionCwd(res: http.ServerResponse, session: string | null
     sendJsonHttp(res, 400, { error: 'invalid session' });
     return;
   }
-  const cwd = await sessionCwd(session);
+  const liveCwd = await sessionCwd(session);
+  const saved = sessionStore.get(session);
+  if (liveCwd && saved) sessionStore.update({ ...saved, cwd: liveCwd });
+  const cwd = liveCwd ?? saved?.cwd;
   if (!cwd || !path.isAbsolute(cwd)) {
     sendJsonHttp(res, 409, { error: 'working directory unavailable' });
     return;
@@ -1844,6 +1858,7 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
  * Reattaching an existing session never changes its working directory.
  */
 function startAttach(ws: LiveSocket, session: string, cols: number, rows: number, createFrom?: string, directory?: string): void {
+  directory ??= sessionStore.get(session)?.cwd;
   const base = createFrom ?? (session.endsWith(MATE_SUFFIX) ? session.slice(0, -MATE_SUFFIX.length) : null);
   if (!base && directory === undefined) {
     attachSession(ws, session, cols, rows);
@@ -1851,6 +1866,9 @@ function startAttach(ws: LiveSocket, session: string, cols: number, rows: number
   }
   void mateStartDir(session, base ?? session, directory).then((dir) => {
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (directory && dir && path.isAbsolute(directory) && path.normalize(directory) !== path.normalize(dir)) {
+      sendJson(ws, { type: 'info', message: `原会话目录不可用，已进入用户主目录：${directory}` });
+    }
     attachSession(ws, session, cols, rows, dir ?? undefined);
   });
 }
@@ -1902,7 +1920,10 @@ function attachSession(
   // named after, and a tab of its own is the one thing it must not become.
   if (!session.endsWith(MATE_SUFFIX)) {
     liveSessions.add(session);
+    const saved = sessionStore.get(session);
+    sessionStore.update({ name: session, displayName: saved?.displayName ?? session, cwd: startDir });
     tagWebSession(session);
+    if (saved) setWebTabLabel(session, saved.displayName);
   }
   addSessionClient(session, ws);
 

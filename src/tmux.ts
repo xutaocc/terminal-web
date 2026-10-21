@@ -206,9 +206,8 @@ export function requireTmux(): void {
 //   @twtab   = "1"     -> this session is a web tab (shown on every device)
 //   @twlabel = "..."   -> the tab's display label
 //
-// Making tmux the single source of truth means the tab list can never drift
-// from reality: a session shows up as a tab iff it exists in tmux and carries
-// the tag, and its label dies with the session. No separate file to get stale.
+// These tags discover existing live tabs. The server also keeps a disk registry
+// of names and working directories so tab identities survive a tmux/host restart.
 // ---------------------------------------------------------------------------
 const TAB_TAG = "@twtab";
 const TAB_LABEL = "@twlabel";
