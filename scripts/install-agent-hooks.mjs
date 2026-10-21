@@ -65,7 +65,22 @@ const slashed = (p) => p.replace(/\\/g, '/');
 const command = (agent, event) => WINDOWS
   ? `"${slashed(process.execPath)}" "${slashed(HOOK_SCRIPT)}" ${agent} ${event}`
   : `/bin/sh ${quote(HOOK_SCRIPT)} ${agent} ${event}`;
-const ours = (group) => (group?.hooks ?? []).some(h => typeof h?.command === 'string' && MARK.test(h.command));
+const ownHook = (hook) => typeof hook?.command === 'string' && MARK.test(hook.command);
+const ours = (group) => (group?.hooks ?? []).some(ownHook);
+
+// A group may contain other tools' hooks alongside ours. Keep those hooks and
+// the group's matcher/metadata when refreshing or uninstalling our commands.
+export function removeOwnHooks(groups) {
+  return groups.flatMap(group => {
+    if (!ours(group)) return [group];
+    const hooks = group.hooks.filter(hook => !ownHook(hook));
+    return hooks.length ? [{ ...group, hooks }] : [];
+  });
+}
+
+export function qwenCheckRequired(onlyAgent, available) {
+  return onlyAgent === 'qwen' || (!onlyAgent && available);
+}
 
 function readJson(file, fallback) {
   try {
@@ -168,7 +183,7 @@ function claudeHooks(claudeSettings, install) {
   const hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
   for (const event of Object.keys(hooks)) {
     if (!Array.isArray(hooks[event])) continue;
-    hooks[event] = hooks[event].filter(group => !ours(group));
+    hooks[event] = removeOwnHooks(hooks[event]);
     if (!hooks[event].length) delete hooks[event];
   }
   if (install) {
@@ -189,6 +204,37 @@ function claudeInstalled(claudeSettings) {
 }
 
 // ---------------------------------------------------------------------------
+// qwen-code: the same settings.json `hooks` shape as Claude Code, but in a single
+// file (~/.qwen/settings.json unless $QWEN_HOME). No trust entry: user-level
+// command hooks are enabled by default.
+// ---------------------------------------------------------------------------
+function qwenHooksUpdate(install) {
+  if (!fs.existsSync(qwenSettings) && !install) return;
+  const settings = readJson(qwenSettings, {});
+  const hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
+  for (const event of Object.keys(hooks)) {
+    if (!Array.isArray(hooks[event])) continue;
+    hooks[event] = removeOwnHooks(hooks[event]);
+    if (!hooks[event].length) delete hooks[event];
+  }
+  if (install) {
+    for (const [event, matcher] of QWEN_EVENTS) {
+      const group = { ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command: command('qwen', event), timeout: 5 }] };
+      (hooks[event] ??= []).push(group);
+    }
+  }
+  settings.hooks = hooks;
+  if (!Object.keys(hooks).length) delete settings.hooks;
+  backup(qwenSettings);
+  writeFile(qwenSettings, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
+function qwenInstalled() {
+  const hooks = readJson(qwenSettings, {}).hooks ?? {};
+  return QWEN_EVENTS.filter(([event]) => (hooks[event] ?? []).some(ours)).length;
+}
+
+// ---------------------------------------------------------------------------
 // Codex: hooks.json plus a trust entry per hook in config.toml — Codex will not
 // run a hook whose hash it has not been told to trust.
 // ---------------------------------------------------------------------------
@@ -197,6 +243,17 @@ const codexHooks = path.join(codexHome, 'hooks.json');
 const codexConfig = path.join(codexHome, 'config.toml');
 // Kimi Code keeps one config.toml per data root: ~/.kimi-code unless KIMI_CODE_HOME says otherwise.
 const kimiConfig = path.join(process.env.KIMI_CODE_HOME || path.join(HOME, '.kimi-code'), 'config.toml');
+// qwen-code keeps its settings in ~/.qwen unless $QWEN_HOME says otherwise.
+// Mirrors qwen-code's own resolution: `~` alone or `~/…` expands, anything else
+// resolves from the current working directory.
+function qwenHome() {
+  const configured = process.env.QWEN_HOME;
+  if (!configured) return path.join(HOME, '.qwen');
+  if (configured === '~') return HOME;
+  if (configured.startsWith('~/') || configured.startsWith('~\\')) return path.join(HOME, configured.slice(2));
+  return path.resolve(configured);
+}
+const qwenSettings = path.join(qwenHome(), 'settings.json');
 // opencode 2 has no command hooks. Its status comes from a CLI (TUI) plugin
 // registered in cli.json: the TUI runs inside the pane, so TMUX_PANE names the
 // right pane there. opencode loads a CLI plugin from a package directory with a
@@ -250,7 +307,7 @@ function codexHooksUpdate(install) {
   const hooks = data.hooks && typeof data.hooks === 'object' ? data.hooks : {};
   for (const event of Object.keys(hooks)) {
     if (!Array.isArray(hooks[event])) continue;
-    hooks[event] = hooks[event].filter(group => !ours(group));
+    hooks[event] = removeOwnHooks(hooks[event]);
     if (!hooks[event].length) delete hooks[event];
   }
   const trust = [];
@@ -422,11 +479,13 @@ async function main() {
     for (const file of claude) console.log(`Claude Code     ${claudeInstalled(file)}/${CLAUDE_EVENTS.length} hooks  ${file}`);
     console.log(`Codex           ${codexInstalled()}/${CODEX_EVENTS.length} hooks  ${codexHooks}`);
     console.log(`Kimi Code       ${kimiInstalled()}/${KIMI_EVENTS.length} hooks  ${kimiConfig}`);
+    console.log(`qwen-code       ${qwenInstalled()}/${QWEN_EVENTS.length} hooks  ${qwenSettings}`);
     console.log(`opencode        ${opencodeInstalled()}/${OPENCODE_PLUGINS} plugin  ${opencodeCli}`);
     const ok = fs.existsSync(HOOK_SCRIPT) && token && server.status &&
       (!wants('claude') || (claude.length && claude.every(file => claudeInstalled(file) === CLAUDE_EVENTS.length))) &&
       (!wants('codex') || codexInstalled() === CODEX_EVENTS.length) &&
       (!wants('kimi') || kimiInstalled() === KIMI_EVENTS.length) &&
+      (!qwenCheckRequired(only, fs.existsSync(qwenHome()) || has('qwen')) || qwenInstalled() === QWEN_EVENTS.length) &&
       (!wants('opencode') || opencodeInstalled() === OPENCODE_PLUGINS);
     process.exit(ok ? 0 : 1);
   }
@@ -460,6 +519,13 @@ async function main() {
       console.log(`Kimi Code: ${install ? 'installed' : 'removed'} (${kimiConfig})`);
     }
   }
+  if (wants('qwen')) {
+    if (install && !fs.existsSync(qwenHome()) && !has('qwen')) console.log('qwen-code: not found, skipped');
+    else {
+      qwenHooksUpdate(install);
+      console.log(`qwen-code: ${install ? 'installed' : 'removed'} (${qwenSettings})`);
+    }
+  }
   if (wants('opencode')) {
     const found = fs.existsSync(opencodeConfigDir) || has('opencode');
     if (install && !found) console.log('opencode: not found, skipped');
@@ -483,10 +549,11 @@ async function main() {
   if (server.status && server.status.mode !== 'hooks') {
     console.log(`Note: the server runs in '${server.status.mode}' mode, so hook reports are ignored. Switch 状态来源 to 钩子 in the settings sheet (⋯).`);
   }
-  console.log('Restart running Claude Code / Codex / Kimi Code / opencode sessions to load the hooks.');
+  console.log('Restart running Claude Code / Codex / Kimi Code / qwen-code / opencode sessions to load the hooks.');
 }
 
-main().catch(error => {
+// Importing the helpers in tests must not run the installer.
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) main().catch(error => {
   console.error(`install-agent-hooks: ${error.message}`);
   process.exit(1);
 });

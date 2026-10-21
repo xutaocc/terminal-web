@@ -8,9 +8,9 @@ import { IS_PSMUX, TMUX } from './tmux.js';
  * the settings sheet and saved for every device; this is the value until
  * someone chooses.
  *
- * - 'hooks'  (default) Claude Code / Codex / Kimi Code report each turn through
- *            their hook systems, opencode through a TUI plugin (all installed
- *            by scripts/install-agent-hooks.mjs). Sessions
+ * - 'hooks'  (default) Claude Code / Codex / Kimi Code / qwen-code report each
+ *            turn through their hook systems, opencode through a TUI plugin
+ *            (all installed by scripts/install-agent-hooks.mjs). Sessions
  *            that have never reported fall back to the 'screen' rules below.
  * - 'screen' No hooks: the server reads every session's screen through tmux and
  *            recognises the agents' own on-screen cues ("esc to interrupt"
@@ -91,7 +91,8 @@ export function isShell(command: string): boolean {
  * - Codex: "(12s • esc to interrupt)"; "› 1. Yes, proceed"; "› Ask Codex …".
  * - qwen-code (a Gemini CLI fork): "(12s · esc to cancel)", or "Press Esc
  *   again to stop" once Esc is armed; asks "Do you want to proceed?" / "Apply
- *   this change?" / "Allow execution of: '…'?" over "› 1. Yes, allow once".
+ *   this change?" / "Allow execution of: '…'?" over "› 1. Yes, allow once";
+ *   idle at its "➜ <dir> · git:(branch) · <model> · Context N% used" footer.
  * - Kimi Code: "Press Esc again to interrupt"; asks with "Approve once" /
  *   "Approve for this session"; idle in its boxed "│ >" prompt.
  * - opencode and MiMo Code (an opencode fork): "esc interrupt" at the bottom
@@ -118,7 +119,8 @@ const MENU_LINE = /^\s*[│|]?\s*[❯›>]\s*1[.)]\s+\S/;
 const BUTTON_ROW = /Allow once\b.*\bReject\b.*enter confirm/;
 
 const IDLE_LINES: RegExp[] = [
-  /^\s*[│|]?\s*[❯›](\s|$)/, // Claude Code, Codex, qwen-code prompt
+  /^\s*[│|]?\s*[❯›](\s|$)/, // Claude Code, Codex prompt
+  /^\s*➜\s+\S.*\bContext\b/, // qwen-code footer: "➜ <dir> · git:(branch) · <model> · Context N% used"
   /^\s*│\s*>(\s|$)/, // Kimi Code's boxed prompt
   /\btab switch mode\b|(^|\s)\/ commands\s*$/, // opencode, MiMo Code footer
 ];

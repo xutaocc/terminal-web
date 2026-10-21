@@ -98,8 +98,8 @@ test('dots fold several sessions by urgency', async () => {
 });
 
 // Fixtures below are built from each agent's own literals (see screenSignal).
-test('qwen-code: cancel hint while working, numbered approval, › prompt when idle', () => {
-  assert.equal(screenSignal('⠋ Thinking… (12s · esc to cancel)\n\n› \n? for shortcuts'), 'working');
+test('qwen-code: cancel hint while working, numbered approval, ➜ footer when idle', () => {
+  assert.equal(screenSignal('⠋ Thinking… (12s · esc to cancel)\n\n➜ \n? for shortcuts'), 'working');
   assert.equal(screenSignal('⠋ Reading files (3s · esc to cancel)\nPress Esc again to stop'), 'working');
   assert.equal(screenSignal([
     "Allow execution of: 'rm -rf build'?",
@@ -108,7 +108,13 @@ test('qwen-code: cancel hint while working, numbered approval, › prompt when i
     '  3. No, suggest changes (esc)',
   ].join('\n')), 'waiting');
   assert.equal(screenSignal('Apply this change?\n› 1. Yes, allow once\n  2. Modify with external editor'), 'waiting');
-  assert.equal(screenSignal('✦ Done.\n\n› Type your message\n? for shortcuts'), 'idle');
+  assert.equal(screenSignal([
+    '✦ Done.',
+    '',
+    '➜ terminal-web · git:(multi-platform) · deepseek-v4-flash high · 1.0m Context 1.9% used',
+    'YOLO mode (shift + tab to cycle)',
+  ].join('\n')), 'idle');
+  assert.equal(screenSignal('➜ ~\n'), 'unknown');
 });
 
 test('Kimi Code: armed interrupt, approval options, boxed prompt', () => {
