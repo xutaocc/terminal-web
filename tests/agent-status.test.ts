@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { hookSignal, isShell, screenSignal, titleWorking } from '../src/agent-status.js';
+import { hookSignal, isShell, paneSignal, screenSignal, titleWorking } from '../src/agent-status.js';
 
 test('hook events map to turn states', () => {
   assert.equal(hookSignal('UserPromptSubmit'), 'working');
@@ -76,6 +76,12 @@ test('titles and foreground commands', () => {
   assert.equal(isShell('cmd.exe'), true);
   assert.equal(isShell('claude.exe'), false);
   assert.equal(isShell('node'), false);
+});
+
+test('an idle Codex prompt wins over a stale spinner in the pane title', () => {
+  const prompt = '› Ask Codex to do anything\nGPT-6-Sol medium · C:\\devMyHome\\terminal-web';
+  assert.equal(paneSignal(prompt, '⠋ Old task'), 'idle');
+  assert.equal(paneSignal('full-screen viewer', '⠋ Current task'), 'working');
 });
 
 test('dots fold several sessions by urgency', async () => {

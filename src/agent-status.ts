@@ -142,6 +142,12 @@ export function titleWorking(title: string): boolean {
   return /[⠀-⣿◐-◓]/.test(title);
 }
 
+/** A title can keep its last spinner after the agent returns to its prompt. */
+export function paneSignal(screen: string, title: string): ReturnType<typeof screenSignal> {
+  const seen = screenSignal(screen);
+  return seen === 'unknown' && titleWorking(title) ? 'working' : seen;
+}
+
 // ---------------------------------------------------------------------------
 // The monitor.
 // ---------------------------------------------------------------------------
@@ -370,8 +376,7 @@ export class AgentStatusMonitor {
       if (screen === t.screen && !busy) return;
       t.screen = screen;
     }
-    let seen = screenSignal(screen);
-    if (seen !== 'working' && seen !== 'waiting' && titleWorking(pane.title)) seen = 'working';
+    const seen = paneSignal(screen, pane.title);
     if (seen === 'unknown') return; // covered up: keep what we had, restart nothing
 
     if (seen !== 'idle') {
