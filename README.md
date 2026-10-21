@@ -124,6 +124,8 @@ node tests/file-browser.ui.mjs      # 本机 Chrome 验证页面切换与编辑�
 
 中文安装与使用文档：[macOS、Linux（含 WSL2）与原生 Windows 部署指南](docs/部署与使用指南.md)。原生 Windows 使用 psmux 代替 tmux（见指南第 10 节）；三个平台可以互相添加为远程主机（第 11 节）。
 
+重启后的标签/目录持久化，以及 macOS、Linux、WSL 的可选终端历史恢复插件，见[部署指南第 12 节](docs/部署与使用指南.md#12-重启后保留标签目录和终端历史可选插件)。原生 Windows psmux 不使用这套插件。
+
 These are CLI prerequisites — they are **not** bundled or installed by this
 project:
 
