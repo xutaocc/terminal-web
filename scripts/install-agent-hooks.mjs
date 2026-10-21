@@ -74,11 +74,19 @@ function backup(file) {
   if (fs.existsSync(file) && !fs.existsSync(copy)) fs.copyFileSync(file, copy);
 }
 
+/** Write through a temp file, keeping the target's mode (config.toml holds API keys); new files start private. */
 function writeFile(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, text);
-  fs.renameSync(temp, file);
+  const mode = fs.statSync(file, { throwIfNoEntry: false })?.mode ?? 0o600;
+  try {
+    fs.writeFileSync(temp, text, { mode });
+    fs.chmodSync(temp, mode & 0o777); // writeFileSync's mode is masked by umask
+    fs.renameSync(temp, file);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
