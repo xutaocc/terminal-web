@@ -1556,7 +1556,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot,
 .m-title .tab-dot,
 .drawer-body .tab-dot,
-.ps-card .tab-dot {
+:is(.ps-card, .ps-quick-pill) .tab-dot {
   --st-size: 11px;
   position: relative;
   box-sizing: border-box;
@@ -1578,7 +1578,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.working,
 .m-title .tab-dot.working,
 .drawer-body .tab-dot.working,
-.ps-card .tab-dot.working {
+:is(.ps-card, .ps-quick-pill) .tab-dot.working {
   border: 2px solid color-mix(in srgb, var(--st-blue) 25%, transparent);
   border-top-color: var(--st-blue);
   border-right-color: var(--st-blue);
@@ -1594,7 +1594,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.done,
 .m-title .tab-dot.done,
 .drawer-body .tab-dot.done,
-.ps-card .tab-dot.done {
+:is(.ps-card, .ps-quick-pill) .tab-dot.done {
   --st-size: 8px;
   border: 0;
   border-radius: 50%;
@@ -1609,7 +1609,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.unread:not(.working),
 .m-title .tab-dot.unread:not(.working),
 .drawer-body .tab-dot.unread:not(.working),
-.ps-card .tab-dot.unread:not(.working) {
+:is(.ps-card, .ps-quick-pill) .tab-dot.unread:not(.working) {
   --st-size: 14px;
   width: 15px;
   border: 0;
@@ -1623,7 +1623,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.waiting,
 .m-title .tab-dot.waiting,
 .drawer-body .tab-dot.waiting,
-.ps-card .tab-dot.waiting {
+:is(.ps-card, .ps-quick-pill) .tab-dot.waiting {
   --st-size: 13px;
   border: 0;
   border-radius: 3px;
@@ -1648,11 +1648,11 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   .tab .tab-dot.working,
   .m-title .tab-dot.working,
   .drawer-body .tab-dot.working,
-  .ps-card .tab-dot.working,
+  :is(.ps-card, .ps-quick-pill) .tab-dot.working,
   .tab .tab-dot.waiting,
   .m-title .tab-dot.waiting,
   .drawer-body .tab-dot.waiting,
-  .ps-card .tab-dot.waiting { animation: none; }
+  :is(.ps-card, .ps-quick-pill) .tab-dot.waiting { animation: none; }
 }
 
 /* Where a dragged directory card will land among its folder's cards. */
@@ -2305,4 +2305,18 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   .drawer .ps-host-body { padding-left: 0; }
   .ps-menu { left: 8px !important; right: 8px; width: auto; max-height: calc(var(--visible-h, 100dvh) - 32px); }
   .ps-menu-item { min-height: 44px; font-size: 14px; }
+}
+
+/* Global quick navigation stays above the independently scrolling session list. */
+.ps-quick-status { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 10px 10px; flex-shrink: 0; }
+.ps-quick-pill { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 3px 10px; border: 1px solid #48bafa80; border-radius: 999px; background: #48bafa14; color: var(--ui-accent-text, #48c4ff); font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1.3; cursor: pointer; touch-action: manipulation; }
+.ps-quick-pill .tab-dot { --st-size: 12px; }
+.ps-quick-pill.working { border-color: #3fa66b80; background: #3fa66b14; color: var(--ui-success, #6acb8b); }
+.ps-quick-pill:not(:disabled):hover { background: var(--ui-hover, #333336); }
+.ps-quick-pill:focus-visible { outline: 2px solid #3b8eea; outline-offset: 2px; }
+.ps-quick-count { min-width: 1ch; font-variant-numeric: tabular-nums; }
+.ps-quick-pill:disabled { color: var(--ui-subtle, #777); border-color: var(--ui-border, #444); background: transparent; cursor: default; }
+.ps-quick-pill:disabled .tab-dot { animation: none; opacity: .45; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer .ps-quick-pill { min-height: 44px; font-size: 13px; padding: 6px 14px; }
 }

@@ -1,3 +1,4 @@
+import { QuickSessionNavigator, type QuickSessionKind, type QuickSessionEntry } from './quick-session-nav.js';
 import '@xterm/xterm/css/xterm.css';
 import './theme.css';
 import './hosts.css';
@@ -654,6 +655,7 @@ function ipSuffix(host: string, full = false): HTMLElement {
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   dismiss: () => closeDrawer(),
+  navigateStatus: kind => navigateQuickStatus(kind),
   editSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void showSessionNote(s); } },
   baseSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void promptAddSession(s); } },
   decorateChip: (chip, name) => markRecent(chip, name),
@@ -2542,6 +2544,8 @@ function paintHostAttention(): void {
     pill.classList.toggle('waiting', waiting > 0);
     pill.title = text ? `${text}：点击跳到${waiting ? '等待确认' : '未读'}的会话` : '';
   }
+  const quick = quickStatusEntries();
+  sidebar.updateQuickCounts({ unread: quick.filter(e => e.kind === 'unread').length, working: quick.filter(e => e.kind === 'working').length });
   paintMobileAttention();
 }
 
@@ -2558,6 +2562,34 @@ function paintMobileAttention(): void {
   mMenuBadge.hidden = !total;
   mMenuBadge.classList.toggle('waiting', waitingAny);
   mMenuBtn.setAttribute('aria-label', total ? `会话列表，${total} 个需要处理` : '会话列表');
+}
+
+const quickSessionNavigator = new QuickSessionNavigator();
+
+function quickStatusEntries(): QuickSessionEntry[] {
+  const byName = new Map(sessions.map(s => [s.name, s]));
+  return sidebar.sessionOrder().map(name => {
+    const s = byName.get(name);
+    let kind: QuickSessionKind | null = null;
+    if (s && !offlineHosts.has(s.host)) {
+      if (serverStatusActive(s.host)) {
+        const indicator = combineStatus(statusesOf(s));
+        if (indicator === 'unread' || indicator === 'working') kind = indicator;
+      } else if (hasRecentOutput(s)) kind = 'working';
+      else if (attentionOf(s) === 'unread') kind = 'unread';
+    }
+    return { name, kind };
+  });
+}
+
+function navigateQuickStatus(kind: QuickSessionKind): void {
+  const name = quickSessionNavigator.next(kind, quickStatusEntries());
+  const next = sessions.find(s => s.name === name);
+  if (!next) { updateOutputActivity(); return; }
+  if (mobileMQ.matches) closeDrawer();
+  pickSession(next);
+  requestAnimationFrame(() => { sidebar.reveal(next.name); updateOutputActivity(); });
+  if (mobileMQ.matches) flashStatus(`已切换到：${next.displayName}`, 1400);
 }
 
 /**

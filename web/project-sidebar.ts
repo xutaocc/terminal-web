@@ -1,3 +1,4 @@
+import type { QuickSessionKind } from './quick-session-nav.js';
 import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { bindIntentionalClick } from './intentional-click.js';
 import { brandMark } from './brand-mark.js';
@@ -59,6 +60,7 @@ export interface SidebarHooks {
   orderHosts(hosts: string[]): void;
   /** A host's attention pill was clicked: show the session that wants you most. */
   attend(host: string): void;
+  navigateStatus(kind: QuickSessionKind): void;
   openSettings(): void;
   openHelp(): void;
   /** The sidebar's width changed (shown, hidden or dragged). */
@@ -145,6 +147,7 @@ export class ProjectSidebar {
     hostBlock?: string;
   } | null = null;
   private menu: HTMLElement | null = null;
+  private readonly quickPills = new Map<QuickSessionKind, HTMLButtonElement>();
 
   constructor(private readonly hooks: SidebarHooks) {
     this.el.id = 'sidebar';
@@ -164,6 +167,29 @@ export class ProjectSidebar {
       iconButton(ICONS.plus, '新建会话', () => hooks.newSession(this.activeFolder(), '')),
     );
 
+    const quick = document.createElement('div');
+    quick.className = 'ps-quick-status';
+    quick.setAttribute('aria-label', '所有主机会话快捷定位');
+    for (const kind of ['unread', 'working'] as const) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = `ps-quick-pill ${kind}`;
+      pill.dataset.kind = kind;
+      const dot = document.createElement('span');
+      dot.className = `tab-dot ${kind}`;
+      dot.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.textContent = kind === 'unread' ? '待读' : '执行中';
+      const count = document.createElement('span');
+      count.className = 'ps-quick-count';
+      count.textContent = '0';
+      pill.append(dot, label, count);
+      pill.disabled = true;
+      bindIntentionalClick(pill, () => hooks.navigateStatus(kind));
+      this.quickPills.set(kind, pill);
+      quick.append(pill);
+    }
+    this.updateQuickCounts({ unread: 0, working: 0 });
     this.list.className = 'ps-list';
 
     const footer = document.createElement('div');
@@ -185,7 +211,7 @@ export class ProjectSidebar {
     handle.title = '拖动调整宽度，双击恢复默认';
     this.bindResize(handle);
 
-    this.el.append(top, header, this.list, footer, handle);
+    this.el.append(top, header, quick, this.list, footer, handle);
     this.applyWidth();
     document.addEventListener('pointerdown', e => {
       if (this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
@@ -395,6 +421,26 @@ export class ProjectSidebar {
     });
   }
 
+  updateQuickCounts(counts: Record<QuickSessionKind, number>): void {
+    for (const [kind, pill] of this.quickPills) {
+      const n = counts[kind];
+      const label = kind === 'unread' ? '待读' : '执行中';
+      const text = n > 99 ? '99+' : String(n);
+      const count = pill.querySelector('.ps-quick-count')!;
+      if (count.textContent !== text) count.textContent = text;
+      pill.disabled = n === 0;
+      pill.title = n ? `所有主机共 ${n} 个${label}会话，点击循环进入` : `暂无${label}会话`;
+      pill.setAttribute('aria-label', `${label} ${n}，${n ? '点击进入下一个会话' : '暂无会话'}`);
+    }
+  }
+
+  /** The same order used for cards/chips, including content hidden by folding. */
+  sessionOrder(): string[] {
+    return (this.lastRender?.sections ?? []).flatMap(section => section.groups.flatMap(group =>
+      orderCards(groupByDirectory(group.items, item => item.cwd), this.cardOrder[group.key])
+        .flatMap(dir => dir.items.map(item => item.name))));
+  }
+
   /** Each server's attention pill (data-host), for the caller to paint. */
   attention(): NodeListOf<HTMLElement> {
     return this.list.querySelectorAll<HTMLElement>('.ps-host-attention');
@@ -402,6 +448,13 @@ export class ProjectSidebar {
 
   /** Scroll a session's chip into view and flash it. */
   reveal(name: string): void {
+    const group = this.lastRender?.groups.find(g => g.items.some(s => s.name === name));
+    const unfoldedGroup = !!group && this.folded.delete(group.key);
+    const unfoldedHost = this.folded.delete(`host:${hostOfKey(name)}`);
+    if (unfoldedGroup || unfoldedHost) {
+      this.saveFolded();
+      this.rerender();
+    }
     const chip = Array.from(this.list.querySelectorAll<HTMLElement>('.ps-chip .tab-dot'))
       .find(dot => dot.dataset.sessions === name)?.closest<HTMLElement>('.ps-chip');
     const target = chip?.closest<HTMLElement>('.ps-card') ?? chip;

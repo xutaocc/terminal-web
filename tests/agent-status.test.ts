@@ -81,7 +81,7 @@ test('titles and foreground commands', () => {
 test('an idle Codex prompt wins over a stale spinner in the pane title', () => {
   const prompt = '› Ask Codex to do anything\nGPT-6-Sol medium · C:\\devMyHome\\terminal-web';
   assert.equal(paneSignal(prompt, '⠋ Old task'), 'idle');
-  assert.equal(paneSignal('full-screen viewer', '⠋ Current task'), 'working');
+  assert.equal(paneSignal('full-screen viewer', '⠋ Current task'), 'unknown');
 });
 
 test('dots fold several sessions by urgency', async () => {
@@ -180,4 +180,122 @@ test('legacy activity and read acknowledgements share one server snapshot', asyn
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('draft text and wrapped draft continuations never become running status', () => {
+  for (const draft of [
+    '› 请解释 (esc to interrupt) 为什么会误判\nGPT-6.1-Sol · ~/project',
+    '› 输入一些内容\n  • Working (12s • esc to interrupt)\nGPT-6.1-Sol · ~/project',
+    '│ > Press Esc again to interrupt\n╰──────────────╯',
+    '› 讨论这个提示\nPress Esc again to stop\nGPT-6.1-Sol · ~/project',
+  ]) assert.equal(screenSignal(draft), 'idle', draft);
+  assert.equal(paneSignal('layout redraw without a visible prompt', '⠋ Previous task'), 'unknown');
+  assert.equal(screenSignal('The reply said (esc to interrupt).\n› '), 'idle');
+});
+
+test('completed/read hook turns ignore delayed tool results but allow new work', async () => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  const monitor = new AgentStatusMonitor('/unused', async () => '');
+  const hook = (event: string, tool = '') => monitor.hook('%1', event, tool, '', 'task');
+  const state = () => monitor.snapshot().sessions.task;
+  await hook('UserPromptSubmit');
+  assert.equal(state().state, 'working');
+  await hook('PreToolUse', 'request_user_input');
+  assert.equal(state().state, 'waiting');
+  await hook('PostToolUse');
+  assert.equal(state().state, 'working');
+  await hook('Stop');
+  monitor.read(['task']);
+  for (const event of ['PostToolUse', 'PostToolUseFailure', 'SubagentStart', 'Stop']) {
+    await hook(event);
+    assert.equal(state().state, 'done');
+    assert.equal(state().unread, false);
+  }
+  assert.equal(await monitor.hook('%1', 'Notification', '', 'permission_prompt', 'task'), false);
+  assert.equal(state().unread, false);
+  await hook('UserPromptSubmit');
+  assert.equal(state().state, 'working');
+  await hook('Stop');
+  assert.equal(state().unread, true);
+  monitor.read(['task']);
+  await hook('PreToolUse', 'Bash');
+  assert.equal(state().state, 'working');
+  await hook('Stop');
+  assert.equal(state().unread, true);
+});
+
+test('screen fallback preserves read completion through typing/redraws and still detects genuine new work', async t => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'tw-screen-state-'));
+  const file = join(dir, 'status.json');
+  await writeFile(file, JSON.stringify({ mode: 'screen' }));
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100_000 });
+  let screen = '› 待输入\nGPT-6.1-Sol';
+  let activity = 0;
+  const monitor = new AgentStatusMonitor(file, async args => args[0] === 'list-panes'
+    ? `%1 task 11 ${activity} node ⠋ Old title` : screen);
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async () => { activity++; t.mock.timers.tick(1000); await flush(); };
+  const state = () => monitor.snapshot().sessions.task;
+  try {
+    await monitor.start(); await flush();
+    screen = '› 输入中的草稿 (esc to interrupt)\nGPT-6.1-Sol'; await tick();
+    assert.equal(state().state, 'idle');
+    screen = 'redraw'; await tick();
+    assert.equal(state().state, 'idle');
+    screen = '• Working (12s • esc to interrupt)\n› \nGPT-6.1-Sol'; await tick();
+    assert.equal(state().state, 'working');
+    screen = 'redraw'; await tick();
+    assert.equal(state().state, 'working'); // unknown must not interrupt a real task
+    screen = '› \nGPT-6.1-Sol'; await tick(); await tick(); await tick();
+    assert.equal(state().state, 'done');
+    assert.equal(state().unread, true);
+    monitor.read(['task']);
+    screen = 'redraw'; await tick();
+    assert.equal(state().state, 'done');
+    assert.equal(state().unread, false);
+    screen = '› 解释执行提示\n  • Working (3s • esc to interrupt)\nGPT-6.1-Sol'; await tick();
+    assert.equal(state().state, 'done');
+    assert.equal(state().unread, false);
+    screen = '• Working (1s • esc to interrupt)\n› \nGPT-6.1-Sol'; await tick();
+    assert.equal(state().state, 'working');
+    screen = '› \nGPT-6.1-Sol'; await tick(); await tick(); await tick();
+    assert.equal(state().state, 'done');
+    assert.equal(state().unread, true);
+  } finally { monitor.stop(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('a capture already in flight cannot overwrite a newer Stop/read acknowledgement', async () => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  let release: (screen: string) => void = () => {};
+  const pending = new Promise<string>(resolve => { release = resolve; });
+  let captureStarted: () => void = () => {};
+  const started = new Promise<void>(resolve => { captureStarted = resolve; });
+  const monitor = new AgentStatusMonitor('/nonexistent-status-test', async args => {
+    if (args[0] === 'list-panes') return '%1 task 11 1 node Task';
+    if (args[0] === 'capture-pane') { captureStarted(); return pending; }
+    return '';
+  });
+  try {
+    await monitor.start(); await started;
+    await monitor.hook('%1', 'UserPromptSubmit', '', '', 'task');
+    await monitor.hook('%1', 'Stop', '', '', 'task');
+    monitor.read(['task']);
+    release('• Working (12s • esc to interrupt)\n› ');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(monitor.snapshot().sessions.task.state, 'done');
+    assert.equal(monitor.snapshot().sessions.task.unread, false);
+  } finally { monitor.stop(); }
+});
+
+
+test('standalone and boxed running footers remain valid without title inference', () => {
+  assert.equal(screenSignal('· esc to interrupt'), 'working');
+  assert.equal(screenSignal('Writing checkpoint…   esc interrupt'), 'working');
+  assert.equal(screenSignal('(12s · esc to cancel)'), 'working');
+  assert.equal(screenSignal('│ > draft\n╰──────────────╯\nPress Esc again to interrupt'), 'working');
+  assert.equal(paneSignal('• Working (1s • esc to interrupt)\n› Draft while task runs', 'Task'), 'working');
 });

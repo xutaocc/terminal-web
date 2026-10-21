@@ -100,10 +100,10 @@ export function isShell(command: string): boolean {
  *   Reject"; idle shows "tab switch mode" or "/ commands" there.
  */
 const WORKING_LINES: RegExp[] = [
-  /[·•(]\s*esc to interrupt/i, // Claude Code, Codex
-  /[·•(]\s*esc to cancel\)?\s*$/i, // qwen-code
-  /Press Esc again to (stop|interrupt)/i, // qwen-code, Kimi Code
-  /(^|\s)(esc|again to) interrupt\s*$/i, // opencode, MiMo Code: the hint ends their bottom row
+  /^\s*(?:[·•(]\s*esc to interrupt\b|[⏵▶•·✢✳✻✶✽*].*[·•(]\s*esc to interrupt\b)/i, // Claude Code, Codex status/footer
+  /^\s*(?:[⠁-⣿✦•·*].*|\(\d[^)]*)[·•(]\s*esc to cancel\)?\s*$/i, // qwen-code spinner/status
+  /^\s*Press Esc again to (stop|interrupt)[.!]?\s*$/i, // qwen-code, Kimi Code
+  /(^|\s)(esc|again to) interrupt\s*$/i, // opencode, MiMo Code footer
 ];
 
 const ASKING_LINES: RegExp[] = [
@@ -131,8 +131,22 @@ export function screenSignal(screen: string): 'working' | 'waiting' | 'idle' | '
   const menu = bottom.some(line => MENU_LINE.test(line) || BUTTON_ROW.test(line));
   const asking = bottom.some(line => ASKING_LINES.some(re => re.test(line)));
   if (menu && asking) return 'waiting';
-  // A status item at the very bottom, not the words quoted in a reply.
-  if (lines.slice(-6).some(line => WORKING_LINES.some(re => re.test(line)))) return 'working';
+  // Input may contain the same words as a status hint, including wrapped
+  // continuations. After a prompt, only a recognised CLI footer is evidence.
+  let promptAt = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*[│|]?\s*[❯›>](?:\s|$)|^\s*➜/.test(lines[i]) && !MENU_LINE.test(lines[i])) promptAt = i;
+  }
+  const working = lines.slice(-6).some((line, i) => {
+    const at = Math.max(0, lines.length - 6) + i;
+    if (at === promptAt) return false;
+    if (promptAt >= 0 && at > promptAt) {
+      const boxedFooter = lines.slice(promptAt + 1, at).some(row => /^\s*[╰└]/.test(row));
+      if (!/^\s*[⏵▶]/.test(line) && !boxedFooter) return false;
+    }
+    return WORKING_LINES.some(re => re.test(line));
+  });
+  if (working) return 'working';
   // Idle only with the input prompt in sight. Anything else — a transcript
   // viewer, a menu, a full-screen tool — hides the status line and proves
   // nothing either way.
@@ -145,10 +159,10 @@ export function titleWorking(title: string): boolean {
   return /[⠀-⣿◐-◓]/.test(title);
 }
 
-/** A title can keep its last spinner after the agent returns to its prompt. */
-export function paneSignal(screen: string, title: string): ReturnType<typeof screenSignal> {
-  const seen = screenSignal(screen);
-  return seen === 'unknown' && titleWorking(title) ? 'working' : seen;
+/** Titles can retain a spinner after completion. Unknown screens preserve the
+ * monitor's existing state; a title alone must never start a new working turn. */
+export function paneSignal(screen: string, _title: string): ReturnType<typeof screenSignal> {
+  return screenSignal(screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +179,8 @@ const POLL_MS = 1_000;
 
 interface Tracked extends SessionAgentStatus {
   hookAt: number;
+  hookClosed: boolean;
+  revision: number;
   idleSince: number;
   activity: string;
   capturedAt: number;
@@ -199,7 +215,7 @@ export class AgentStatusMonitor {
   private readonly legacyTimers = new Map<string, NodeJS.Timeout>();
 
   /** `file` keeps the mode chosen in settings across restarts. */
-  constructor(private readonly file: string) {}
+  constructor(private readonly file: string, private readonly command = run) {}
 
   async start(): Promise<void> {
     try {
@@ -236,6 +252,13 @@ export class AgentStatusMonitor {
     void this.poll();
   }
 
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    for (const timer of this.legacyTimers.values()) clearTimeout(timer);
+    this.legacyTimers.clear();
+  }
+
   subscribe(listener: (snapshot: StatusSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -259,17 +282,24 @@ export class AgentStatusMonitor {
     if (this.mode !== 'hooks') return false;
     const signal = hookSignal(event, tool, kind);
     if (!signal) return false;
-    if (named && await run(['has-session', '-t', `=${named}`]) === null) named = undefined;
+    if (named && await this.command(['has-session', '-t', `=${named}`]) === null) named = undefined;
     if (IS_PSMUX && !named) return false;
     let session = named ?? this.paneSessions.get(pane);
     if (!session) {
-      session = (await run(['display-message', '-p', '-t', pane, '#{session_name}']))?.trim() || undefined;
+      session = (await this.command(['display-message', '-p', '-t', pane, '#{session_name}']))?.trim() || undefined;
       if (!session) return false;
       this.paneSessions.set(pane, session);
     }
     const now = Date.now();
     const t = this.track(session, now);
+    // Tool completions may arrive after Stop because hook requests run in the
+    // background. They cannot reopen a turn already explicitly completed.
+    const continuation = event === 'PostToolUse' || event === 'PostToolUseFailure' || event === 'SubagentStart' || event === 'Notification';
+    if (t.hookClosed && continuation) return false;
     t.hookAt = now;
+    t.revision++;
+    if (event === 'UserPromptSubmit' || event === 'PreToolUse' || event === 'PermissionRequest') t.hookClosed = false;
+    if (signal === 'done' || signal === 'idle') t.hookClosed = true;
     this.set(t, signal, now);
     return true;
   }
@@ -310,7 +340,7 @@ export class AgentStatusMonitor {
   private track(name: string, now: number): Tracked {
     let t = this.tracked.get(name);
     if (!t) {
-      t = { state: 'idle', unread: false, since: now, hookAt: 0, idleSince: 0, activity: '', capturedAt: 0 };
+      t = { state: 'idle', unread: false, since: now, hookAt: 0, hookClosed: false, revision: 0, idleSince: 0, activity: '', capturedAt: 0 };
       this.tracked.set(name, t);
     }
     return t;
@@ -365,7 +395,7 @@ export class AgentStatusMonitor {
   private async listPanes(): Promise<Pane[] | null> {
     // Space-separated with the free-text title last (see listWebTabs for why
     // not a tab); names, ids, flags, stamps and command names have no spaces.
-    const out = await run(['list-panes', '-a', '-F',
+    const out = await this.command(['list-panes', '-a', '-F',
       '#{pane_id} #{session_name} #{window_active}#{pane_active} #{window_activity} #{pane_current_command} #{pane_title}']);
     if (out === null) return null;
     const panes: Pane[] = [];
@@ -384,6 +414,7 @@ export class AgentStatusMonitor {
       if (t.state === 'working' || t.state === 'waiting') this.set(t, 'idle', now);
       return;
     }
+    const revision = t.revision;
     const hooked = this.mode === 'hooks' && now - t.hookAt < HOOK_FRESH_MS;
     const busy = t.state === 'working' || t.state === 'waiting';
     // Read the screen only when something was drawn, or while a turn is open
@@ -396,8 +427,10 @@ export class AgentStatusMonitor {
     // psmux numbers panes per session (every session's first is %1), so a
     // bare pane id names some other session's pane there; the session does not.
     const target = IS_PSMUX ? `=${pane.session}:` : pane.id;
-    const screen = await run(['capture-pane', '-p', '-t', target]);
-    if (screen === null) return;
+    const screen = await this.command(['capture-pane', '-p', '-t', target]);
+    // A hook or mode change can land while capture-pane is in flight. Its
+    // newer state wins over the screen captured before that event.
+    if (screen === null || this.tracked.get(pane.session) !== t || t.revision !== revision || this.mode === 'legacy') return;
     if (IS_PSMUX) {
       if (screen === t.screen && !busy) return;
       t.screen = screen;
