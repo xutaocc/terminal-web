@@ -678,6 +678,11 @@ const sidebar = new ProjectSidebar({
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
   pinSession: (name, pinned) => pinSession(name, pinned),
+  // Same confirmation as the tab's own close: names are page keys, so look the sessions up.
+  closeSessions: names => {
+    const list = sessions.filter(s => names.includes(s.name));
+    if (list.length) confirmCloseSession(list);
+  },
   // Same order as the tab strip: one list, so the sidebar and the strip agree.
   reorderSession: (name, target, after) => {
     const from = sessions.find(x => x.name === name);
@@ -3216,29 +3221,41 @@ function activateSession(s: Session): void {
 
 // Ask before killing a session: closing a tab terminates its tmux session and
 // any programs running in it, so make the user confirm first.
-function confirmCloseSession(s: Session): void {
-  if (document.querySelector('.confirm-overlay')) return;
+/** Ask, then close each of `list` (their tmux sessions end, and what runs in them). */
+function confirmCloseSession(list: Session | Session[]): void {
+  const many = Array.isArray(list) ? list : [list];
+  if (!many.length || document.querySelector('.confirm-overlay')) return;
   const overlay = document.createElement('div');
   overlay.className = 'paste-overlay confirm-overlay';
   const box = document.createElement('div');
   box.className = 'paste-box confirm-box';
   const label = document.createElement('div');
   label.className = 'paste-label';
-  const strong = document.createElement('b');
-  strong.textContent = s.displayName;
-  const sessionNote = s.displayName === s.raw ? '' : `（tmux 会话 "${s.raw}"）`;
-  label.append(
-    '关闭 ',
-    ...(remoteHosts.length ? [hostBadge(s.host), ' ', ipSuffix(s.host, true), ' '] : []),
-    strong,
-    `${sessionNote}？这会结束它的 tmux 会话，其中运行的程序也会一并结束。`,
-  );
+  if (many.length === 1) {
+    const s = many[0];
+    const strong = document.createElement('b');
+    strong.textContent = s.displayName;
+    const sessionNote = s.displayName === s.raw ? '' : `（tmux 会话 "${s.raw}"）`;
+    label.append(
+      '关闭 ',
+      ...(remoteHosts.length ? [hostBadge(s.host), ' ', ipSuffix(s.host, true), ' '] : []),
+      strong,
+      `${sessionNote}？这会结束它的 tmux 会话，其中运行的程序也会一并结束。`,
+    );
+  } else {
+    label.append(`关闭这 ${many.length} 个会话？这会结束它们的 tmux 会话，其中运行的程序也会一并结束：`);
+    const names = document.createElement('div');
+    names.className = 'confirm-warn';
+    names.textContent = many.map(s => s.displayName).join('、');
+    label.append(names);
+  }
   // A folder lives as long as it holds a session; say so before taking its last.
-  const lastOf = folders.find(f => f.id === folderOf(s) && wouldEmpty(f.id, [s.name], folderMembers));
-  if (lastOf) {
+  const gone = many.map(s => s.name);
+  for (const f of folders) {
+    if (!many.some(s => folderOf(s) === f.id) || !wouldEmpty(f.id, gone, folderMembers)) continue;
     const warn = document.createElement('div');
     warn.className = 'confirm-warn';
-    warn.textContent = `这是文件夹「${lastOf.name}」里最后一个会话，关闭后该文件夹也会删除。`;
+    warn.textContent = `这会关闭文件夹「${f.name}」里的全部会话，该文件夹也会删除。`;
     label.append(warn);
   }
   const row = document.createElement('div');
@@ -3264,7 +3281,8 @@ function confirmCloseSession(s: Session): void {
   cancel.addEventListener('click', close);
   confirm.addEventListener('click', () => {
     close();
-    closeSession(s);
+    // One at a time: each handles its own tab switch and folder clean-up.
+    for (const s of many) closeSession(s);
   });
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();

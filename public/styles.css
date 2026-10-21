@@ -1905,7 +1905,8 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .pin-mark { display: none; margin: 0 -2px; }
 .tab.pinned .pin-mark { display: inline-flex; }
 /* Pinned shows as the pin alone: a blue border was the open tab's mark too. */
-.tab-menu .ps-menu-item.danger { color: var(--ui-danger-text, #f14c4c); }
+.tab-menu .ps-menu-item.danger,
+.ps-menu-item.danger { color: var(--ui-danger-text, #f14c4c); }
 .ps-menu-sep { height: 1px; margin: 4px 6px; background: var(--ui-border, #333); }
 
 /* Sidebar chips: the pin trails the name; the host header carries the full IP. */
