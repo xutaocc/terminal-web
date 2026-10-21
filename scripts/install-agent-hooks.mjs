@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// One-step install of the terminal-web agent hooks for Claude Code, Codex and Kimi Code.
+// One-step install of the terminal-web agent hooks for Claude Code, Codex, Kimi Code, qwen-code and opencode.
 //
 //   node scripts/install-agent-hooks.mjs            install (or refresh) all of them
 //   node scripts/install-agent-hooks.mjs --check    report what is installed and whether the server answers
 //   node scripts/install-agent-hooks.mjs --uninstall
-// Options: --only=claude|codex|kimi   --url=http://HOST:PORT   --claude-dir=DIR (repeatable)
+// Options: --only=claude|codex|kimi|qwen|opencode   --url=http://HOST:PORT   --claude-dir=DIR (repeatable)
 //
-// Safe to run repeatedly. It only adds or removes its own entries — those whose
-// command runs ~/.terminal-web/agent-hook.sh — and backs up every file it
+// Safe to run repeatedly. It only adds or removes its own entries — hooks whose
+// command runs ~/.terminal-web/agent-hook.sh, and the cli.json plugin entry that
+// points at ~/.terminal-web/opencode-status — and backs up every file it
 // changes to <file>.bak-terminal-web first (once — the copy is the original). Agent sessions already running pick
 // the hooks up when restarted.
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = os.homedir();
@@ -38,6 +39,10 @@ const CLAUDE_EVENTS = [
   ['UserPromptSubmit'], ['PreToolUse', '*'], ['PostToolUse', '*'], ['PostToolUseFailure', '*'],
   ['PermissionRequest', '*'], ['Notification'], ['Stop'], ['StopFailure'], ['PostCompact'], ['SessionEnd'],
 ];
+// qwen-code reads its hooks from settings.json exactly like Claude Code — same
+// event names, same `{ matcher, hooks }` shape, and user-level command hooks are
+// enabled by default with no trust entry — so it reuses Claude's event list.
+const QWEN_EVENTS = CLAUDE_EVENTS;
 const CODEX_EVENTS = [
   ['UserPromptSubmit', 'user_prompt_submit'], ['PreToolUse', 'pre_tool_use'], ['PostToolUse', 'post_tool_use'],
   ['PermissionRequest', 'permission_request'], ['Stop', 'stop'], ['Interrupt', 'interrupt'],
@@ -49,6 +54,9 @@ const KIMI_EVENTS = [
   'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
   'PermissionRequest', 'Stop', 'StopFailure',
 ];
+// opencode 2 dropped command hooks: status comes from a CLI plugin we register
+// below. It reports the same events itself, so there is only one thing to count.
+const OPENCODE_PLUGINS = 1;
 
 const quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 // Forward slashes on Windows too: both agents hand the command to a shell that
@@ -189,6 +197,15 @@ const codexHooks = path.join(codexHome, 'hooks.json');
 const codexConfig = path.join(codexHome, 'config.toml');
 // Kimi Code keeps one config.toml per data root: ~/.kimi-code unless KIMI_CODE_HOME says otherwise.
 const kimiConfig = path.join(process.env.KIMI_CODE_HOME || path.join(HOME, '.kimi-code'), 'config.toml');
+// opencode 2 has no command hooks. Its status comes from a CLI (TUI) plugin
+// registered in cli.json: the TUI runs inside the pane, so TMUX_PANE names the
+// right pane there. opencode loads a CLI plugin from a package directory with a
+// `./tui` export, so scripts/opencode-status is copied to ~/.terminal-web whole.
+const opencodeConfigDir = path.join(
+  path.resolve(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config')), 'opencode');
+const opencodeCli = path.join(opencodeConfigDir, 'cli.json');
+const OPENCODE_PLUGIN = path.join(HOOK_DIR, 'opencode-status');
+const OPENCODE_PLUGIN_URL = pathToFileURL(OPENCODE_PLUGIN).href;
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -341,6 +358,49 @@ function kimiInstalled() {
 }
 
 // ---------------------------------------------------------------------------
+// opencode: one CLI plugin in cli.json's `plugins` array, pointing at a copy of
+// scripts/opencode-status in ~/.terminal-web. opencode 2 dropped the command
+// hooks the other agents use, and a plugin in the shared `serve` process cannot
+// tell which pane it runs for — a CLI plugin runs in the TUI, which is inside
+// the pane. opencode 1 has no such API, so it is skipped there and the screen
+// rules keep covering it.
+// ---------------------------------------------------------------------------
+const pluginEntryUrl = (entry) => typeof entry === 'string'
+  ? entry
+  : (typeof entry?.package === 'string' ? entry.package : '');
+
+function opencodeHooksUpdate(install) {
+  const exists = fs.existsSync(opencodeCli);
+  if (!exists && !install) return;
+  const settings = exists ? readJson(opencodeCli, {}) : {};
+  const list = Array.isArray(settings.plugins) ? settings.plugins : [];
+  const registered = list.some(entry => pluginEntryUrl(entry) === OPENCODE_PLUGIN_URL);
+  const next = install
+    ? (registered ? list : [...list, OPENCODE_PLUGIN_URL])
+    : list.filter(entry => pluginEntryUrl(entry) !== OPENCODE_PLUGIN_URL);
+  if (exists && next.length === list.length && next.every((entry, index) => entry === list[index])) return;
+  settings.plugins = next;
+  if (!next.length) delete settings.plugins;
+  backup(opencodeCli);
+  writeFile(opencodeCli, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
+function opencodeInstalled() {
+  if (!fs.existsSync(path.join(OPENCODE_PLUGIN, 'tui.js')) ||
+      !fs.existsSync(path.join(OPENCODE_PLUGIN, 'package.json'))) return 0;
+  const list = readJson(opencodeCli, {}).plugins;
+  return Array.isArray(list) && list.some(entry => pluginEntryUrl(entry) === OPENCODE_PLUGIN_URL) ? 1 : 0;
+}
+
+/** 0 when opencode is missing or its version cannot be read. */
+function opencodeMajor() {
+  try {
+    const version = execFileSync('opencode', ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
+    return Number(/(\d+)\./.exec(version)?.[1] ?? 0);
+  } catch { return 0; }
+}
+
+// ---------------------------------------------------------------------------
 const has = (bin) => {
   try {
     if (WINDOWS) execFileSync('where.exe', [bin], { stdio: 'ignore' });
@@ -362,10 +422,12 @@ async function main() {
     for (const file of claude) console.log(`Claude Code     ${claudeInstalled(file)}/${CLAUDE_EVENTS.length} hooks  ${file}`);
     console.log(`Codex           ${codexInstalled()}/${CODEX_EVENTS.length} hooks  ${codexHooks}`);
     console.log(`Kimi Code       ${kimiInstalled()}/${KIMI_EVENTS.length} hooks  ${kimiConfig}`);
+    console.log(`opencode        ${opencodeInstalled()}/${OPENCODE_PLUGINS} plugin  ${opencodeCli}`);
     const ok = fs.existsSync(HOOK_SCRIPT) && token && server.status &&
       (!wants('claude') || (claude.length && claude.every(file => claudeInstalled(file) === CLAUDE_EVENTS.length))) &&
       (!wants('codex') || codexInstalled() === CODEX_EVENTS.length) &&
-      (!wants('kimi') || kimiInstalled() === KIMI_EVENTS.length);
+      (!wants('kimi') || kimiInstalled() === KIMI_EVENTS.length) &&
+      (!wants('opencode') || opencodeInstalled() === OPENCODE_PLUGINS);
     process.exit(ok ? 0 : 1);
   }
 
@@ -398,6 +460,21 @@ async function main() {
       console.log(`Kimi Code: ${install ? 'installed' : 'removed'} (${kimiConfig})`);
     }
   }
+  if (wants('opencode')) {
+    const found = fs.existsSync(opencodeConfigDir) || has('opencode');
+    if (install && !found) console.log('opencode: not found, skipped');
+    else if (install && opencodeMajor() === 1) console.log('opencode: 1.x has no CLI plugin API, skipped (screen rules cover it)');
+    else {
+      if (install) {
+        // The layout before this package directory was a single loose file.
+        fs.rmSync(path.join(HOOK_DIR, 'opencode-status-tui.mjs'), { force: true });
+        fs.cpSync(path.join(REPO, 'scripts', 'opencode-status'), OPENCODE_PLUGIN, { recursive: true });
+      }
+      opencodeHooksUpdate(install);
+      if (!install) fs.rmSync(OPENCODE_PLUGIN, { recursive: true, force: true });
+      console.log(`opencode: ${install ? 'installed' : 'removed'} (${opencodeCli}, plugin in ${OPENCODE_PLUGIN})`);
+    }
+  }
   if (!install) {
     if (!only) for (const file of [HOOK_SCRIPT, HOOK_ENV]) fs.rmSync(file, { force: true });
     return;
@@ -406,7 +483,7 @@ async function main() {
   if (server.status && server.status.mode !== 'hooks') {
     console.log(`Note: the server runs in '${server.status.mode}' mode, so hook reports are ignored. Switch 状态来源 to 钩子 in the settings sheet (⋯).`);
   }
-  console.log('Restart running Claude Code / Codex / Kimi Code sessions to load the hooks.');
+  console.log('Restart running Claude Code / Codex / Kimi Code / opencode sessions to load the hooks.');
 }
 
 main().catch(error => {

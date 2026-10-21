@@ -8,8 +8,9 @@ import { IS_PSMUX, TMUX } from './tmux.js';
  * the settings sheet and saved for every device; this is the value until
  * someone chooses.
  *
- * - 'hooks'  (default) Claude Code / Codex report each turn through their hook
- *            systems (scripts/install-agent-hooks.mjs installs them). Sessions
+ * - 'hooks'  (default) Claude Code / Codex / Kimi Code report each turn through
+ *            their hook systems, opencode through a TUI plugin (all installed
+ *            by scripts/install-agent-hooks.mjs). Sessions
  *            that have never reported fall back to the 'screen' rules below.
  * - 'screen' No hooks: the server reads every session's screen through tmux and
  *            recognises the agents' own on-screen cues ("esc to interrupt"

@@ -1,0 +1,11 @@
+{
+  "name": "terminal-web-status",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reports the opencode TUI's turn state to terminal-web",
+  "exports": {
+    ".": "./index.js",
+    "./tui": "./tui.js"
+  }
+}
