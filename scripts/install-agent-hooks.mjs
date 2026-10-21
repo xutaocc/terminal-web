@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// One-step install of the terminal-web agent hooks for Claude Code and Codex.
+// One-step install of the terminal-web agent hooks for Claude Code, Codex and Kimi Code.
 //
-//   node scripts/install-agent-hooks.mjs            install (or refresh) both
+//   node scripts/install-agent-hooks.mjs            install (or refresh) all of them
 //   node scripts/install-agent-hooks.mjs --check    report what is installed and whether the server answers
 //   node scripts/install-agent-hooks.mjs --uninstall
-// Options: --only=claude|codex   --url=http://HOST:PORT   --claude-dir=DIR (repeatable)
+// Options: --only=claude|codex|kimi   --url=http://HOST:PORT   --claude-dir=DIR (repeatable)
 //
 // Safe to run repeatedly. It only adds or removes its own entries — those whose
 // command runs ~/.terminal-web/agent-hook.sh — and backs up every file it
@@ -41,6 +41,13 @@ const CLAUDE_EVENTS = [
 const CODEX_EVENTS = [
   ['UserPromptSubmit', 'user_prompt_submit'], ['PreToolUse', 'pre_tool_use'], ['PostToolUse', 'post_tool_use'],
   ['PermissionRequest', 'permission_request'], ['Stop', 'stop'], ['Interrupt', 'interrupt'],
+];
+// Kimi Code reads its hooks from [[hooks]] tables in config.toml. It treats
+// `matcher` as a regular expression (Claude's "*" would be invalid) and refuses
+// a file with any key beyond event / command / timeout, so ours carry none.
+const KIMI_EVENTS = [
+  'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
+  'PermissionRequest', 'Stop', 'StopFailure',
 ];
 
 const quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -172,6 +179,8 @@ function claudeInstalled(claudeSettings) {
 const codexHome = process.env.CODEX_HOME || path.join(HOME, '.codex');
 const codexHooks = path.join(codexHome, 'hooks.json');
 const codexConfig = path.join(codexHome, 'config.toml');
+// Kimi Code keeps one config.toml per data root: ~/.kimi-code unless KIMI_CODE_HOME says otherwise.
+const kimiConfig = path.join(process.env.KIMI_CODE_HOME || path.join(HOME, '.kimi-code'), 'config.toml');
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -247,6 +256,83 @@ function codexInstalled() {
 }
 
 // ---------------------------------------------------------------------------
+// Kimi Code: [[hooks]] tables in config.toml, carried only event / command /
+// timeout. The file is TOML with other things in it, so this edits it line by
+// line instead of re-serialising it, and leaves every table it does not own.
+// ---------------------------------------------------------------------------
+const tomlString = (s) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+/** The [[hooks]] tables, each as its lines. Kimi's four keys are all single-line. */
+function kimiTables(toml) {
+  const tables = [];
+  let table = null;
+  for (const line of toml.split('\n')) {
+    if (/^\s*\[/.test(line)) {
+      if (table) tables.push(table);
+      table = /^\s*\[\[hooks\]\]\s*$/.test(line) ? [line] : null;
+    } else if (table) table.push(line);
+  }
+  if (table) tables.push(table);
+  return tables;
+}
+
+const kimiOurs = (table) => table.some(line => MARK.test(line));
+
+function withoutOurKimiHooks(toml) {
+  const out = [];
+  let table = null;
+  const flush = () => {
+    if (table && !kimiOurs(table)) out.push(...table);
+    table = null;
+  };
+  for (const line of toml.split('\n')) {
+    if (/^\s*\[/.test(line)) {
+      flush();
+      if (/^\s*\[\[hooks\]\]\s*$/.test(line)) { table = [line]; continue; }
+    }
+    if (table) table.push(line);
+    else out.push(line);
+  }
+  flush();
+  return out.join('\n');
+}
+
+function kimiHooksUpdate(install) {
+  const exists = fs.existsSync(kimiConfig);
+  if (!exists && !install) return;
+  const toml = exists ? fs.readFileSync(kimiConfig, 'utf8') : '';
+  const eol = toml.includes('\r\n') ? '\r\n' : '\n';
+  let body = withoutOurKimiHooks(toml).replace(/\s+$/, '');
+  if (install) {
+    const blocks = KIMI_EVENTS.map(event => [
+      '[[hooks]]',
+      `event = ${tomlString(event)}`,
+      `command = ${tomlString(command('kimi', event))}`,
+      'timeout = 5',
+    ].join(eol));
+    body += `${body ? eol + eol : ''}${blocks.join(eol)}`;
+  }
+  const next = `${body}${eol}`;
+  if (next === toml) return;
+  backup(kimiConfig);
+  writeFile(kimiConfig, next);
+}
+
+function kimiInstalled() {
+  let toml = '';
+  try { toml = fs.readFileSync(kimiConfig, 'utf8'); } catch { return 0; }
+  const found = new Set();
+  for (const table of kimiTables(toml)) {
+    if (!kimiOurs(table)) continue;
+    for (const line of table) {
+      const m = line.match(/^\s*event\s*=\s*"([^"]+)"/);
+      if (m) found.add(m[1]);
+    }
+  }
+  return KIMI_EVENTS.filter(event => found.has(event)).length;
+}
+
+// ---------------------------------------------------------------------------
 const has = (bin) => {
   try {
     if (WINDOWS) execFileSync('where.exe', [bin], { stdio: 'ignore' });
@@ -267,9 +353,11 @@ async function main() {
     const claude = claudeDirs().map(dir => path.join(dir, 'settings.json'));
     for (const file of claude) console.log(`Claude Code     ${claudeInstalled(file)}/${CLAUDE_EVENTS.length} hooks  ${file}`);
     console.log(`Codex           ${codexInstalled()}/${CODEX_EVENTS.length} hooks  ${codexHooks}`);
+    console.log(`Kimi Code       ${kimiInstalled()}/${KIMI_EVENTS.length} hooks  ${kimiConfig}`);
     const ok = fs.existsSync(HOOK_SCRIPT) && token && server.status &&
       (!wants('claude') || (claude.length && claude.every(file => claudeInstalled(file) === CLAUDE_EVENTS.length))) &&
-      (!wants('codex') || codexInstalled() === CODEX_EVENTS.length);
+      (!wants('codex') || codexInstalled() === CODEX_EVENTS.length) &&
+      (!wants('kimi') || kimiInstalled() === KIMI_EVENTS.length);
     process.exit(ok ? 0 : 1);
   }
 
@@ -295,6 +383,13 @@ async function main() {
       console.log(`Codex: ${install ? 'installed' : 'removed'} (${codexHooks}, trust in ${codexConfig})`);
     }
   }
+  if (wants('kimi')) {
+    if (install && !fs.existsSync(path.dirname(kimiConfig)) && !has('kimi')) console.log('Kimi Code: not found, skipped');
+    else {
+      kimiHooksUpdate(install);
+      console.log(`Kimi Code: ${install ? 'installed' : 'removed'} (${kimiConfig})`);
+    }
+  }
   if (!install) {
     if (!only) for (const file of [HOOK_SCRIPT, HOOK_ENV]) fs.rmSync(file, { force: true });
     return;
@@ -303,7 +398,7 @@ async function main() {
   if (server.status && server.status.mode !== 'hooks') {
     console.log(`Note: the server runs in '${server.status.mode}' mode, so hook reports are ignored. Switch 状态来源 to 钩子 in the settings sheet (⋯).`);
   }
-  console.log('Restart running Claude Code / Codex sessions to load the hooks.');
+  console.log('Restart running Claude Code / Codex / Kimi Code sessions to load the hooks.');
 }
 
 main().catch(error => {
