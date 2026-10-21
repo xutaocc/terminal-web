@@ -2216,8 +2216,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .drawer-list .drawer-row.recent {
   border-bottom-width: 3px;
   border-bottom-color: color-mix(in srgb, var(--recent-tab) calc(var(--recent, 1) * 100%), transparent);
-  /* A mark that moves or fades shifts smoothly, not in one jump. */
-  transition: border-bottom-color 0.3s ease;
+  /* Persistent history, not an activity animation. Refreshes must not pulse. */
 }
 
 

@@ -653,6 +653,7 @@ function ipSuffix(host: string, full = false): HTMLElement {
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
+  decorateChip: (chip, name) => markRecent(chip, name),
   activate: name => {
     const s = sessions.find(x => x.name === name);
     if (s) pickSession(s);
@@ -6151,7 +6152,6 @@ function closeSheet(): void {
 // re-render the open drawer when the session list or connection state changes.
 function refreshMobileUI(): void {
   refreshPager();
-  queueMicrotask(paintRecentTabs); // after the sidebar and the drawer are redrawn
   const s = activeTab;
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
@@ -6164,6 +6164,7 @@ function refreshMobileUI(): void {
   refreshSidebar();
   updateOutputActivity();
   if (drawerOpen) renderDrawer();
+  paintRecentTabs();
 }
 pagerReady = true;
 refreshMobileUI();

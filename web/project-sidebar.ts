@@ -24,6 +24,8 @@ export interface SidebarSection {
 }
 
 export interface SidebarHooks {
+  /** Apply persistent session marks before a new chip enters the document. */
+  decorateChip(chip: HTMLElement, name: string): void;
   activate(name: string): void;
   /** A directory card was clicked: show one of these sessions (they share its directory). */
   activateDirectory(names: string[]): void;
@@ -221,12 +223,22 @@ export class ProjectSidebar {
     this.cardOrder = cardOrder;
     this.hostOrder = hostOrder;
     const sections = orderBy(unordered, sec => sec.host, hostOrder);
-    const signature = JSON.stringify([active, [...this.folded], dirNames, cardOrder, hostOrder, sections.map(sec => [
+    const signature = JSON.stringify([[...this.folded], dirNames, cardOrder, hostOrder, sections.map(sec => [
       sec.host, sec.title, sec.ip, sec.tag, sec.online, sec.home, sec.groups.map(g => [
         g.key, g.folder?.name, g.items.map(s => [s.name, s.displayName, s.cwd, !!s.pinned]),
       ])])]);
+    const previousActive = this.lastRender?.active;
     this.lastRender = { sections, groups: sections.flatMap(sec => sec.groups), active };
-    if (signature === this.signature) return;
+    if (signature === this.signature) {
+      if (active === previousActive) return;
+      // Selection is presentation state, not a reason to discard every chip.
+      for (const dot of this.dots()) {
+        const names = (dot.dataset.sessions ?? '').split(' ');
+        const target = dot.closest('.ps-chip') ?? dot.closest('.ps-card');
+        target?.classList.toggle('active', !!active && names.includes(active));
+      }
+      return;
+    }
     this.signature = signature;
 
     const scrollTop = this.list.scrollTop;
@@ -534,6 +546,7 @@ export class ProjectSidebar {
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
         chip.classList.toggle('pinned', !!session.pinned);
+        this.hooks.decorateChip(chip, session.name);
         chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
