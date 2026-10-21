@@ -341,8 +341,7 @@ function showCurrentPath(path: string, copied: boolean): void {
 }
 
 let copyingCurrentPath = false;
-async function copyCurrentPath(): Promise<void> {
-  const session = activeSession;
+async function copyCurrentPath(session: Session | null = activeSession, reveal = true): Promise<void> {
   if (!session) {
     flashStatus('没有选中的终端会话', 1600);
     return;
@@ -377,7 +376,8 @@ async function copyCurrentPath(): Promise<void> {
   try {
     const path = await pathRequest;
     const copied = clipboardWrite ? await clipboardWrite : await copyText(path);
-    showCurrentPath(path, copied);
+    if (reveal || !copied) showCurrentPath(path, copied);
+    else flashStatus('已复制目录绝对路径', 1600);
   } catch {
     flashStatus('无法获取当前路径，请检查会话连接', 2200);
   } finally {
@@ -678,6 +678,10 @@ const sidebar = new ProjectSidebar({
   newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
   newFolder: host => void promptNewFolder(host),
   pinSession: (name, pinned) => pinSession(name, pinned),
+  copySessionDirectory: names => {
+    const session = names.includes(activeSession?.name ?? '') ? activeSession : sessions.find(s => names.includes(s.name));
+    if (session) void copyCurrentPath(session, false);
+  },
   // Same confirmation as the tab's own close: names are page keys, so look the sessions up.
   closeSessions: names => {
     const list = sessions.filter(s => names.includes(s.name));
@@ -2765,6 +2769,7 @@ function openTabMenu(s: Session, x: number, y: number): void {
   };
   item(isPinned(s) ? '取消置顶' : '置顶到目录最前', () => pinSession(s.name, !isPinned(s)));
   item('编辑会话信息', () => void showSessionNote(s));
+  item('复制目录绝对路径', () => void copyCurrentPath(s, false));
   item('关闭会话', () => confirmCloseSession(s), 'danger');
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();

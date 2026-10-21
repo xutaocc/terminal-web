@@ -45,6 +45,8 @@ export interface SidebarHooks {
   pinSession(name: string, pinned: boolean): void;
   /** Close these sessions (their tmux sessions end); the page asks first. */
   closeSessions(names: string[]): void;
+  /** Copy the clicked session's current absolute directory without activating it. */
+  copySessionDirectory(names: string[]): void;
   /** A chip was dragged onto another in the same card: put `name` before or after `target`. */
   reorderSession(name: string, target: string, after: boolean): void;
   /** A server's block was dragged into a new place among the others (host keys, first to last). */
@@ -738,6 +740,7 @@ export class ProjectSidebar {
       item('移出文件夹', () => this.hooks.moveSessions(names, host ? `@${host}/` : '', card));
     }
     if (!folders.length) item('还没有文件夹，先点上方按钮新建', () => {}, true);
+    item('复制目录绝对路径', () => this.hooks.copySessionDirectory(names));
     const sep2 = document.createElement('div');
     sep2.className = 'ps-menu-sep';
     menu.append(sep2);
