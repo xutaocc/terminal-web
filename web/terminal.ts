@@ -2462,7 +2462,9 @@ function updateOutputActivity(): void {
       const working = members.some(s => hasRecentOutput(s));
       const unread = members.some(s => s.readState.unread || !!s.mate?.readState.unread);
       dot.classList.toggle('working', working);
-      dot.classList.toggle('unread', unread);
+      // As in output-activity.ts: the spinner outranks unread, so a running turn
+      // never shows the check (and with it, the spinner's animation).
+      dot.classList.toggle('unread', unread && !working);
       dot.classList.remove('waiting', 'done');
       label = working ? '近期有输出' : unread ? '未读' : '已读';
     }

@@ -1603,11 +1603,13 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 /* done but unread: a blue check with a filled badge in its top-right corner
    — "finished, come and look", like an app's unread dot. Read and unread
    differ in shape (badged check vs plain dot) and colour, not colour alone.
-   One mask draws both the check and the badge. */
-.tab .tab-dot.unread,
-.m-title .tab-dot.unread,
-.drawer-body .tab-dot.unread,
-.ps-card .tab-dot.unread {
+   One mask draws both the check and the badge. While a turn runs (.working,
+   which outranks unread) the arc keeps its own shape instead of a spinning
+   check: legacy mode used to put both classes on one dot. */
+.tab .tab-dot.unread:not(.working),
+.m-title .tab-dot.unread:not(.working),
+.drawer-body .tab-dot.unread:not(.working),
+.ps-card .tab-dot.unread:not(.working) {
   --st-size: 14px;
   width: 15px;
   border: 0;
