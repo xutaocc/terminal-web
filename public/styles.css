@@ -2278,3 +2278,31 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   border-color: transparent;
   border-bottom-width: 1px;
 }
+
+/* Shared session manager: explicit menus also work without a mouse. */
+.ps-chip-wrap { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; }
+.ps-chip-wrap > .ps-icon-btn { width: 22px; flex-shrink: 0; }
+.ps-chip-wrap .ps-chip { min-width: 0; max-width: 100%; }
+.ps-menu { max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; z-index: 90; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer { max-height: calc(var(--visible-h, 100dvh) - 12px); height: calc(var(--visible-h, 100dvh) - 12px); padding: env(safe-area-inset-top) 0 0; overflow: hidden; display: flex; flex-direction: column; }
+  .drawer > :not(#sidebar) { display: none; }
+  .drawer #sidebar, .drawer #sidebar.collapsed { display: flex !important; position: relative; inset: auto; width: 100% !important; height: 100%; min-height: 0; border: 0; padding-top: 0; }
+  .drawer .ps-list { flex: 1; min-height: 0; overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; }
+  .drawer .ps-resize { display: none; }
+  .drawer .ps-icon-btn { min-width: 40px; height: 40px; font-size: 20px; }
+  .drawer .ps-top, .drawer .ps-header { height: auto; min-height: 44px; flex-shrink: 0; }
+  .drawer .ps-footer { padding-bottom: env(safe-area-inset-bottom); flex-shrink: 0; }
+  .drawer .ps-host-head, .drawer .ps-group-head { height: auto; min-height: 44px; flex-wrap: wrap; }
+  .drawer .ps-group-actions { position: static; opacity: 1; margin-left: auto; }
+  .drawer .ps-host-head .host-ip { display: none; }
+  .drawer .ps-card-row { flex-wrap: wrap; }
+  .drawer .ps-card-add { opacity: 1; }
+  .drawer .ps-card-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer .ps-chip-wrap { width: 100%; }
+  .drawer .ps-chip { flex: 1; min-height: 44px; font-size: 13px; text-align: left; }
+  .drawer .ps-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer .ps-host-body { padding-left: 0; }
+  .ps-menu { left: 8px !important; right: 8px; width: auto; max-height: calc(var(--visible-h, 100dvh) - 32px); }
+  .ps-menu-item { min-height: 44px; font-size: 14px; }
+}

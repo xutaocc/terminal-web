@@ -653,12 +653,16 @@ function ipSuffix(host: string, full = false): HTMLElement {
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
+  dismiss: () => closeDrawer(),
+  editSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void showSessionNote(s); } },
+  baseSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void promptAddSession(s); } },
   decorateChip: (chip, name) => markRecent(chip, name),
   activate: name => {
     const s = sessions.find(x => x.name === name);
-    if (s) pickSession(s);
+    if (s) { pickSession(s); if (mobileMQ.matches) closeDrawer(); }
   },
   activateDirectory: names => {
+    if (mobileMQ.matches) closeDrawer();
     const inDir = sessions.filter(x => names.includes(x.name));
     // The card's dot sums up its sessions, so a click goes where the dot points:
     // a question first, then an unread result — moving on to the next one when
@@ -676,8 +680,8 @@ const sidebar = new ProjectSidebar({
     const s = inDir.find(x => x.name === lastUsedIn.get(x.cwd ?? '')) ?? inDir[0];
     if (s) pickSession(s);
   },
-  newSession: (folderId, directory) => void promptAddSession(activeSession, directory || undefined, folderId),
-  newFolder: host => void promptNewFolder(host),
+  newSession: (folderId, directory) => { closeDrawer(); void promptAddSession(activeSession, directory || undefined, folderId); },
+  newFolder: host => { closeDrawer(); void promptNewFolder(host); },
   pinSession: (name, pinned) => pinSession(name, pinned),
   copySessionDirectory: names => {
     const session = names.includes(activeSession?.name ?? '') ? activeSession : sessions.find(s => names.includes(s.name));
@@ -686,15 +690,15 @@ const sidebar = new ProjectSidebar({
   // Same confirmation as the tab's own close: names are page keys, so look the sessions up.
   closeSessions: names => {
     const list = sessions.filter(s => names.includes(s.name));
-    if (list.length) confirmCloseSession(list);
+    if (list.length) { closeDrawer(); confirmCloseSession(list); }
   },
   // Same order as the tab strip: one list, so the sidebar and the strip agree.
   reorderSession: (name, target, after) => {
     const from = sessions.find(x => x.name === name);
     const to = sessions.find(x => x.name === target);
-    if (from && to) applyTabOrder(moveTab(sessions, from, to, after));
+    if (from && to) applyTabOrder(moveTab(pinnedFirst(sessions), from, to, after));
   },
-  attend: host => attendHost(host),
+  attend: host => { if (mobileMQ.matches) closeDrawer(); attendHost(host); },
   renameFolder: (id, name) => void editFolders({ action: 'rename', id, name }),
   moveSessions: (names, folderId, card) => moveSessions(names, folderId, card),
   renameDir: (folderId, cwd, name) => void editFolders({ action: 'renameDir', folder: folderId, cwd, name }),
@@ -2050,6 +2054,12 @@ class Session {
     // behind the spinner; when this timer expires the same icon becomes bright.
     if (this.disposed) return;
     if (!this.readState.output()) return;
+    if (agentModes.get(this.host) === 'legacy') {
+      void fetch(hostUrl(this.host, '/api/agent-status/read'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output: this.raw }),
+      }).catch(() => {});
+    }
     if (this.outputActivityTimer !== null) clearTimeout(this.outputActivityTimer);
     if (!this.outputActive) {
       this.outputActive = true;
@@ -2343,8 +2353,8 @@ function hasRecentOutput(s: Session): boolean {
 // Agent status from the server (src/agent-status.ts): working / waiting / done
 // and unread for every session, whether or not this page has opened it, the
 // same on every device. The mode, picked in the settings sheet, says where it
-// comes from; in 'legacy' mode — or against a server too old to say — the dots
-// fall back to this page's own output heuristic (output-activity.ts).
+// comes from. Legacy browsers report their output heuristic to the server too,
+// so read acknowledgements and activity are shared across devices.
 // ---------------------------------------------------------------------------
 type AgentMode = 'hooks' | 'screen' | 'legacy';
 /** host -> where that server's statuses come from; missing while it has not said. */
@@ -2353,9 +2363,13 @@ const agentModes = new Map<string, AgentMode>();
 let agentStatuses = new Map<string, AgentStatus>();
 const agentSources = new Map<string, EventSource>();
 
+function legacyUnread(s: Session): boolean {
+  return agentModes.get(s.host) === 'legacy' ? !!agentStatuses.get(s.name)?.unread : s.readState.unread;
+}
+
 function serverStatusActive(host: string): boolean {
   const mode = agentModes.get(host);
-  return mode === 'hooks' || mode === 'screen';
+  return mode === 'hooks' || mode === 'screen' || mode === 'legacy';
 }
 
 /** Take one server's statuses, leaving the other servers' as they were. */
@@ -2418,10 +2432,10 @@ function disconnectAgentStatus(host: string): void {
 function reportViewed(): void {
   // Touch devices are exempt from the focus test: framed in the iOS launcher,
   // the page often has no focus until it is tapped, though it is plainly seen.
-  if (fileBrowserOpen || document.visibilityState !== 'visible' ||
+  if (drawerOpen || fileBrowserOpen || document.querySelector('.paste-overlay, .sheet-overlay:not(.hidden)') || document.visibilityState !== 'visible' ||
       (!TOUCH_DEVICE && !document.hasFocus())) return;
   const viewed = [activeTab, activeTab?.mate].filter((s): s is Session =>
-    !!s && serverStatusActive(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
+    !!s && agentModes.has(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
     !!agentStatuses.get(s.name)?.unread);
   if (!viewed.length) return;
   for (const s of viewed) agentStatuses.set(s.name, { ...agentStatuses.get(s.name)!, unread: false });
@@ -2460,7 +2474,7 @@ function updateOutputActivity(): void {
       label = INDICATOR_LABEL[indicator];
     } else {
       const working = members.some(s => hasRecentOutput(s));
-      const unread = members.some(s => s.readState.unread || !!s.mate?.readState.unread);
+      const unread = members.some(s => legacyUnread(s) || (!!s.mate && legacyUnread(s.mate)));
       dot.classList.toggle('working', working);
       // As in output-activity.ts: the spinner outranks unread, so a running turn
       // never shows the check (and with it, the spinner's animation).
@@ -2477,9 +2491,6 @@ function updateOutputActivity(): void {
       serverStatusActive(s.host) && wantsAttention(combineStatus(statusesOf(s))));
   }
   paint(mTitleDot, activeTab);
-  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) {
-    paint(row.querySelector('.tab-dot'), sessions.find(session => session.name === row.dataset.session));
-  }
   for (const dot of sidebar.dots()) {
     const names = (dot.dataset.sessions ?? '').split(' ');
     paint(dot, ...sessions.filter(session => names.includes(session.name)));
@@ -2501,7 +2512,7 @@ function attentionOf(s: Session): Attention | null {
     return indicator === 'waiting' || indicator === 'unread' ? indicator : null;
   }
   // 'legacy' mode: only unread exists, and only for tabs this page has opened.
-  return !hasRecentOutput(s) && (s.readState.unread || !!s.mate?.readState.unread) ? 'unread' : null;
+  return !hasRecentOutput(s) && (legacyUnread(s) || (!!s.mate && legacyUnread(s.mate))) ? 'unread' : null;
 }
 
 /** The sessions on `host` that want you, questions first, in the sidebar's order. */
@@ -2534,34 +2545,14 @@ function paintHostAttention(): void {
   paintMobileAttention();
 }
 
-// The phone has no server folders, so the same pills sit at the top of its
-// session list, one per server ("本地 · 2 未读", "119 桌面 · 1 待确认"), and
-// the ☰ button carries their total so it shows without opening the list.
+// The mobile entry shows the total; host pills live in the shared manager.
 function paintMobileAttention(): void {
-  const hosts = ['', ...remoteHosts.map(r => r.id)];
-  const pills: HTMLElement[] = [];
   let total = 0;
   let waitingAny = false;
-  for (const host of hosts) {
-    const { text, waiting, total: n } = attentionSummary(host);
-    total += n;
-    waitingAny ||= waiting > 0;
-    if (!text) continue;
-    const pill = document.createElement('button');
-    pill.type = 'button';
-    pill.className = 'ps-host-attention drawer-attention';
-    pill.classList.toggle('waiting', waiting > 0);
-    const where = remoteHosts.length ? (host ? remoteHosts.find(r => r.id === host)?.name ?? host : '本地') : '';
-    pill.textContent = where ? `${where} · ${text}` : text;
-    pill.setAttribute('aria-label', `${pill.textContent}，点击进入${waiting ? '等待确认' : '未读'}的会话`);
-    onTap(pill, () => { closeDrawer(); attendHost(host); }, drawer);
-    pills.push(pill);
-  }
-  const signature = pills.map(p => `${p.className}|${p.textContent}`).join('\n');
-  if (drawerAttention.dataset.signature !== signature) {
-    drawerAttention.dataset.signature = signature;
-    drawerAttention.replaceChildren(...pills);
-    drawerAttention.hidden = !pills.length;
+  for (const host of ['', ...remoteHosts.map(r => r.id)]) {
+    const summary = attentionSummary(host);
+    total += summary.total;
+    waitingAny ||= summary.waiting > 0;
   }
   mMenuBadge.textContent = total ? String(total > 99 ? '99+' : total) : '';
   mMenuBadge.hidden = !total;
@@ -2782,10 +2773,18 @@ function openTabMenu(s: Session, x: number, y: number): void {
 }
 
 function applyTabOrder(ordered: Session[]): void {
+  for (const host of new Set(ordered.map(s => s.host))) {
+    const names = ordered.filter(s => s.host === host && isPinned(s)).map(s => s.name);
+    const before = pinnedKeys.filter(n => hostOfKey(n) === host);
+    if (names.some((n, i) => n !== before[i])) {
+      pinnedKeys = mergePins(pinnedKeys, host, names.map(n => splitKey(n).raw), serverOrder());
+      void editFolders({ action: 'pin', sessions: names, pinned: true });
+    }
+  }
   sessions.splice(0, sessions.length, ...ordered);
   orderTabStrip();
   saveTabs();
-  // The order the user arranged, kept on the server too (per device class), so
+  // The shared order is kept on the server, so
   // it survives another browser or a cleared cache, not only this one.
   savePrefs({ tabOrder: sessions.map(s => s.name) });
   refreshMobileUI();
@@ -2800,7 +2799,7 @@ tabsEl.addEventListener('drop', e => {
   if (!draggedTab) return;
   e.preventDefault();
   const last = sessions[sessions.length - 1];
-  if (last) applyTabOrder(moveTab(sessions, draggedTab, last, true));
+  if (last) applyTabOrder(moveTab(pinnedFirst(sessions), draggedTab, last, true));
   finishTabDrag();
 });
 addBtn.addEventListener('dragover', e => {
@@ -2812,7 +2811,7 @@ addBtn.addEventListener('drop', e => {
   if (!draggedTab) return;
   e.preventDefault();
   const last = sessions[sessions.length - 1];
-  if (last) applyTabOrder(moveTab(sessions, draggedTab, last, true));
+  if (last) applyTabOrder(moveTab(pinnedFirst(sessions), draggedTab, last, true));
   finishTabDrag();
 });
 
@@ -3063,7 +3062,7 @@ function buildTab(s: Session): void {
     e.preventDefault();
     e.stopPropagation();
     const after = e.clientX >= tab.getBoundingClientRect().left + tab.offsetWidth / 2;
-    applyTabOrder(moveTab(sessions, draggedTab, s, after));
+    applyTabOrder(moveTab(pinnedFirst(sessions), draggedTab, s, after));
     finishTabDrag();
   });
   tab.addEventListener('dragend', finishTabDrag);
@@ -3187,7 +3186,6 @@ function paintRecentTabs(): void {
     const chip = dot.closest('.ps-chip');
     if (chip) markRecent(chip, dot.dataset.sessions ?? '');
   }
-  for (const row of drawerList.querySelectorAll<HTMLElement>('.drawer-row')) markRecent(row, row.dataset.session ?? '');
 }
 
 /** Sessions that are gone leave the list (closed here or on another device). */
@@ -3994,6 +3992,7 @@ async function fetchServerPrefs(timeoutMs = 2500): Promise<UiPrefs | null> {
 // overwrite the very prefs we are about to restore.
 let prefsReady = false;
 let pendingPrefs: UiPrefs = {};
+let sharedOrderRevision = 0;
 let prefsTimer = 0;
 
 function prefsBody(): string {
@@ -4044,6 +4043,7 @@ async function flushPrefs(): Promise<void> {
 // Coalesced: holding A− down, or walking through tabs, is one write.
 function savePrefs(patch: UiPrefs): void {
   if (!prefsReady) return;
+  if (patch.tabOrder || patch.hostOrder) sharedOrderRevision++;
   Object.assign(pendingPrefs, patch);
   window.clearTimeout(prefsTimer);
   prefsTimer = window.setTimeout(flushPrefs, 400);
@@ -4118,6 +4118,16 @@ async function syncFromServer(): Promise<void> {
   syncing = true;
   try {
     await loadRemotes();
+    const orderRevision = sharedOrderRevision;
+    const canAdoptOrder = !prefsSaving && !pendingPrefs.tabOrder && !pendingPrefs.hostOrder;
+    const prefs = await fetchServerPrefs();
+    if (orderRevision === sharedOrderRevision && canAdoptOrder && prefs && !prefsSaving && !pendingPrefs.tabOrder && !pendingPrefs.hostOrder) {
+      if (Array.isArray(prefs.tabOrder)) {
+        const rank = new Map(prefs.tabOrder.map((name, i) => [name, i]));
+        sessions.sort((a, b) => (rank.get(a.name) ?? Infinity) - (rank.get(b.name) ?? Infinity));
+      }
+      if (Array.isArray(prefs.hostOrder)) hostOrder = prefs.hostOrder;
+    }
     await Promise.all(['', ...remoteHosts.map(r => r.id)].map(host => syncHost(host)));
     if (sessions.length === 0) addFallbackTab();
     refreshMobileUI(); // directories or folders may have changed
@@ -5082,8 +5092,9 @@ const drawerOverlay = document.createElement('div');
 drawerOverlay.className = 'sheet-overlay hidden';
 const drawer = document.createElement('div');
 drawer.className = 'sheet drawer';
-const drawerGrip = document.createElement('div');
-drawerGrip.className = 'sheet-grip';
+drawer.setAttribute('role', 'dialog');
+drawer.setAttribute('aria-modal', 'true');
+drawer.setAttribute('aria-label', '会话管理');
 /** A sheet header: the section name, and the brand mark on the right. */
 function sheetHeader(title: string): HTMLElement {
   const head = document.createElement('div');
@@ -5095,25 +5106,6 @@ function sheetHeader(title: string): HTMLElement {
   return head;
 }
 
-const drawerTitle = sheetHeader('会话');
-const drawerHint = document.createElement('div');
-drawerHint.className = 'drawer-hint';
-drawerHint.textContent = '点击名称选中基准会话；点击“进入”切换终端。';
-const drawerList = document.createElement('div');
-drawerList.className = 'drawer-list';
-const drawerNew = document.createElement('button');
-drawerNew.className = 'drawer-new';
-drawerNew.type = 'button';
-drawerNew.textContent = '+  基于选中会话新建';
-bindIntentionalClick(drawerNew, () => {
-  const base = drawerSelected && sessions.includes(drawerSelected) ? drawerSelected : activeTab;
-  closeDrawer();
-  void promptAddSession(base);
-}, drawer);
-const drawerAttention = document.createElement('div');
-drawerAttention.className = 'drawer-attention-row';
-drawerAttention.hidden = true;
-drawer.append(drawerGrip, drawerTitle, drawerAttention, drawerHint, drawerList, drawerNew);
 drawerOverlay.append(drawer);
 document.body.append(drawerOverlay);
 bindIntentionalClick(drawerOverlay, (e) => {
@@ -5121,128 +5113,31 @@ bindIntentionalClick(drawerOverlay, (e) => {
 }, drawer);
 
 let drawerOpen = false;
-let drawerSelected: Session | null = null;
-
-function selectDrawerSession(session: Session): void {
-  drawerSelected = session;
-  for (const row of Array.from(drawerList.children)) {
-    const selected = (row as HTMLElement).dataset.session === session.name;
-    row.classList.toggle('active', selected);
-    row.querySelector('.drawer-body')?.setAttribute('aria-pressed', String(selected));
-  }
-}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && drawerOpen && !document.querySelector('.ps-rename')) closeDrawer();
+});
 
 function renderDrawer(): void {
-  if (!drawerSelected || !sessions.includes(drawerSelected)) drawerSelected = activeTab ?? sessions[0] ?? null;
-  drawerList.textContent = '';
-  // Pinned sessions head the list, the way they head their card on the desktop.
-  for (const s of pinnedFirst(sessions)) {
-    const row = document.createElement('div');
-    row.className = 'drawer-row' + (s === drawerSelected ? ' active' : '') + (isPinned(s) ? ' pinned' : '');
-    row.dataset.session = s.name;
-    // Marked as it is built, not later by paintRecentTabs: a list drawn without
-    // its marks and given them a moment after looks like a change.
-    markRecent(row, s.name);
-
-    const body = document.createElement('div');
-    body.className = 'drawer-body';
-    body.setAttribute('role', 'button');
-    body.tabIndex = 0;
-    body.setAttribute('aria-pressed', String(s === drawerSelected));
-    body.setAttribute('aria-label', `选中会话：${remoteHosts.length ? `${hostLabel(s.host)} · ` : ''}${s.displayName}`);
-    const dot = document.createElement('span');
-    dot.className = 'tab-dot' + (s.connected ? ' connected' : '') + (hasRecentOutput(s) ? ' working' : '');
-    const name = document.createElement('span');
-    name.className = 'drawer-name';
-    name.textContent = s.displayName;
-    // With a remote added, every row says which server it runs on: the badge in
-    // front, the address under the name.
-    const text = document.createElement('span');
-    text.className = 'drawer-text';
-    text.append(name);
-    if (remoteHosts.length) {
-      const meta = document.createElement('span');
-      meta.className = 'drawer-meta';
-      meta.append(ipSuffix(s.host, true));
-      text.append(meta);
-    }
-    if (isPinned(s)) {
-      const pin = document.createElement('span');
-      pin.className = 'pin-mark';
-      pin.innerHTML = ICONS.pin;
-      body.append(dot, pin);
-    } else body.append(dot);
-    if (remoteHosts.length) body.append(hostBadge(s.host));
-    body.append(text);
-    // Taps only: this list scrolls, and a swipe through it must not pick the
-    // session it started on (it used to, on pointerdown).
-    onTap(body, () => {
-      selectDrawerSession(s);
-    }, drawer);
-    body.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDrawerSession(s); }
-    });
-
-    const enter = document.createElement('button');
-    enter.className = 'drawer-act drawer-enter';
-    enter.type = 'button';
-    enter.title = '进入会话';
-    enter.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h5v16h-5"/><path d="M3 12h11m-4-4 4 4-4 4"/></svg>';
-    enter.setAttribute('aria-label', `进入会话：${s.displayName}`);
-    onTap(enter, () => {
-      selectDrawerSession(s);
-      pickSession(s);
-      closeDrawer();
-    }, drawer);
-
-    // One tap to pin: a phone has no right-click, and a long press is hidden.
-    const pin = document.createElement('button');
-    pin.className = 'drawer-act drawer-pin' + (isPinned(s) ? ' on' : '');
-    pin.type = 'button';
-    pin.innerHTML = ICONS.pin;
-    pin.title = isPinned(s) ? '取消置顶' : '置顶';
-    pin.setAttribute('aria-label', `${pin.title}：${s.displayName}`);
-    pin.setAttribute('aria-pressed', String(isPinned(s)));
-    onTap(pin, () => pinSession(s.name, !isPinned(s)), drawer);
-
-    const rename = document.createElement('button');
-    rename.className = 'drawer-act';
-    rename.type = 'button';
-    rename.textContent = '✎';
-    rename.title = '编辑会话信息';
-    rename.setAttribute('aria-label', `编辑会话信息：${s.displayName}`);
-    onTap(rename, () => {
-      closeDrawer();
-      void showSessionNote(s);
-    }, drawer);
-
-    const close = document.createElement('button');
-    close.className = 'drawer-act danger';
-    close.type = 'button';
-    close.textContent = '×';
-    close.title = '关闭标签并结束会话';
-    onTap(close, () => {
-      closeDrawer();
-      confirmCloseSession(s);
-    }, drawer);
-
-    row.append(body, pin, enter, rename, close);
-    drawerList.append(row);
-  }
+  refreshSidebar();
   updateOutputActivity();
 }
 
 function openDrawer(): void {
   queueMicrotask(refreshPager);
-  drawerSelected = activeTab;
+  if (TOUCH_DEVICE) (document.activeElement as HTMLElement | null)?.blur();
+  drawerOpen = true;
+  drawer.append(sidebar.el);
   renderDrawer();
   drawerOverlay.classList.remove('hidden');
-  drawerOpen = true;
+  sidebar.reveal(activeTab?.name ?? '');
 }
 function closeDrawer(): void {
+  sidebar.closeMenu();
   queueMicrotask(refreshPager);
   drawerOverlay.classList.add('hidden');
+  document.body.prepend(sidebar.el);
   drawerOpen = false;
+  queueMicrotask(updateOutputActivity);
   // Don't focus the terminal on touch: this runs inside the tap gesture that
   // picked a session, and a synchronous focus() raises the soft keyboard — so
   // every session switch popped the keyboard. (This, not setActive()'s rAF
@@ -6654,7 +6549,7 @@ setInterval(() => {
 // PC, unless set otherwise for that layout. Crossing the breakpoint (rotating,
 // or narrowing a window) brings in the other layout's own.
 applyLayoutSettings();
-mobileMQ.addEventListener('change', () => applyLayoutSettings());
+mobileMQ.addEventListener('change', () => { closeDrawer(); applyLayoutSettings(); });
 
 
 // Same-origin embedded file view isolates its CSS/keyboard handling while the
@@ -6708,7 +6603,7 @@ function closeFileBrowser(): void {
   requestAnimationFrame(() => { updateKeyboardOffset(); fitActive(); if (!TOUCH_DEVICE) activeSession?.focus(); });
 }
 function markVisibleSessionsRead(): void {
-  if (fileBrowserOpen || document.visibilityState !== 'visible') return;
+  if (drawerOpen || fileBrowserOpen || document.visibilityState !== 'visible') return;
   for (const s of [activeTab, activeTab?.mate]) {
     if (s && isActive(s) && !s.el.classList.contains('hidden')) s.readState.enter();
   }

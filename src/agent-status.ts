@@ -196,6 +196,7 @@ export class AgentStatusMonitor {
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
   private emitQueued = false;
+  private readonly legacyTimers = new Map<string, NodeJS.Timeout>();
 
   /** `file` keeps the mode chosen in settings across restarts. */
   constructor(private readonly file: string) {}
@@ -213,6 +214,8 @@ export class AgentStatusMonitor {
     this.mode = mode;
     // Whatever the old source concluded does not carry over to the new one.
     this.tracked.clear();
+    for (const timer of this.legacyTimers.values()) clearTimeout(timer);
+    this.legacyTimers.clear();
     this.run();
     this.emit();
     await fs.mkdir(path.dirname(this.file), { recursive: true });
@@ -269,6 +272,26 @@ export class AgentStatusMonitor {
     t.hookAt = now;
     this.set(t, signal, now);
     return true;
+  }
+
+  /** Legacy browsers report effective output; unread is shared through SSE. */
+  legacyOutput(name: string): void {
+    if (this.mode !== 'legacy') return;
+    const t = this.track(name, Date.now());
+    const stamp = Date.now();
+    t.state = 'working';
+    t.since = stamp;
+    t.unread = true;
+    this.emit();
+    clearTimeout(this.legacyTimers.get(name));
+    const timer = setTimeout(() => {
+      this.legacyTimers.delete(name);
+      if (this.mode !== 'legacy' || this.tracked.get(name) !== t || t.since !== stamp) return;
+      t.state = 'done';
+      this.emit();
+    }, 60_000);
+    timer.unref();
+    this.legacyTimers.set(name, timer);
   }
 
   /** Someone is looking at these sessions: they are read. */

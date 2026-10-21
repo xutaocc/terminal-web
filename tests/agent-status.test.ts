@@ -151,3 +151,33 @@ test('the new wording quoted in a reply still proves nothing', () => {
   // Approval words without any menu are just text.
   assert.equal(screenSignal('I would Approve once if asked.\nAllow once and Allow always differ.\n❯ '), 'idle');
 });
+
+
+test('legacy activity and read acknowledgements share one server snapshot', async () => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'tw-legacy-status-'));
+  const monitor = new AgentStatusMonitor(join(dir, 'status.json'));
+  try {
+    await monitor.setMode('legacy');
+    const updates: unknown[] = [];
+    const unsubscribe = monitor.subscribe(snapshot => updates.push(snapshot));
+    monitor.legacyOutput('session-one');
+    assert.equal(monitor.snapshot().sessions['session-one'].state, 'working');
+    assert.equal(monitor.snapshot().sessions['session-one'].unread, true);
+    await new Promise(resolve => setImmediate(resolve));
+    monitor.read(['session-one']);
+    assert.equal(monitor.snapshot().sessions['session-one'].unread, false);
+    assert.equal(monitor.snapshot().sessions['session-one'].state, 'working');
+    await new Promise(resolve => setImmediate(resolve));
+    monitor.legacyOutput('session-one');
+    assert.equal(monitor.snapshot().sessions['session-one'].unread, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(updates.length, 3);
+    unsubscribe();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

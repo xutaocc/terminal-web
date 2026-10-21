@@ -1,4 +1,5 @@
 import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
+import { bindIntentionalClick } from './intentional-click.js';
 import { brandMark } from './brand-mark.js';
 import { hostOfKey, labelBadge } from './hosts.js';
 
@@ -26,6 +27,9 @@ export interface SidebarSection {
 export interface SidebarHooks {
   /** Apply persistent session marks before a new chip enters the document. */
   decorateChip(chip: HTMLElement, name: string): void;
+  dismiss(): void;
+  editSession(name: string): void;
+  baseSession(name: string): void;
   activate(name: string): void;
   /** A directory card was clicked: show one of these sessions (they share its directory). */
   activateDirectory(names: string[]): void;
@@ -107,7 +111,7 @@ function iconButton(icon: string, title: string, onClick: (e: MouseEvent) => voi
   button.title = title;
   button.setAttribute('aria-label', title);
   button.innerHTML = icon;
-  button.addEventListener('click', e => {
+  bindIntentionalClick(button, e => {
     e.stopPropagation();
     onClick(e);
   });
@@ -200,6 +204,7 @@ export class ProjectSidebar {
   get isHidden(): boolean { return this.hidden; }
 
   setHidden(hidden: boolean): void {
+    if (hidden && this.el.closest('.drawer')) { this.closeMenu(); this.hooks.dismiss(); return; }
     if (this.hidden === hidden) return;
     this.hidden = hidden;
     writeJson('tw.sidebar.hidden', hidden);
@@ -243,10 +248,9 @@ export class ProjectSidebar {
 
     const scrollTop = this.list.scrollTop;
     this.list.replaceChildren();
-    const nested = sections.length > 1 || sections.some(sec => sec.remote);
     for (const section of sections) {
       const { groups, home } = section;
-      const target = nested ? this.buildHost(section) : this.list;
+      const target = this.buildHost(section);
       if (!target) continue;
       // With no folders there is nothing to tell the loose sessions apart from:
       // they are listed as they are, with no "未分组" heading over them.
@@ -254,7 +258,7 @@ export class ProjectSidebar {
       for (const group of groups) {
         target.append(flat ? this.buildCards(group, active, home, document.createElement('section')) : this.buildGroup(group, active, home));
       }
-      if (nested && !groups.length) {
+      if (!groups.length) {
         const empty = document.createElement('div');
         empty.className = 'ps-host-empty';
         empty.textContent = section.online ? '暂无会话' : '无法连接，稍后自动重试';
@@ -315,17 +319,19 @@ export class ProjectSidebar {
     const actions = document.createElement('span');
     actions.className = 'ps-group-actions';
     actions.append(
+      iconButton('↑', '主机上移', () => this.shiftHost(section.host, -1)),
+      iconButton('↓', '主机下移', () => this.shiftHost(section.host, 1)),
       iconButton(ICONS.folderPlus, `在「${section.title}」新建文件夹`, () => this.hooks.newFolder(section.host)),
       iconButton(ICONS.plus, `在「${section.title}」新建会话`, () =>
         this.hooks.newSession(section.groups.find(g => !g.folder)?.key ?? (section.host ? `@${section.host}/` : ''), '')),
     );
     head.append(chevron, badge, attention, name, ip, state, count, actions);
-    head.addEventListener('click', () => {
+    bindIntentionalClick(head, () => {
       if (this.folded.has(key)) this.folded.delete(key);
       else this.folded.add(key);
       this.saveFolded();
       this.rerender();
-    });
+    }, this.list);
     el.append(head);
     this.list.append(el);
     if (folded) return null;
@@ -480,13 +486,13 @@ export class ProjectSidebar {
     } else {
       head.append(chevron, name, count, actions);
     }
-    head.addEventListener('click', () => {
+    bindIntentionalClick(head, () => {
       if (head.querySelector('.ps-rename')) return;
       if (this.folded.has(group.key)) this.folded.delete(group.key);
       else this.folded.add(group.key);
       this.saveFolded();
       this.rerender();
-    });
+    }, this.list);
     this.bindDrop(head, group.key);
     el.append(head);
     if (folded) return el;
@@ -535,6 +541,8 @@ export class ProjectSidebar {
         add.classList.add('ps-card-add');
         row.append(add);
       }
+      row.append(iconButton('⋯', '目录操作', () => this.openMenuAt(row, names, group.key,
+        label.textContent ?? '', dir.cwd ? { cwd: dir.cwd, name: given ?? '' } : undefined)));
       const sub = document.createElement('div');
       sub.className = 'ps-card-sub';
       sub.textContent = shortCwd(dir.cwd, home);
@@ -561,10 +569,10 @@ export class ProjectSidebar {
           pin.innerHTML = ICONS.pin;
           chip.append(pin);
         }
-        chip.addEventListener('click', e => {
+        bindIntentionalClick(chip, e => {
           e.stopPropagation();
           this.hooks.activate(session.name);
-        });
+        }, this.list);
         const chipIn = `${group.key}\n${dir.cwd}`;
         this.bindDrag(chip, [session.name], group.key, undefined, undefined, chipIn);
         this.bindChipReorder(chip, session.name, chipIn);
@@ -573,14 +581,18 @@ export class ProjectSidebar {
           e.stopPropagation();
           this.openMenu(e, [session.name], group.key, session.displayName, undefined, !!session.pinned);
         });
-        chips.append(chip);
+        const wrap = document.createElement('span');
+        wrap.className = 'ps-chip-wrap';
+        wrap.append(chip, iconButton('⋯', `管理会话：${session.displayName}`, () =>
+          this.openMenuAt(chip, [session.name], group.key, session.displayName, undefined, !!session.pinned)));
+        chips.append(wrap);
       }
       card.append(row);
       if (sub.textContent) card.append(sub);
       card.append(chips);
-      card.addEventListener('click', () => {
+      bindIntentionalClick(card, () => {
         if (!card.querySelector('.ps-rename')) this.hooks.activateDirectory(names);
-      });
+      }, this.list);
       // Only a name the user gave travels; a directory's own name is its own anywhere.
       const carry = dir.cwd && given ? { cwd: dir.cwd, name: given } : undefined;
       this.bindDrag(card, names, group.key, carry, dir.cwd || undefined);
@@ -717,6 +729,21 @@ export class ProjectSidebar {
     });
   }
 
+  private shiftHost(host: string, delta: number): void {
+    const order = this.lastRender?.sections.map(s => s.host) ?? [];
+    const at = order.indexOf(host), to = at + delta;
+    if (at < 0 || to < 0 || to >= order.length) return;
+    [order[at], order[to]] = [order[to], order[at]];
+    this.hooks.orderHosts(order);
+    this.render(this.lastRender!.sections, this.lastRender!.active, this.dirNames, this.cardOrder, order);
+  }
+
+  private openMenuAt(anchor: HTMLElement, names: string[], from: string, label: string,
+                     card?: { cwd: string; name: string }, pinned?: boolean): void {
+    const rect = anchor.getBoundingClientRect();
+    this.openMenu({ clientX: rect.left, clientY: rect.bottom } as MouseEvent, names, from, label, card, pinned);
+  }
+
   private openMenu(e: MouseEvent, names: string[], from: string, label: string, card?: { cwd: string; name: string },
                    pinned?: boolean): void {
     this.closeMenu();
@@ -735,12 +762,36 @@ export class ProjectSidebar {
       b.className = 'ps-menu-item' + (danger ? ' danger' : '');
       b.textContent = text;
       b.disabled = disabled;
-      b.addEventListener('click', () => {
+      bindIntentionalClick(b, () => {
         this.closeMenu();
         onPick();
-      });
+      }, menu);
       menu.append(b);
     };
+    if (pinned !== undefined) {
+      item('编辑名称和备注', () => this.hooks.editSession(names[0]));
+      item('基于此会话新建', () => this.hooks.baseSession(names[0]));
+      const group = this.lastRender?.groups.find(g => g.key === from);
+      const session = group?.items.find(s => s.name === names[0]);
+      const peers = group?.items.filter(s => s.cwd === session?.cwd && !!s.pinned === pinned) ?? [];
+      const at = peers.findIndex(s => s.name === names[0]);
+      item('向前移动', () => this.hooks.reorderSession(names[0], peers[at - 1].name, false), at <= 0);
+      item('向后移动', () => this.hooks.reorderSession(names[0], peers[at + 1].name, true), at < 0 || at >= peers.length - 1);
+      item('移到最前', () => this.hooks.reorderSession(names[0], peers[0].name, false), at <= 0);
+    }
+    if (card) {
+      const group = this.lastRender?.groups.find(g => g.key === from);
+      const dirs = orderCards(groupByDirectory(group?.items ?? [], s => s.cwd), this.cardOrder[from]).map(d => d.cwd).filter(Boolean);
+      const at = dirs.indexOf(card.cwd);
+      for (const [title, delta] of [['目录上移', -1], ['目录下移', 1]] as const) {
+        const to = at + delta;
+        item(title, () => {
+          const next = [...dirs];
+          [next[at], next[to]] = [next[to], next[at]];
+          this.hooks.orderCards(from, next);
+        }, at < 0 || to < 0 || to >= dirs.length);
+      }
+    }
     // A single session can be pinned to the top of its directory card.
     if (pinned !== undefined) {
       item(pinned ? '取消置顶' : '置顶到目录最前', () => this.hooks.pinSession(names[0], !pinned));
@@ -760,12 +811,12 @@ export class ProjectSidebar {
     item(card ? '关闭这个目录的全部会话' : '关闭会话', () => this.hooks.closeSessions(names), false, true);
     document.body.append(menu);
     const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.min(e.clientX, innerWidth - rect.width - 8)}px`;
-    menu.style.top = `${Math.min(e.clientY, innerHeight - rect.height - 8)}px`;
+    menu.style.left = `${Math.max(8, Math.min(e.clientX, innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(e.clientY, innerHeight - rect.height - 8))}px`;
     this.menu = menu;
   }
 
-  private closeMenu(): void {
+  closeMenu(): void {
     this.menu?.remove();
     this.menu = null;
   }

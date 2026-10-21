@@ -642,11 +642,12 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
 }
 
 async function handleAgentStatusRead(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  let body: { sessions?: unknown };
+  let body: { sessions?: unknown; output?: unknown };
   try { body = JSON.parse((await readBody(req, 8192)).toString('utf8')); }
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
   const names = Array.isArray(body?.sessions) ? body.sessions.filter((n): n is string =>
     typeof n === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(n)) : [];
+  if (typeof body.output === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.output)) agentStatus.legacyOutput(body.output);
   agentStatus.read(names);
   sendJsonHttp(res, 200, { ok: true });
 }
@@ -930,7 +931,7 @@ interface UiPrefs {
   zoomKeys?: boolean;
   /** The recently picked sessions on this kind of device, newest first. */
   recentTabs?: string[];
-  /** The order the user arranged the tabs in on this kind of device. */
+  /** Shared session order across desktop and touch devices. */
   tabOrder?: string[];
   /** Shared order of the servers' blocks in the sidebar ('' is this server). */
   hostOrder?: string[];
@@ -988,7 +989,8 @@ async function handleGetPrefs(
   // Host blocks are shared across device classes. Prefer the old desktop
   // order when migrating a file that predates the shared scope.
   const hostOrder = all.shared?.hostOrder ?? all.desktop?.hostOrder ?? all.touch?.hostOrder;
-  sendJsonHttp(res, 200, { prefs: { ...(all[scope] ?? {}), ...(hostOrder ? { hostOrder } : {}) } });
+  const tabOrder = all.shared?.tabOrder ?? all.desktop?.tabOrder ?? all.touch?.tabOrder;
+  sendJsonHttp(res, 200, { prefs: { ...(all[scope] ?? {}), ...(hostOrder ? { hostOrder } : {}), ...(tabOrder ? { tabOrder } : {}) } });
 }
 
 /** Merge a partial update into one scope's prefs ({ scope, ...fields }). */
@@ -1054,6 +1056,7 @@ async function handleSetPrefs(
     if (Array.isArray(obj.hostOrder)) {
       all.shared = { ...all.shared, hostOrder: next.hostOrder };
     }
+    if (Array.isArray(obj.tabOrder)) all.shared = { ...all.shared, tabOrder: next.tabOrder };
     all[scope] = next;
     await writePrefs(all);
     prefsCache = all;
