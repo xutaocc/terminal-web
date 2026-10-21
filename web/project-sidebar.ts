@@ -319,7 +319,7 @@ export class ProjectSidebar {
       iconButton(ICONS.plus, `在「${section.title}」新建会话`, () =>
         this.hooks.newSession(section.groups.find(g => !g.folder)?.key ?? (section.host ? `@${section.host}/` : ''), '')),
     );
-    head.append(chevron, badge, name, ip, attention, state, count, actions);
+    head.append(chevron, badge, attention, name, ip, state, count, actions);
     head.addEventListener('click', () => {
       if (this.folded.has(key)) this.folded.delete(key);
       else this.folded.add(key);
