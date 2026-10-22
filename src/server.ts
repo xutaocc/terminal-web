@@ -809,7 +809,7 @@ async function handleAdoptSessions(
 ): Promise<void> {
   let body: unknown;
   try {
-    body = JSON.parse((await readBody(req, 8192)).toString("utf8"));
+    body = JSON.parse((await readBody(req, 327680)).toString("utf8"));
   } catch {
     sendJsonHttp(res, 400, { error: "invalid body" });
     return;
@@ -818,6 +818,18 @@ async function handleAdoptSessions(
   if (!Array.isArray(names)) {
     sendJsonHttp(res, 400, { error: "missing names" });
     return;
+  }
+  // A browser may be the last owner of a legacy tab's directory after reboot.
+  // Fill registered tabs only; stale caches must not recreate closed tabs or
+  // replace a newer directory already saved by this host.
+  const directories = (body as { directories?: unknown }).directories;
+  if (Array.isArray(directories)) {
+    for (const entry of directories.slice(0, 64)) {
+      if (!entry || typeof entry.name !== 'string' || typeof entry.cwd !== 'string' ||
+          entry.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(entry.cwd) || !path.isAbsolute(entry.cwd)) continue;
+      const saved = sessionStore.get(entry.name);
+      if (saved && !saved.cwd && !isClosed(entry.name)) sessionStore.update({ ...saved, cwd: entry.cwd });
+    }
   }
   const existing = await listTmuxSessions();
   if (!existing) {

@@ -77,6 +77,25 @@ try {
   tmux('kill-server'); // simulate loss of all terminal processes at reboot
   await start();
   assert.deepEqual(await tabs(), [{ name: 'saved', displayName: '重命名测试', cwd: directory }]);
+  // Legacy records can survive reboot with only a name. Browser caches may
+  // fill their directory even while tmux is down, but cannot replace known
+  // paths or resurrect arbitrary cached identities.
+  await post('rename', { name: 'legacy', displayName: '旧目录待恢复' });
+  await post('adopt', { names: [], directories: [
+    { name: 'legacy', cwd: directory },
+    { name: 'saved', cwd: root },
+    { name: 'not_registered', cwd: directory },
+  ] });
+  assert.equal((await tabs()).find(t => t.name === 'legacy')?.cwd, directory);
+  assert.equal((await tabs()).find(t => t.name === 'saved')?.cwd, directory);
+  assert.ok(!(await tabs()).some(t => t.name === 'not_registered'));
+  await stop();
+  await start();
+  assert.equal((await tabs()).find(t => t.name === 'legacy')?.cwd, directory,
+    'repaired directory must survive server restart');
+  await post('kill', { name: 'legacy' });
+  await post('adopt', { names: [], directories: [{ name: 'legacy', cwd: directory }] });
+  assert.ok(!(await tabs()).some(t => t.name === 'legacy'), 'cache must not revive a closed tab');
   const ws = await attach();
   ws.close();
   await post('kill', { name: 'saved' });

@@ -3897,6 +3897,21 @@ async function fetchServerTabs(host: string, timeoutMs = 2500): Promise<SavedTab
         out.push({ name: makeKey(host, name), displayName: dn, cwd });
       }
     }
+    // Repair legacy server records from this device before saveTabs replaces
+    // its cache. Never substitute a cache value for a known server directory.
+    const remembered = new Map(loadTabs().tabs.map(t => [t.name, t.cwd]));
+    for (const session of sessions) if (session.cwd) remembered.set(session.name, session.cwd);
+    const directories = out.filter(t => !t.cwd && remembered.get(t.name))
+      .map(t => ({ name: splitKey(t.name).raw, cwd: remembered.get(t.name)! }));
+    if (directories.length) {
+      try {
+        const repaired = await fetch(hostUrl(host, '/api/sessions/adopt'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ names: [], directories: directories.slice(0, 64) }), signal: ctrl.signal,
+        });
+        if (repaired.ok) for (const tab of out) tab.cwd ??= remembered.get(tab.name);
+      } catch { /* retry on the next sync, keeping the local cache */ }
+    }
     return out;
   } catch {
     return null;
