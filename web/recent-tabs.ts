@@ -27,3 +27,21 @@ export function recentStrength(list: readonly string[], name: string, max = RECE
   const floor = 0.3;
   return max <= 1 ? 1 : 1 - (1 - floor) * (at / (max - 1));
 }
+
+/** Navigation capacity is independent of the ten highlighted tabs. */
+export const RECENT_VISITS_DEFAULT = 5;
+export const RECENT_VISITS_LIMIT = 50;
+export function visitCapacity(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.min(RECENT_VISITS_LIMIT, Math.round(value))) : RECENT_VISITS_DEFAULT;
+}
+
+/** Keep the MRU order stable while cycling; offline entries retain their slots. */
+export function nextRecentVisit(list: readonly string[], current: string | null, available: (name: string) => boolean): string | null {
+  const at = current === null ? -1 : list.indexOf(current);
+  for (let step = 1; step <= list.length; step++) {
+    const name = list[(at + step) % list.length];
+    if (available(name)) return name;
+  }
+  return null;
+}

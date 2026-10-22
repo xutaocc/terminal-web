@@ -24,7 +24,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
-import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent } from './recent-tabs.js';
+import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { mergePins } from './pin-order.js';
@@ -654,6 +654,8 @@ function ipSuffix(host: string, full = false): HTMLElement {
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
+  recentEntries: () => recentVisitEntries(),
+  navigateRecent: name => navigateRecentVisit(name),
   dismiss: () => closeDrawer(),
   navigateStatus: kind => navigateQuickStatus(kind),
   editSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void showSessionNote(s); } },
@@ -2305,6 +2307,21 @@ const sessions: Session[] = [];
 // are the same session; a tab is never open without a focused terminal.
 let activeTab: Session | null = null;
 let activeSession: Session | null = null;
+const rememberedPanes: Record<string, string> = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem('tw.recentPanes') ?? '{}');
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {};
+  } catch { return {}; }
+})();
+
+function rememberPane(): void {
+  if (!activeTab || !activeSession) return;
+  rememberedPanes[activeTab.name] = activeSession.name;
+  const alive = new Set(sessions.map(s => s.name));
+  for (const name of Object.keys(rememberedPanes)) if (!alive.has(name)) delete rememberedPanes[name];
+  try { localStorage.setItem('tw.recentPanes', JSON.stringify(rememberedPanes)); } catch { /* optional cache */ }
+}
 
 /** Whether this terminal is one of the ones currently on screen. */
 function isActive(s: Session): boolean {
@@ -2315,6 +2332,7 @@ function isActive(s: Session): boolean {
 function focusPane(s: Session): void {
   if (!isActive(s) || activeSession === s) return;
   activeSession = s;
+  rememberPane();
   markFocusedPane();
   reflectActiveStatus();
 }
@@ -2546,6 +2564,7 @@ function paintHostAttention(): void {
   }
   const quick = quickStatusEntries();
   sidebar.updateQuickCounts({ unread: quick.filter(e => e.kind === 'unread').length, working: quick.filter(e => e.kind === 'working').length });
+  sidebar.updateRecent();
   paintMobileAttention();
 }
 
@@ -3180,6 +3199,53 @@ let recentTabs: string[] = (() => {
   } catch { return []; }
 })();
 let recentTabsChanged = false;
+let recentVisitLimit = (() => {
+  try { return visitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitLimit') ?? 'null')); }
+  catch { return visitCapacity(null); }
+})();
+let recentVisits: string[] = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem('tw.recentVisits') ?? 'null');
+    return [...new Set(Array.isArray(value) ? value.filter((n): n is string => typeof n === 'string') : recentTabs)].slice(0, recentVisitLimit);
+  } catch { return recentTabs.slice(0, recentVisitLimit); }
+})();
+let recentVisitsChanged = false;
+
+function storeRecentVisits(): void {
+  try {
+    localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
+    localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
+  } catch { /* server preferences remain available */ }
+  savePrefs({ recentVisits, recentVisitLimit });
+  sidebar.updateRecent();
+}
+
+function recentVisitEntries() {
+  return recentVisits.map(name => {
+    const session = sessions.find(s => s.name === name);
+    const host = hostOfKey(name);
+    const pane = rememberedPanes[name] === mateNameOf(name) ? '终端 2' : '终端 1';
+    return {
+      name, title: session?.displayName ?? name,
+      detail: `${pane} · ${hostLabel(host)} · ${session?.cwd?.split(/[\\/]/).filter(Boolean).pop() ?? '目录未知'}`,
+      current: activeTab?.name === name,
+      offline: !session || (!!host && offlineHosts.has(host)),
+      status: session ? (serverStatusActive(host) ? combineStatus(statusesOf(session)) : hasRecentOutput(session) ? 'working' : attentionOf(session) === 'unread' ? 'unread' : 'idle') : 'idle',
+    };
+  });
+}
+
+function navigateRecentVisit(name?: string): void {
+  const entries = recentVisitEntries();
+  const available = (key: string) => entries.some(e => e.name === key && !e.offline);
+  const target = name ?? nextRecentVisit(recentVisits, activeTab?.name ?? null, available);
+  const session = sessions.find(s => s.name === target);
+  if (!session || !available(session.name)) return;
+  if (mobileMQ.matches) closeDrawer();
+  activateSession(session);
+  requestAnimationFrame(() => { sidebar.reveal(session.name); updateOutputActivity(); });
+  if (mobileMQ.matches) flashStatus(`已切换到：${session.displayName}`, 1400);
+}
 
 function setRecentTabs(next: string[], save = true): void {
   if (next.length === recentTabs.length && next.every((n, i) => n === recentTabs[i])) return;
@@ -3195,6 +3261,9 @@ function setRecentTabs(next: string[], save = true): void {
 function pickSession(s: Session): void {
   recentTabsChanged = true;
   setRecentTabs(touchRecent(recentTabs, s.name));
+  recentVisitsChanged = true;
+  recentVisits = touchRecent(recentVisits, s.name, recentVisitLimit);
+  storeRecentVisits();
   activateSession(s);
 }
 
@@ -3224,10 +3293,14 @@ function paintRecentTabs(): void {
 function pruneRecentTabs(): void {
   const alive = new Set(sessions.map(s => s.name));
   // A remote that is only offline keeps its place: its tabs come back with it.
-  setRecentTabs(keepRecent(recentTabs, n => alive.has(n) || (hostOfKey(n) !== '' && offlineHosts.has(hostOfKey(n)))));
+  const keep = (n: string) => alive.has(n) || (hostOfKey(n) !== '' && offlineHosts.has(hostOfKey(n)));
+  setRecentTabs(keepRecent(recentTabs, keep));
+  const next = keepRecent(recentVisits, keep);
+  if (next.length !== recentVisits.length) { recentVisits = next; recentVisitsChanged = true; storeRecentVisits(); }
 }
 
 function activateSession(s: Session): void {
+  rememberPane();
   if (s !== activeTab) pager.setPagedUp(false); // another session: its own scroll state
   if (activeTab && activeTab !== s) {
     activeTab.setShown(false);
@@ -3235,9 +3308,15 @@ function activateSession(s: Session): void {
   }
   activeTab = s;
   lastUsedIn.set(s.cwd ?? '', s.name);
-  // Whatever had the keys belonged to the tab we just left.
-  activeSession = s;
+  // Restore this tab's last input terminal; layout falls back if it is hidden.
+  activeSession = rememberedPanes[s.name] === s.mate?.name ? s.mate : s;
   layOutTab(s);
+  if (s.view !== 'one' && s.mate && rememberedPanes[s.name] === s.mate.name) {
+    activeSession = s.mate;
+    markFocusedPane();
+  }
+  rememberPane();
+  sidebar.updateRecent();
   for (const x of sessions) x.tabEl?.classList.toggle('active', x === s);
   // With many tabs the active one can sit off-screen in the horizontal strip
   // (e.g. after picking it from the drawer); scroll it back into view. inline/
@@ -4002,6 +4081,8 @@ interface UiPrefs {
   activeTab?: string;
   /** The recently picked sessions, newest first (web/recent-tabs.ts). */
   recentTabs?: string[];
+  recentVisits?: string[];
+  recentVisitLimit?: number;
   /** The order the user dragged tabs and sidebar sessions into. */
   tabOrder?: string[];
   /** The order the servers' blocks were dragged into in the sidebar ('' is this server). */
@@ -5558,6 +5639,23 @@ function setPagerEnabled(on: boolean): void {
 }
 setPagerEnabled(pagerEnabled);
 
+const recentLimitButton = sheetRow('◷', `最近访问会话数：${recentVisitLimit}`, async () => {
+  closeSheet();
+  const value = await domPrompt({ label: '最近访问会话数（1–50）', value: String(recentVisitLimit) });
+  if (value === null) return;
+  const count = Number(value.trim());
+  if (!Number.isInteger(count) || count < 1 || count > 50) { flashStatus('请输入 1–50 的整数', 1800); return; }
+  recentVisitsChanged = true;
+  recentVisitLimit = visitCapacity(count);
+  recentVisits = recentVisits.slice(0, recentVisitLimit);
+  storeRecentVisits();
+  refreshRecentLimitUI();
+});
+function refreshRecentLimitUI(): void {
+  const label = recentLimitButton.querySelector('span:last-child');
+  if (label) label.textContent = `最近访问会话数：${recentVisitLimit}`;
+}
+
 const zoomKeysButton = sheetRow('±', '快捷键缩放字号', () => {
   zoomKeysChanged = true;
   setZoomShortcuts(!zoomShortcutsEnabled);
@@ -6057,6 +6155,7 @@ sheet.append(
   layoutHint,
   pagerButton,
   sheetGroup('设置'),
+  recentLimitButton,
   statusModeRow,
   statusModeHint,
   colorRow,
@@ -6523,6 +6622,17 @@ async function init(): Promise<void> {
     if (typeof keybar === 'boolean') setKeybarVisible(keybar, kind, false);
     const locked = prefs[`keyboardLocked${suffix}`] ?? (kind === deviceKind ? prefs.keyboardLocked : undefined);
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
+  }
+  if (!recentVisitsChanged) {
+    recentVisitLimit = visitCapacity(prefs.recentVisitLimit ?? recentVisitLimit);
+    const visits = prefs.recentVisits ?? prefs.recentTabs;
+    if (Array.isArray(visits)) recentVisits = [...new Set(visits.filter((n): n is string => typeof n === 'string'))].slice(0, recentVisitLimit);
+    else recentVisits = recentVisits.slice(0, recentVisitLimit);
+    try {
+      localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
+      localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
+    } catch { /* ignore */ }
+    refreshRecentLimitUI();
   }
   if (!recentTabsChanged && Array.isArray(prefs.recentTabs)) {
     const list = prefs.recentTabs.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX);

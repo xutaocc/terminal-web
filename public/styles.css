@@ -1556,7 +1556,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot,
 .m-title .tab-dot,
 .drawer-body .tab-dot,
-:is(.ps-card, .ps-quick-pill) .tab-dot {
+:is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot {
   --st-size: 11px;
   position: relative;
   box-sizing: border-box;
@@ -1578,7 +1578,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.working,
 .m-title .tab-dot.working,
 .drawer-body .tab-dot.working,
-:is(.ps-card, .ps-quick-pill) .tab-dot.working {
+:is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.working {
   border: 2px solid color-mix(in srgb, var(--st-blue) 25%, transparent);
   border-top-color: var(--st-blue);
   border-right-color: var(--st-blue);
@@ -1594,7 +1594,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.done,
 .m-title .tab-dot.done,
 .drawer-body .tab-dot.done,
-:is(.ps-card, .ps-quick-pill) .tab-dot.done {
+:is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.done {
   --st-size: 8px;
   border: 0;
   border-radius: 50%;
@@ -1609,7 +1609,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.unread:not(.working),
 .m-title .tab-dot.unread:not(.working),
 .drawer-body .tab-dot.unread:not(.working),
-:is(.ps-card, .ps-quick-pill) .tab-dot.unread:not(.working) {
+:is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.unread:not(.working) {
   --st-size: 14px;
   width: 15px;
   border: 0;
@@ -1623,7 +1623,7 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .tab .tab-dot.waiting,
 .m-title .tab-dot.waiting,
 .drawer-body .tab-dot.waiting,
-:is(.ps-card, .ps-quick-pill) .tab-dot.waiting {
+:is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.waiting {
   --st-size: 13px;
   border: 0;
   border-radius: 3px;
@@ -1648,11 +1648,11 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   .tab .tab-dot.working,
   .m-title .tab-dot.working,
   .drawer-body .tab-dot.working,
-  :is(.ps-card, .ps-quick-pill) .tab-dot.working,
+  :is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.working,
   .tab .tab-dot.waiting,
   .m-title .tab-dot.waiting,
   .drawer-body .tab-dot.waiting,
-  :is(.ps-card, .ps-quick-pill) .tab-dot.waiting { animation: none; }
+  :is(.ps-card, .ps-quick-pill, .ps-recent-entry) .tab-dot.waiting { animation: none; }
 }
 
 /* Where a dragged directory card will land among its folder's cards. */
@@ -2320,3 +2320,18 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 @media (max-width: 640px), (hover: none) and (pointer: coarse) {
   .drawer .ps-quick-pill { min-height: 44px; font-size: 13px; padding: 6px 14px; }
 }
+
+/* Recent navigation shares the status shortcuts on desktop and touch. */
+.ps-quick-status { position: relative; }
+.ps-recent { display: flex; max-width: 100%; }
+.ps-recent-main { border-radius: 999px 0 0 999px; }
+.ps-recent-toggle { border-radius: 0 999px 999px 0; border-left: 0; min-width: 32px; padding-inline: 8px; }
+.ps-recent-menu { position: absolute; z-index: 30; top: calc(100% + 6px); left: 10px; width: calc(100% - 20px); max-height: min(440px, 60dvh); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--ui-border, #555); border-radius: 10px; background: var(--ui-surface, #252526); box-shadow: 0 8px 24px #0006; padding: 4px; }
+.ps-recent-menu[hidden] { display: none; }
+.ps-recent-entry { display: block; width: 100%; min-height: 52px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; padding: 8px; font: inherit; cursor: pointer; touch-action: manipulation; }
+.ps-recent-entry > span { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.ps-recent-entry .tab-dot { flex-shrink: 0; }
+.ps-recent-entry small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .65; padding-top: 4px; }
+.ps-recent-entry:hover, .ps-recent-entry[aria-current="true"] { background: var(--ui-hover, #333336); }
+.ps-recent-entry:disabled { opacity: .45; cursor: default; }
+.ps-recent-entry:focus-visible { outline: 2px solid #3b8eea; outline-offset: -2px; }

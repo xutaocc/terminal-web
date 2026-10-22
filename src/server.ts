@@ -943,6 +943,8 @@ interface UiPrefs {
   zoomKeys?: boolean;
   /** The recently picked sessions on this kind of device, newest first. */
   recentTabs?: string[];
+  recentVisits?: string[];
+  recentVisitLimit?: number;
   /** Shared session order across desktop and touch devices. */
   tabOrder?: string[];
   /** Shared order of the servers' blocks in the sidebar ('' is this server). */
@@ -1044,6 +1046,13 @@ async function handleSetPrefs(
     if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
     if (typeof obj.pager === "boolean") next.pager = obj.pager;
     if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
+    if (typeof obj.recentVisitLimit === 'number' && Number.isFinite(obj.recentVisitLimit)) {
+      next.recentVisitLimit = Math.max(1, Math.min(50, Math.round(obj.recentVisitLimit)));
+    }
+    if (Array.isArray(obj.recentVisits)) {
+      next.recentVisits = [...new Set(obj.recentVisits
+        .filter((n): n is string => typeof n === 'string' && /^(@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(n)))].slice(0, 50);
+    }
     if (Array.isArray(obj.recentTabs)) {
       // Page keys: a session name, or "@<host>/<name>" for a remote one.
       next.recentTabs = obj.recentTabs

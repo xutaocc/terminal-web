@@ -25,7 +25,13 @@ export interface SidebarSection {
   groups: FolderGroup<SidebarSession>[];
 }
 
+export interface RecentVisitEntry {
+  name: string; title: string; detail: string; current: boolean; offline: boolean; status: string;
+}
+
 export interface SidebarHooks {
+  recentEntries(): RecentVisitEntry[];
+  navigateRecent(name?: string): void;
   /** Apply persistent session marks before a new chip enters the document. */
   decorateChip(chip: HTMLElement, name: string): void;
   dismiss(): void;
@@ -149,6 +155,12 @@ export class ProjectSidebar {
   private menu: HTMLElement | null = null;
   private readonly quickPills = new Map<QuickSessionKind, HTMLButtonElement>();
 
+  private readonly recentButton = document.createElement('button');
+  private readonly recentToggle = document.createElement('button');
+  private readonly recentMenu = document.createElement('div');
+  private readonly recentWrap = document.createElement('div');
+  private recentSignature = '';
+
   constructor(private readonly hooks: SidebarHooks) {
     this.el.id = 'sidebar';
 
@@ -189,6 +201,28 @@ export class ProjectSidebar {
       this.quickPills.set(kind, pill);
       quick.append(pill);
     }
+    this.recentWrap.className = 'ps-recent';
+    this.recentButton.type = this.recentToggle.type = 'button';
+    this.recentButton.className = 'ps-quick-pill ps-recent-main';
+    this.recentButton.textContent = '◷ 最近访问 0';
+    this.recentButton.disabled = true;
+    this.recentToggle.className = 'ps-quick-pill ps-recent-toggle';
+    this.recentToggle.textContent = '▾';
+    this.recentToggle.disabled = true;
+    this.recentToggle.setAttribute('aria-label', '展开最近访问会话');
+    this.recentToggle.setAttribute('aria-expanded', 'false');
+    this.recentToggle.setAttribute('aria-controls', 'ps-recent-menu');
+    this.recentMenu.id = 'ps-recent-menu';
+    this.recentMenu.className = 'ps-recent-menu';
+    this.recentMenu.hidden = true;
+    bindIntentionalClick(this.recentButton, () => { this.closeRecent(); hooks.navigateRecent(); });
+    bindIntentionalClick(this.recentToggle, () => {
+      this.updateRecent();
+      this.recentMenu.hidden = !this.recentMenu.hidden;
+      this.recentToggle.setAttribute('aria-expanded', String(!this.recentMenu.hidden));
+    });
+    this.recentWrap.append(this.recentButton, this.recentToggle, this.recentMenu);
+    quick.append(this.recentWrap);
     this.updateQuickCounts({ unread: 0, working: 0 });
     this.list.className = 'ps-list';
 
@@ -215,9 +249,13 @@ export class ProjectSidebar {
     this.applyWidth();
     document.addEventListener('pointerdown', e => {
       if (this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
+      if (!this.recentWrap.contains(e.target as Node)) this.closeRecent();
     });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') this.closeMenu();
+      if (e.key === 'Escape') {
+        this.closeMenu();
+        if (!this.recentMenu.hidden) { this.closeRecent(); this.recentToggle.focus(); e.stopPropagation(); }
+      }
     });
   }
 
@@ -419,6 +457,44 @@ export class ProjectSidebar {
       this.rerender();
       this.hooks.orderHosts(next);
     });
+  }
+
+  private closeRecent(): void {
+    this.recentMenu.hidden = true;
+    this.recentToggle.setAttribute('aria-expanded', 'false');
+  }
+
+  updateRecent(): void {
+    const entries = this.hooks.recentEntries();
+    const signature = JSON.stringify(entries);
+    if (signature === this.recentSignature) return;
+    this.recentSignature = signature;
+    this.recentButton.textContent = `◷ 最近访问 ${entries.length}`;
+    this.recentButton.disabled = !entries.some(e => !e.offline);
+    this.recentToggle.disabled = !entries.length;
+    const at = entries.findIndex(e => e.current);
+    const next = [...entries.slice(at + 1), ...entries.slice(0, at + 1)].find(e => !e.offline);
+    this.recentButton.title = next ? `点击循环切换，下一个：${next.title}` : '暂无可访问会话';
+    this.recentMenu.replaceChildren();
+    for (const entry of entries) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'ps-recent-entry';
+      row.disabled = entry.offline;
+      row.setAttribute('aria-current', String(entry.current));
+      const title = document.createElement('span');
+      const dot = document.createElement('span');
+      dot.className = `tab-dot ${entry.status}`;
+      dot.setAttribute('aria-hidden', 'true');
+      title.append(dot, document.createTextNode(`${entry.title}${entry.current ? ' · 当前' : ''}${entry.offline ? ' · 离线' : ''}`));
+      const detail = document.createElement('small');
+      detail.textContent = entry.detail;
+      row.title = `${entry.title} · ${entry.detail}`;
+      row.append(title, detail);
+      bindIntentionalClick(row, () => { this.closeRecent(); this.hooks.navigateRecent(entry.name); });
+      this.recentMenu.append(row);
+    }
+    if (!entries.length) this.closeRecent();
   }
 
   updateQuickCounts(counts: Record<QuickSessionKind, number>): void {
