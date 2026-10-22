@@ -107,7 +107,7 @@ node scripts/install-agent-hooks.mjs --only=opencode
 安装器会：
 
 1. 把 `scripts/opencode-status/` 复制到 `~/.terminal-web/opencode-status/`。
-2. 在 `~/.config/opencode/cli.json` 的 `plugins` 里追加 `file:///…/.terminal-web/opencode-status`；已有其他插件（例如 Orca）的条目原样保留。
+2. 在 `~/.config/opencode/cli.json` 的 `plugins` 里追加 `file:///…/.terminal-web/opencode-status`；已有其他插件的条目原样保留。
 3. 首次修改 `cli.json` 前备份为 `cli.json.bak-terminal-web`。
 4. 刷新 `~/.terminal-web/agent-hook.sh`、`agent-hook.env`（和其他 agent 共用）。
 

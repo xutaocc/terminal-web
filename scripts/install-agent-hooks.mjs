@@ -22,7 +22,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME = os.homedir();
 const HOOK_DIR = path.join(HOME, '.terminal-web');
 // Windows has no /bin/sh for the agents to run the shell script with: there the
-// hook is its Node twin, run by the node that runs this installer.
+// hook is its Node twin, run by node on PATH in the agent's shell.
 const WINDOWS = process.platform === 'win32';
 const HOOK_SCRIPT = path.join(HOOK_DIR, WINDOWS ? 'agent-hook.mjs' : 'agent-hook.sh');
 const HOOK_ENV = path.join(HOOK_DIR, 'agent-hook.env');
@@ -34,7 +34,7 @@ const option = (name) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.
 const only = option('only');
 const wants = (agent) => !only || only === agent;
 
-// Same events Orca registers, minus the ones that only feed its dashboards.
+// Events used by terminal-web to track working, waiting and completed turns.
 const CLAUDE_EVENTS = [
   ['UserPromptSubmit'], ['PreToolUse', '*'], ['PostToolUse', '*'], ['PostToolUseFailure', '*'],
   ['PermissionRequest', '*'], ['Notification'], ['Stop'], ['StopFailure'], ['PostCompact'], ['SessionEnd'],
@@ -63,7 +63,9 @@ const quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 // would read backslashes as escapes.
 const slashed = (p) => p.replace(/\\/g, '/');
 const command = (agent, event) => WINDOWS
-  ? `"${slashed(process.execPath)}" "${slashed(HOOK_SCRIPT)}" ${agent} ${event}`
+  // A quoted executable at the start fails in PowerShell and cmd /s /c.
+  // Node is already required on PATH to run the supported agents on Windows.
+  ? `node "${slashed(HOOK_SCRIPT)}" ${agent} ${event}`
   : `/bin/sh ${quote(HOOK_SCRIPT)} ${agent} ${event}`;
 const ownHook = (hook) => typeof hook?.command === 'string' && MARK.test(hook.command);
 const ours = (group) => (group?.hooks ?? []).some(ownHook);
@@ -148,6 +150,10 @@ async function findServer(env, token) {
   if (option('url')) return { url: option('url').replace(/\/+$/, ''), status: await probe(option('url'), token) };
   if (env.TERMINAL_WEB_URL) hosts.push(env.TERMINAL_WEB_URL.replace(/\/+$/, ''));
   if (env.HOST && !['0.0.0.0', '::'].includes(env.HOST)) hosts.push(`http://${env.HOST}:${port}`);
+  try {
+    const saved = fs.readFileSync(HOOK_ENV, 'utf8').match(/^TERMINAL_WEB_URL='([^'\r\n]+)'/m)?.[1];
+    if (saved) hosts.push(saved.replace(/\/+$/, ''));
+  } catch { /* no previous installation */ }
   hosts.push(`http://127.0.0.1:${port}`);
   try {
     const ts = execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8', timeout: 3000 }).split('\n')[0].trim();
@@ -282,8 +288,12 @@ const codexTimeout = (label) => label === 'interrupt' ? 3 : 5;
 
 /** Drop every [hooks.state."…"] table that trusts one of our hashes. */
 function withoutOurTrust(toml) {
-  const ourHashes = new Set(CODEX_EVENTS.map(([event, label]) =>
-    codexHash(label, { command: command('codex', event), timeout: codexTimeout(label) })));
+  const ourHashes = new Set(CODEX_EVENTS.flatMap(([event, label]) => {
+    const commands = [command('codex', event)];
+    // Refresh trust from the old Windows command as well when upgrading.
+    if (WINDOWS) commands.push(`"${slashed(process.execPath)}" "${slashed(HOOK_SCRIPT)}" codex ${event}`);
+    return commands.map(command => codexHash(label, { command, timeout: codexTimeout(label) }));
+  }));
   const out = [];
   let block = null;
   const flush = () => {
@@ -293,7 +303,7 @@ function withoutOurTrust(toml) {
   for (const line of toml.split('\n')) {
     if (/^\s*\[/.test(line)) {
       flush();
-      if (/^\s*\[hooks\.state\."/.test(line)) { block = [line]; continue; }
+      if (/^\s*\[hooks\.state\.["']/.test(line)) { block = [line]; continue; }
     }
     if (block) block.push(line);
     else out.push(line);
@@ -317,7 +327,7 @@ function codexHooksUpdate(install) {
       const handler = { type: 'command', command: command('codex', event), timeout: codexTimeout(label) };
       const list = (hooks[event] ??= []);
       list.push({ hooks: [handler] });
-      trust.push(`[hooks.state."${path.join(source, 'hooks.json')}:${label}:${list.length - 1}:0"]`,
+      trust.push(`[hooks.state.${JSON.stringify(`${path.join(source, 'hooks.json')}:${label}:${list.length - 1}:0`)}]`,
         'enabled = true', `trusted_hash = "${codexHash(label, handler)}"`);
     }
   }

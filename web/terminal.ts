@@ -669,7 +669,7 @@ const sidebar = new ProjectSidebar({
     // The card's dot sums up its sessions, so a click goes where the dot points:
     // a question first, then an unread result — moving on to the next one when
     // already there, as the server pill does. With nothing waiting, back to the
-    // session last used there, as Orca restores a worktree's tab.
+    // session last used in this directory.
     const wanting = [
       ...inDir.filter(x => attentionOf(x) === 'waiting'),
       ...inDir.filter(x => attentionOf(x) === 'unread'),
