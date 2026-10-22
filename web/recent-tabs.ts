@@ -56,3 +56,9 @@ export function sortRecentEntries<T extends { title: string; name: string }>(ent
   return [...entries].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN', { numeric: true, sensitivity: 'base' })
     || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
 }
+
+/** Explicit removals win over stale server responses and legacy highlights. */
+export function restoreRecentVisits(value: unknown, removed: ReadonlySet<string>, max: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((name): name is string => typeof name === 'string' && !removed.has(name)))].slice(0, max);
+}

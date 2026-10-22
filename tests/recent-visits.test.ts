@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { nextRecentVisit, touchRecent, visitCapacity, sortRecentEntries, storedVisitCapacity } from '../web/recent-tabs.js';
+import { restoreRecentVisits, keepRecent, nextRecentVisit, touchRecent, visitCapacity, sortRecentEntries, storedVisitCapacity } from '../web/recent-tabs.js';
 
 test('cycles through all five without mutating MRU order, including remotes', () => {
   const list = ['a', '@mac/b', 'c', '@pc/d', 'e'];
@@ -44,4 +44,22 @@ test('migrates the old default once, preserving later custom choices', () => {
   assert.equal(storedVisitCapacity(5, undefined), 8);
   assert.equal(storedVisitCapacity(5, 2), 5);
   assert.equal(storedVisitCapacity(12, undefined), 12);
+});
+
+test('removing a visit leaves a vacancy and ordinary selection can add it again', () => {
+  const visits = ['a', 'b', 'c'];
+  const removed = keepRecent(visits, name => name !== 'b');
+  assert.deepEqual(removed, ['a', 'c']);
+  assert.equal(nextRecentVisit(removed, 'a', () => true), 'c');
+  assert.deepEqual(touchRecent(removed, 'b', 8), ['b', 'a', 'c']);
+  assert.deepEqual(keepRecent(['a'], name => name !== 'a'), []);
+});
+
+test('persisted removal survives stale server data, legacy fallback, and removal of every item', () => {
+  const removed = new Set(JSON.parse(JSON.stringify(['b'])) as string[]);
+  assert.deepEqual(restoreRecentVisits(['a', 'b', 'c'], removed, 8), ['a', 'c']);
+  assert.deepEqual(restoreRecentVisits(['b'], removed, 8), []);
+  assert.deepEqual(restoreRecentVisits([], removed, 8), []);
+  removed.delete('b'); // Explicit selection allows it back.
+  assert.deepEqual(touchRecent(restoreRecentVisits(['a', 'c'], removed, 8), 'b', 8), ['b', 'a', 'c']);
 });

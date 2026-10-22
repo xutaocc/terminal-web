@@ -33,6 +33,7 @@ export interface RecentVisitEntry {
 export interface SidebarHooks {
   recentEntries(): RecentVisitEntry[];
   navigateRecent(name?: string): void;
+  removeRecent(name: string): void;
   /** Apply persistent session marks before a new chip enters the document. */
   decorateChip(chip: HTMLElement, name: string): void;
   dismiss(): void;
@@ -478,6 +479,8 @@ export class ProjectSidebar {
     this.recentButton.title = next ? `点击循环切换，下一个：${next.title}` : '暂无可访问会话';
     this.recentMenu.replaceChildren();
     for (const entry of sortRecentEntries(entries)) {
+      const item = document.createElement('div');
+      item.className = 'ps-recent-item';
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'ps-recent-entry';
@@ -493,7 +496,24 @@ export class ProjectSidebar {
       row.title = `${entry.title} · ${entry.detail}`;
       row.append(title, detail);
       bindIntentionalClick(row, () => { this.closeRecent(); this.hooks.navigateRecent(entry.name); });
-      this.recentMenu.append(row);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'ps-recent-remove';
+      remove.textContent = '×';
+      remove.title = '从最近访问移除（不关闭会话）';
+      remove.setAttribute('aria-label', `从最近访问移除：${entry.title}`);
+      bindIntentionalClick(remove, () => {
+        const hadFocus = document.activeElement === remove;
+        const at = [...this.recentMenu.children].indexOf(item);
+        this.hooks.removeRecent(entry.name);
+        if (hadFocus) {
+          const remaining = this.recentMenu.querySelectorAll<HTMLButtonElement>('.ps-recent-remove');
+          const target = remaining[Math.min(at, remaining.length - 1)];
+          (target ?? this.recentButton).focus();
+        }
+      });
+      item.append(row, remove);
+      this.recentMenu.append(item);
     }
     if (!entries.length) this.closeRecent();
   }

@@ -2335,3 +2335,12 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-recent-entry:hover, .ps-recent-entry[aria-current="true"] { background: var(--ui-hover, #333336); }
 .ps-recent-entry:disabled { opacity: .45; cursor: default; }
 .ps-recent-entry:focus-visible { outline: 2px solid #3b8eea; outline-offset: -2px; }
+
+.ps-recent-item { display: flex; align-items: center; gap: 4px; }
+.ps-recent-item .ps-recent-entry { flex: 1; min-width: 0; width: auto; }
+.ps-recent-remove { flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--ui-subtle, #999); font-family: inherit; font-size: 20px; line-height: 1; cursor: pointer; touch-action: manipulation; }
+.ps-recent-remove:hover { background: var(--ui-hover, #333336); color: var(--ui-text, #ddd); }
+.ps-recent-remove:focus-visible { outline: 2px solid #3b8eea; outline-offset: -2px; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .ps-recent-remove { flex-basis: 44px; width: 44px; height: 44px; }
+}

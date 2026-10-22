@@ -24,7 +24,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
-import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit, storedVisitCapacity } from './recent-tabs.js';
+import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit, storedVisitCapacity, restoreRecentVisits } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { mergePins } from './pin-order.js';
@@ -656,6 +656,13 @@ const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   recentEntries: () => recentVisitEntries(),
   navigateRecent: name => navigateRecentVisit(name),
+  removeRecent: name => {
+    removedRecentVisits.add(name);
+    persistRemovedRecentVisits();
+    recentVisitsChanged = true;
+    recentVisits = keepRecent(recentVisits, key => key !== name);
+    storeRecentVisits();
+  },
   dismiss: () => closeDrawer(),
   navigateStatus: kind => navigateQuickStatus(kind),
   editSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void showSessionNote(s); } },
@@ -3203,11 +3210,24 @@ let recentVisitLimit = (() => {
   try { return storedVisitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitLimit') ?? 'null'), Number(localStorage.getItem('tw.recentVisitLimitVersion'))); }
   catch { return visitCapacity(null); }
 })();
+// Keep explicit removals across reloads even when the server write is delayed.
+const removedRecentVisitsKey = `tw.recentVisitsRemoved.${TOUCH_DEVICE ? 'touch' : 'desktop'}`;
+const removedRecentVisits = new Set<string>((() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(removedRecentVisitsKey) ?? '[]');
+    return Array.isArray(value) ? value.filter((name): name is string => typeof name === 'string') : [];
+  } catch { return []; }
+})());
+function persistRemovedRecentVisits(): void {
+  try { localStorage.setItem(removedRecentVisitsKey, JSON.stringify([...removedRecentVisits])); }
+  catch { /* optional local cache */ }
+}
+
 let recentVisits: string[] = (() => {
   try {
     const value = JSON.parse(localStorage.getItem('tw.recentVisits') ?? 'null');
-    return [...new Set(Array.isArray(value) ? value.filter((n): n is string => typeof n === 'string') : recentTabs)].slice(0, recentVisitLimit);
-  } catch { return recentTabs.slice(0, recentVisitLimit); }
+    return restoreRecentVisits(Array.isArray(value) ? value : recentTabs, removedRecentVisits, recentVisitLimit);
+  } catch { return restoreRecentVisits(recentTabs, removedRecentVisits, recentVisitLimit); }
 })();
 let recentVisitsChanged = false;
 
@@ -3260,6 +3280,7 @@ function setRecentTabs(next: string[], save = true): void {
 
 /** The user chose this session: it becomes the most recent, then it is shown. */
 function pickSession(s: Session): void {
+  if (removedRecentVisits.delete(s.name)) persistRemovedRecentVisits();
   recentTabsChanged = true;
   setRecentTabs(touchRecent(recentTabs, s.name));
   recentVisitsChanged = true;
@@ -6628,7 +6649,7 @@ async function init(): Promise<void> {
   if (!recentVisitsChanged) {
     if (prefs.recentVisitLimit !== undefined) recentVisitLimit = storedVisitCapacity(prefs.recentVisitLimit, prefs.recentVisitLimitVersion);
     const visits = prefs.recentVisits ?? prefs.recentTabs;
-    if (Array.isArray(visits)) recentVisits = [...new Set(visits.filter((n): n is string => typeof n === 'string'))].slice(0, recentVisitLimit);
+    if (Array.isArray(visits)) recentVisits = restoreRecentVisits(visits, removedRecentVisits, recentVisitLimit);
     else recentVisits = recentVisits.slice(0, recentVisitLimit);
     try {
       localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
@@ -6636,7 +6657,9 @@ async function init(): Promise<void> {
       localStorage.setItem('tw.recentVisitLimitVersion', '2');
     } catch { /* ignore */ }
     refreshRecentLimitUI();
-    if (prefs.recentVisitLimitVersion !== 2) savePrefs({ recentVisitLimit, recentVisitLimitVersion: 2 });
+    if (prefs.recentVisitLimitVersion !== 2 || removedRecentVisits.size) {
+      savePrefs({ recentVisits, recentVisitLimit, recentVisitLimitVersion: 2 });
+    }
   }
   if (!recentTabsChanged && Array.isArray(prefs.recentTabs)) {
     const list = prefs.recentTabs.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX);
