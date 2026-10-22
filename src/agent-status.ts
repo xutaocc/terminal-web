@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -28,6 +29,9 @@ export function isAgentStatusMode(value: unknown): value is AgentStatusMode {
 export type AgentState = 'idle' | 'working' | 'waiting' | 'done';
 
 export interface SessionAgentStatus {
+  instance: string;
+  version: number;
+  eventSeq: number;
   state: AgentState;
   /** Finished or asking while nobody was looking; cleared by a viewer. */
   unread: boolean;
@@ -212,6 +216,8 @@ export class AgentStatusMonitor {
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
   private emitQueued = false;
+  private sequence = Date.now() * 1000;
+  private nextSequence(): number { return this.sequence = Math.max(this.sequence + 1, Date.now() * 1000); }
   private readonly legacyTimers = new Map<string, NodeJS.Timeout>();
 
   /** `file` keeps the mode chosen in settings across restarts. */
@@ -266,7 +272,7 @@ export class AgentStatusMonitor {
 
   snapshot(): StatusSnapshot {
     const sessions: Record<string, SessionAgentStatus> = {};
-    for (const [name, t] of this.tracked) sessions[name] = { state: t.state, unread: t.unread, since: t.since };
+    for (const [name, t] of this.tracked) sessions[name] = { state: t.state, unread: t.unread, since: t.since, instance: t.instance, version: t.version, eventSeq: t.eventSeq };
     return { mode: this.mode, sessions };
   }
 
@@ -309,6 +315,7 @@ export class AgentStatusMonitor {
     if (this.mode !== 'legacy') return;
     const t = this.track(name, Date.now());
     const stamp = Date.now();
+    if (t.state !== 'working') t.version = this.nextSequence();
     t.state = 'working';
     t.since = stamp;
     t.unread = true;
@@ -318,6 +325,7 @@ export class AgentStatusMonitor {
       this.legacyTimers.delete(name);
       if (this.mode !== 'legacy' || this.tracked.get(name) !== t || t.since !== stamp) return;
       t.state = 'done';
+      t.version = t.eventSeq = this.nextSequence();
       this.emit();
     }, 60_000);
     timer.unref();
@@ -340,7 +348,7 @@ export class AgentStatusMonitor {
   private track(name: string, now: number): Tracked {
     let t = this.tracked.get(name);
     if (!t) {
-      t = { state: 'idle', unread: false, since: now, hookAt: 0, hookClosed: false, revision: 0, idleSince: 0, activity: '', capturedAt: 0 };
+      t = { instance: randomUUID(), version: this.nextSequence(), eventSeq: 0, state: 'idle', unread: false, since: now, hookAt: 0, hookClosed: false, revision: 0, idleSince: 0, activity: '', capturedAt: 0 };
       this.tracked.set(name, t);
     }
     return t;
@@ -349,7 +357,8 @@ export class AgentStatusMonitor {
   private set(t: Tracked, state: AgentState, now: number): void {
     if (t.state === state) return;
     // Finishing and asking both want you; starting and stopping do not.
-    if (state === 'done' || state === 'waiting') t.unread = true;
+    t.version = this.nextSequence();
+    if (state === 'done' || state === 'waiting') { t.unread = true; t.eventSeq = t.version; }
     t.state = state;
     t.since = now;
     t.idleSince = 0;

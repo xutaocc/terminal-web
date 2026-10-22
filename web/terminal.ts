@@ -1,3 +1,6 @@
+import { ControlBar, terminalClientId, type ControlState } from './terminal-control.js';
+import { ReadCursors, newerStatus } from './read-cursors.js';
+import { isShare, shareBase, sharePage, shareUrl, shareStorage as localStorage, shareFetch as fetch, ShareWebSocket as WebSocket, ShareEventSource as EventSource } from './share-context.js';
 import { QuickSessionNavigator, type QuickSessionKind, type QuickSessionEntry } from './quick-session-nav.js';
 import '@xterm/xterm/css/xterm.css';
 import './theme.css';
@@ -513,6 +516,7 @@ addBtn.className = 'tab-add';
 addBtn.type = 'button';
 addBtn.textContent = '+';
 addBtn.title = '新建会话';
+if (isShare) addBtn.style.display = 'none';
 
 const controlsEl = document.createElement('div');
 controlsEl.id = 'controls';
@@ -654,6 +658,7 @@ function ipSuffix(host: string, full = false): HTMLElement {
 /** Directory -> the tab last shown from it, for clicks on its sidebar card. */
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
+  readOnly: isShare,
   recentEntries: () => recentVisitEntries(),
   navigateRecent: name => navigateRecentVisit(name),
   removeRecent: name => {
@@ -667,7 +672,7 @@ const sidebar = new ProjectSidebar({
   navigateStatus: kind => navigateQuickStatus(kind),
   editSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void showSessionNote(s); } },
   baseSession: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void promptAddSession(s); } },
-  decorateChip: (chip, name) => markRecent(chip, name),
+  decorateChip: (chip, name) => { markRecent(chip, name); decorateReadonly(chip, name); },
   activate: name => {
     const s = sessions.find(x => x.name === name);
     if (s) { pickSession(s); if (mobileMQ.matches) closeDrawer(); }
@@ -761,16 +766,17 @@ function refreshPager(): void {
 sidebarOpenBtn.addEventListener('click', () => sidebar.setHidden(false));
 
 async function logoutBrowser(): Promise<void> {
+  for (const session of sessions) { session.releaseControl(); session.mate?.releaseControl(); }
   try {
     const response = await fetch('/auth/logout', { method: 'POST' });
     if (!response.ok && response.status !== 401) throw new Error('logout failed');
     // Only an event marker goes in localStorage, never the token.
     try { localStorage.setItem('tw.logout', String(Date.now())); } catch { /* unavailable */ }
-    window.location.replace('/');
+    window.location.replace(isShare ? shareBase : '/');
   } catch { flashStatus('退出失败，请重试', 2000); }
 }
 window.addEventListener('storage', event => {
-  if (event.key === 'tw.logout') window.location.replace('/');
+  if (!isShare && event.key === 'tw.logout') window.location.replace(isShare ? shareBase : '/');
 });
 
 // Font size, like the key bar, is kept per layout: a phone wants it smaller
@@ -850,6 +856,30 @@ class Session {
 
   private readonly fitAddon = new FitAddon();
   private ws: WebSocket | null = null;
+  private readonly controlBar = new ControlBar((action, target) => this.controlAction(action, target));
+  private controlHeartbeat: ReturnType<typeof setInterval> | null = null;
+  get readOnly(): boolean { return this.controlBar.state?.readOnly === true; }
+  get canOperate(): boolean { return this.connected && this.controlBar.state?.mine === true; }
+  get canInteract(): boolean { return this.connected && this.controlBar.state?.readOnly === false; }
+  interact(): void { if (this.canInteract) this.controlAction('interact'); }
+  releaseControl(): void { this.controlAction('release'); }
+  private controlAction(action: string, target?: string): void {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({type:'control', action, target}));
+  }
+  private receiveControl(state: ControlState): void {
+    const previouslyOwned = this.canOperate;
+    this.controlBar.update(state);
+    this.term.options.disableStdin = !this.canInteract;
+    for (const label of document.querySelectorAll<HTMLElement>('[data-control-session]')) {
+      if (label.dataset.controlSession === this.name) decorateReadonly(label, this.name);
+    }
+    this.el.classList.toggle('control-watching', !this.canOperate);
+    if (!this.canOperate) this.pendingSeq = [];
+    if (this.canOperate && !previouslyOwned) {
+      this.fit(); this.sendResize();
+      if (isActive(this) && document.visibilityState === 'visible') this.focus();
+    } else if (!this.canOperate && state.size) this.term.resize(state.size.cols, state.size.rows);
+  }
   private reconnectDelay = MIN_DELAY;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -940,6 +970,9 @@ class Session {
     this.el.className = 'term-pane hidden';
     termArea.append(this.el);
     this.term.open(this.el);
+    this.el.append(this.controlBar.el);
+    this.term.options.disableStdin = true;
+    this.el.classList.add('control-watching');
     if (this.term.textarea) {
       this.keyboardLock = new TerminalKeyboardLock(
         this.term.textarea, TOUCH_DEVICE, () => this.term.focus(),
@@ -1006,6 +1039,10 @@ class Session {
     // belonging to a composition shuts both off. e.isComposing is per-event, so
     // it cannot latch on if a compositionend is ever missed.
     this.term.attachCustomKeyEventHandler((e) => {
+      if (this.readOnly && e.type === 'keydown' && !e.altKey && !e.metaKey) {
+        const action = e.key === 'PageUp' ? 'up' : e.key === 'PageDown' ? 'down' : e.ctrlKey && e.key === 'Home' ? 'top' : e.ctrlKey && e.key === 'End' ? 'bottom' : null;
+        if (action) { e.preventDefault(); void this.scrollHistory(action); return false; }
+      }
       if (!ANDROID_DEVICE && e.type === 'keydown' && (e.isComposing || e.keyCode === 229)) {
         return false; // composition keystroke — ours, not xterm's
       }
@@ -1083,7 +1120,10 @@ class Session {
     // With two terminals on screen, something has to say which one the key bar,
     // a paste and an uploaded file are meant for. Touching one is that
     // something — the same gesture that focuses it for typing.
-    this.el.addEventListener('pointerdown', () => focusPane(this), { capture: true });
+    this.el.addEventListener('pointerdown', () => { focusPane(this); if (this.canInteract) this.controlAction('interact'); }, { capture: true });
+    for (const event of ['keydown', 'beforeinput', 'input', 'paste', 'compositionstart']) {
+      this.el.addEventListener(event, () => { if (this.canInteract) this.controlAction('interact'); }, { capture: true });
+    }
     this.term.textarea?.addEventListener('focus', () => focusPane(this));
 
     this.wireInput();
@@ -1496,6 +1536,7 @@ class Session {
   }
 
   private send(data: string): void {
+    if (!this.canInteract) return;
     this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       if (this.readState.input(data)) this.outputTracker?.input();
@@ -1511,6 +1552,8 @@ class Session {
    * silently dropped by send() and leave the path un-pasted.
    */
   sendSeq(seq: string): void {
+    if (!this.canInteract) return;
+    this.controlAction('interact');
     this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.send(seq);
@@ -1547,6 +1590,11 @@ class Session {
       // ⌘ / Ctrl + wheel, and a trackpad pinch (sent as a Ctrl wheel): font
       // size, not scrolling. The page-level listener stops the browser zoom.
       if (zoomShortcutsEnabled && (event.ctrlKey || event.metaKey)) return false;
+      if (this.readOnly && event.deltaY) {
+        event.preventDefault();
+        this.sendWheel(-Math.sign(event.deltaY) * mouseWheelReports(event.deltaY, event.deltaMode, this.term.rows), Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
+        return false;
+      }
       this.mouseWheelMultiplier = this.term.modes.mouseTrackingMode === 'none' ? 1
         : mouseWheelReports(event.deltaY, event.deltaMode, this.term.rows);
       // Mouse reports are emitted synchronously inside xterm's wheel handler.
@@ -1836,6 +1884,12 @@ class Session {
 
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).
   private sendWheel(ticks: number, col: number, row: number): void {
+    if (this.readOnly && this.connected) {
+      this.ws?.send(JSON.stringify({type:'view-scroll', ticks, col, row}));
+      return;
+    }
+    if (!this.canInteract) { this.term.scrollLines(-ticks); return; }
+    this.controlAction('interact');
     const seq = `\x1b[<${ticks > 0 ? 64 : 65};${col};${row}M`;
     // One binary frame per animation step, not one frame per wheel tick.
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -1848,19 +1902,15 @@ class Session {
   async scrollHistory(action: 'up' | 'down' | 'top' | 'bottom'): Promise<void> {
     this.stopTouchScroll();
     if (action === 'bottom' && activeSession === this) pager.setPagedUp(false);
-    try {
-      const response = await fetch(hostUrl(this.host, '/api/sessions/scroll'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: this.raw, action }),
-      });
-      if (!response.ok) throw new Error('scroll failed');
-    } catch {
-      flashStatus('翻页失败，请检查连接', 1500);
+    if (!this.canInteract && !this.readOnly) {
+      if (action === 'top') this.term.scrollToTop(); else if (action === 'bottom') this.term.scrollToBottom(); else this.term.scrollPages(action === 'up' ? -1 : 1);
+      return;
     }
+    this.ws?.send(JSON.stringify({type:'scroll',action}));
   }
 
   private sendResize(): void {
+    if (!this.canOperate) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({ type: 'resize', cols: this.term.cols, rows: this.term.rows }),
@@ -1873,6 +1923,9 @@ class Session {
   // has no box — but they are all the same size, so the others take the number
   // from here instead of being left at whatever they started with.
   fit(): void {
+    if (!this.canOperate && this.controlBar.state?.size) {
+      const size = this.controlBar.state.size; this.term.resize(size.cols,size.rows); return;
+    }
     if (this.el.classList.contains('hidden')) return;
     let dims;
     try {
@@ -1897,6 +1950,9 @@ class Session {
 
   /** Adopt the measured pane size and pass it on to the server. */
   applyDims(cols: number, rows: number): void {
+    if (!this.canOperate && this.controlBar.state?.size) {
+      const size = this.controlBar.state.size; this.term.resize(size.cols, size.rows); return;
+    }
     if (this.term.cols === cols && this.term.rows === rows) return;
     try {
       this.term.resize(cols, rows);
@@ -1956,6 +2012,7 @@ class Session {
 
   /** Show one of this tab's terminals, or both. */
   setView(mode: LayoutMode): void {
+    if (isShare && mode !== 'one') return;
     if (this.isMate) return;
     this.view = mode;
     if (mode !== 'one') this.ensureMate();
@@ -2018,6 +2075,9 @@ class Session {
   }
 
   restart(): void {
+    if (isShare) return;
+    if (!this.canInteract) return;
+    this.controlAction('interact');
     this.term.reset();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'restart' }));
@@ -2055,6 +2115,10 @@ class Session {
 
   private setConnected(state: boolean): void {
     this.connected = state;
+    if (!state) {
+      this.controlBar.disconnected(); this.pendingSeq = []; this.term.options.disableStdin = true;
+      if (this.controlHeartbeat) clearInterval(this.controlHeartbeat); this.controlHeartbeat = null;
+    }
     if (!state) this.clearOutputActivity();
     updateTabDot(this);
     if (isActive(this)) reflectActiveStatus();
@@ -2065,12 +2129,7 @@ class Session {
     // behind the spinner; when this timer expires the same icon becomes bright.
     if (this.disposed) return;
     if (!this.readState.output()) return;
-    if (agentModes.get(this.host) === 'legacy') {
-      void fetch(hostUrl(this.host, '/api/agent-status/read'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ output: this.raw }),
-      }).catch(() => {});
-    }
+
     if (this.outputActivityTimer !== null) clearTimeout(this.outputActivityTimer);
     if (!this.outputActive) {
       this.outputActive = true;
@@ -2160,7 +2219,7 @@ class Session {
     // on the alternate screen loses everything that no longer fits.
     const url =
       `${wsProto}://${window.location.host}${hostUrl(this.host, '/ws')}?session=${encodeURIComponent(this.raw)}` +
-      `&cols=${this.term.cols}&rows=${this.term.rows}` +
+      `&cols=${this.term.cols}&rows=${this.term.rows}&client=${terminalClientId}` +
       (performance.now() < this.createUntil ? '&create=1' +
         (this.createFrom ? `&from=${encodeURIComponent(this.createFrom)}` : '') +
         (this.createDirectory !== null ? `&dir=${encodeURIComponent(this.createDirectory)}` : '') : '');
@@ -2188,6 +2247,9 @@ class Session {
       }
       this.setConnected(true);
       this.startPing();
+      if (this.controlHeartbeat) clearInterval(this.controlHeartbeat);
+      this.controlHeartbeat = setInterval(() => this.controlAction('heartbeat'), 4000);
+      setTimeout(() => { if (this.ws === socket && this.connected && !this.controlBar.state) this.controlBar.unsupported(); }, 8000);
       // Flush injections buffered while the socket was down (e.g. an uploaded
       // file path whose insert raced a big-upload reconnect). The socket is
       // OPEN here, so send() delivers them.
@@ -2199,7 +2261,7 @@ class Session {
       // Re-assert a custom label: the server stores it on the tmux session
       // (@twlabel), which is wiped when the session is killed+recreated by a
       // restart, so a renamed tab would otherwise revert to its raw name.
-      if (this.displayName !== this.raw) renameOnServer(this.name, this.displayName);
+      if (!isShare && this.displayName !== this.raw) renameOnServer(this.name, this.displayName);
       // Re-fit + re-focus so typing resumes smoothly after a reconnect — UNLESS
       // an IME composition is in flight: on iOS these cancel the soft keyboard's
       // active composition, dropping the 注音 candidate bar and turning input
@@ -2230,6 +2292,8 @@ class Session {
       if (typeof ev.data === 'string') {
         try {
           const msg = JSON.parse(ev.data) as { type?: string };
+          if (msg.type === 'control') { this.receiveControl(msg as ControlState); return; }
+          if (msg.type === 'info') { flashStatus((msg as {message:string}).message, 2500); return; }
           // The session was closed (killed) here or on another device: drop the
           // tab and do NOT reconnect — reconnecting would recreate the session
           // via `new-session -A`, resurrecting what was just closed.
@@ -2274,6 +2338,8 @@ class Session {
   }
 
   dispose(): void {
+    this.controlAction('release');
+    if (this.controlHeartbeat) clearInterval(this.controlHeartbeat); this.controlHeartbeat = null;
     this.clearOutputActivity();
     this.stopTouchScroll();
     this.keyboardLock?.dispose();
@@ -2388,6 +2454,7 @@ type AgentMode = 'hooks' | 'screen' | 'legacy';
 const agentModes = new Map<string, AgentMode>();
 /** Session key -> status, for every server. */
 let agentStatuses = new Map<string, AgentStatus>();
+const readCursors = new ReadCursors(localStorage);
 const agentSources = new Map<string, EventSource>();
 
 function legacyUnread(s: Session): boolean {
@@ -2404,7 +2471,10 @@ function takeAgentStatus(host: string, data: { mode?: unknown; sessions?: Record
   if (data.mode === 'hooks' || data.mode === 'screen' || data.mode === 'legacy') agentModes.set(host, data.mode);
   else agentModes.delete(host);
   const next = new Map([...agentStatuses].filter(([key]) => hostOfKey(key) !== host));
-  for (const [name, status] of Object.entries(data.sessions ?? {})) next.set(makeKey(host, name), status);
+  for (const [name, status] of Object.entries(data.sessions ?? {})) {
+    const key = makeKey(host, name), previous = agentStatuses.get(key);
+    next.set(key, newerStatus(previous, status) ? { ...status, unread: readCursors.unread(key, status) } : previous!);
+  }
   agentStatuses = next;
 }
 
@@ -2430,8 +2500,10 @@ function connectAgentStatus(host: string): void {
   source.addEventListener('remote', (event: MessageEvent) => {
     try {
       const { host: remote, status } = JSON.parse(event.data as string) as { host?: unknown; status?: unknown };
-      if (typeof remote !== 'string' || !remoteHosts.some(r => r.id === remote)) return;
-      takeAgentStatus(remote, status && typeof status === 'object' ? status as Parameters<typeof takeAgentStatus>[1] : {});
+      if (typeof remote !== 'string' || !/^[a-z0-9]{1,16}$/.test(remote)) return;
+      // The initial status stream can arrive before loadRemotes finishes; retain it.
+      if (!status || typeof status !== 'object') return; // Keep last known state while the host is offline.
+      takeAgentStatus(remote, status as Parameters<typeof takeAgentStatus>[1]);
       refreshStatusModeUI();
       refreshMobileUI();
     } catch {
@@ -2465,15 +2537,19 @@ function reportViewed(): void {
     !!s && agentModes.has(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
     !!agentStatuses.get(s.name)?.unread);
   if (!viewed.length) return;
-  for (const s of viewed) agentStatuses.set(s.name, { ...agentStatuses.get(s.name)!, unread: false });
-  for (const host of new Set(viewed.map(s => s.host))) {
-    void fetch(hostUrl(host, '/api/agent-status/read'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessions: viewed.filter(s => s.host === host).map(s => s.raw) }),
-    }).catch(() => { /* the next view retries */ });
+  for (const s of viewed) {
+    const status = agentStatuses.get(s.name)!;
+    readCursors.read(s.name, status);
+    agentStatuses.set(s.name, { ...status, unread: false });
   }
 }
+
+window.addEventListener('storage', event => {
+  const prefix = isShare ? `${shareBase}:tw.read.` : 'tw.read.';
+  if (!event.key?.startsWith(prefix)) return;
+  for (const [key, status] of agentStatuses) agentStatuses.set(key, { ...status, unread: readCursors.unread(key, status) });
+  refreshMobileUI();
+});
 
 /** A tab's statuses: its own and its split half's. */
 function statusesOf(s: Session): (AgentStatus | undefined)[] {
@@ -2498,7 +2574,9 @@ function updateOutputActivity(): void {
     if (members.length && serverStatusActive(members[0].host)) {
       const indicator = combineStatus(members.flatMap(s => statusesOf(s)));
       for (const cls of ['working', 'waiting', 'unread', 'done'] as const) dot.classList.toggle(cls, indicator === cls);
-      label = INDICATOR_LABEL[indicator];
+      const unread = members.some(s => statusesOf(s).some(status => status?.unread));
+      dot.classList.toggle('has-unread', unread);
+      label = INDICATOR_LABEL[indicator] + (unread && indicator !== 'unread' ? ' · 有未读更新' : '');
     } else {
       const working = members.some(s => hasRecentOutput(s));
       const unread = members.some(s => legacyUnread(s) || (!!s.mate && legacyUnread(s.mate)));
@@ -2771,6 +2849,7 @@ function serverOrder(): string[] {
 }
 
 function pinSession(name: string, pinned: boolean): void {
+  if (isShare) return;
   const s = sessions.find(x => x.name === name);
   if (!s) return;
   // Only this server's run changes; the others keep their place (see mergePins).
@@ -2811,7 +2890,12 @@ function openTabMenu(s: Session, x: number, y: number): void {
   title.className = 'ps-menu-title';
   title.textContent = remoteHosts.length ? `${s.displayName} · ${hostTitle(s.host)}` : s.displayName;
   menu.append(title);
+  if (s.readOnly) {
+    const status = document.createElement('div'); status.className = 'ps-menu-title';
+    status.textContent = '已分享 · 只读，可滚动查看，不能输入'; menu.append(status);
+  }
   const item = (text: string, onPick: () => void, cls = ''): void => {
+    if (isShare && /编辑|新建|关闭|置顶/.test(text)) return;
     const b = document.createElement('button');
     b.type = 'button';
     b.className = `ps-menu-item ${cls}`;
@@ -2876,6 +2960,7 @@ addBtn.addEventListener('drop', e => {
 const pendingNoteSaves = new Map<string, Promise<void>>();
 
 async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHover): Promise<void> {
+  if (isShare) return;
   if (document.querySelector('.session-note-editor')) return;
   const overlay = document.createElement('div');
   overlay.className = anchor ? 'session-note-popover session-note-editor' :
@@ -3061,6 +3146,20 @@ async function showSessionNote(s: Session, anchor?: HTMLElement, hover?: NoteHov
   }
 }
 
+function decorateReadonly(el: HTMLElement, name: string): void {
+  el.dataset.controlSession = name;
+  let icon = el.querySelector<HTMLElement>('.session-readonly-icon');
+  const readOnly = sessions.find(s => s.name === name)?.readOnly === true;
+  if (!readOnly) { icon?.remove(); return; }
+  if (!icon) {
+    icon = document.createElement('span'); icon.className = 'session-readonly-icon';
+    icon.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="3.5" y="7" width="9" height="7" rx="1.5"/><path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7"/><path d="M8 10v1.5"/></svg>';
+    icon.title = '已分享 · 管理端只读，可滚动查看';
+    icon.setAttribute('role', 'img'); icon.setAttribute('aria-label', icon.title);
+    el.append(icon);
+  }
+}
+
 function buildTab(s: Session): void {
   const tab = document.createElement('div');
   tab.className = 'tab';
@@ -3071,6 +3170,7 @@ function buildTab(s: Session): void {
   label.textContent = s.displayName;
   const close = document.createElement('span');
   close.className = 'tab-close';
+  if (isShare) close.style.display = 'none';
   close.textContent = '×';
   close.title = '关闭标签并结束会话';
   // Shown only once there is a remote to tell apart from (CSS: .has-remotes).
@@ -3082,6 +3182,7 @@ function buildTab(s: Session): void {
   const badge = hostBadge(s.host);
   badge.dataset.host = s.host; // redrawn in place when the server's tag changes
   tab.append(dot, pin, badge, label, ip, close);
+  decorateReadonly(tab, s.name);
   tab.classList.toggle('remote', !!s.host);
   s.tabIp = ip;
   // Right-click (or a long press on touch): pin, edit, close.
@@ -3287,6 +3388,7 @@ function pickSession(s: Session): void {
   recentVisits = touchRecent(recentVisits, s.name, recentVisitLimit);
   storeRecentVisits();
   activateSession(s);
+  s.interact();
 }
 
 /**
@@ -3362,6 +3464,7 @@ function activateSession(s: Session): void {
 // any programs running in it, so make the user confirm first.
 /** Ask, then close each of `list` (their tmux sessions end, and what runs in them). */
 function confirmCloseSession(list: Session | Session[]): void {
+  if (isShare) return;
   const many = Array.isArray(list) ? list : [list];
   if (!many.length || document.querySelector('.confirm-overlay')) return;
   const overlay = document.createElement('div');
@@ -3438,11 +3541,13 @@ function confirmCloseSession(list: Session | Session[]): void {
  * how a page waking up with only a closed tab would bring it straight back.
  */
 function addFallbackTab(): void {
+  if (isShare) return;
   const name = recentlyClosed.has(defaultSessionName) ? nextSessionName() : defaultSessionName;
   addSession(name, true).intendCreate();
 }
 
 function closeSessionBatch(list: readonly Session[]): void {
+  if (isShare) return;
   const closing = new Set(list.filter(s => sessions.includes(s)));
   if (!closing.size) return;
   const previous = activeTab;
@@ -3633,6 +3738,7 @@ async function promptAddSession(
   base: Session | null = activeSession, startDir?: string, folderId: string = base ? folderOf(base) : '',
   folderName?: string,
 ): Promise<void> {
+  if (isShare) return;
   // The folder says which server the session goes on. A base session on some
   // other server lends it a name, never a directory: paths do not carry over.
   const host = hostOfKey(folderId);
@@ -3690,6 +3796,7 @@ async function promptAddSession(
  * the folder of the session the file manager was opened from.
  */
 async function openTerminalIn(directory: string, dirName: string): Promise<void> {
+  if (isShare) return;
   const from = sessions.find(s => s.name === fileBrowserSession) ?? null;
   const host = from?.host ?? hostOfKey(fileBrowserSession);
   const label = dirName.replace(/[\x00-\x1f\x7f]/g, '').trim() || directory.split(/[\\/]/).filter(Boolean).pop() || 'root';
@@ -3845,6 +3952,7 @@ function forServer(edit: FolderEdit): { host: string; body: FolderEdit } {
 }
 
 async function editFolders(edit: FolderEdit): Promise<boolean> {
+  if (isShare) return false;
   const { host, body } = forServer(edit);
   try {
     const res = await fetch(hostUrl(host, '/api/folders'), {
@@ -3867,6 +3975,7 @@ async function editFolders(edit: FolderEdit): Promise<boolean> {
 
 /** A folder is made together with its first session; cancelling makes neither. */
 async function promptNewFolder(host: string = activeSession?.host ?? ''): Promise<void> {
+  if (isShare) return;
   const where = remoteHosts.length ? `【${hostLabel(host)}】` : '';
   const raw = await domPrompt({ label: `${where}新建文件夹名称：`, value: '', okText: '下一步' });
   const name = raw?.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64);
@@ -4037,6 +4146,7 @@ async function fetchServerTabs(host: string, timeoutMs = 2500): Promise<SavedTab
  * tab closed on another device is not resurrected by this device's cache.
  */
 async function adoptOnServer(host: string, names: string[]): Promise<void> {
+  if (isShare) return;
   try {
     await fetch(hostUrl(host, '/api/sessions/adopt'), {
       method: 'POST',
@@ -4078,6 +4188,7 @@ function renameOnServer(name: string, displayName: string): void {
  * session and overwrites the name you gave it.
  */
 async function readoptTabs(host: string, tabs: SavedTab[]): Promise<void> {
+  if (isShare) return;
   await adoptOnServer(host, tabs.map((t) => t.name));
   await Promise.all(
     tabs
@@ -4231,7 +4342,7 @@ window.addEventListener('pagehide', () => {
   const body = prefsBody();
   try {
     const blob = new Blob([body], { type: 'application/json' });
-    if (navigator.sendBeacon('/api/prefs', blob)) return;
+    if (!isShare && navigator.sendBeacon('/api/prefs', blob)) return;
   } catch {
     /* fall through to fetch */
   }
@@ -4730,6 +4841,7 @@ function makeButton(
   b.textContent = label;
   b.title = title;
   b.setAttribute('aria-label', title);
+  if (isShare && /新建|上传|重启|分屏|第二终端|双终端|快捷命令/.test(title)) b.style.display = 'none';
   // Both toolbar variants finish the click before opening an overlay.
   bindIntentionalClick(b, onTap);
   parent.append(b);
@@ -4919,6 +5031,7 @@ fileInput.addEventListener('change', () => {
 // The desktop toolbar, mobile bar and ⋯ sheet share this file picker.
 
 function openQuickCommandPanel(): void {
+  if (isShare) return;
   showQuickCommands(hostUrl(settingsHost(), '/api/quick-commands'), remoteHosts.length ? hostLabel(settingsHost()) : '', text => {
     const target = activeSession;
     if (!target?.connected) return false;
@@ -5107,6 +5220,7 @@ for (const [index, def] of KEYS.entries()) {
   if (def.mobile) dualKeys.push({ b, def });
   if (def.mod) modButtons[def.mod] = b;
   if (def.action === 'commands') {
+    if (isShare) b.style.display = 'none';
     b.title = '快捷命令';
     b.setAttribute('aria-label', '快捷命令');
     bindIntentionalClick(b, openQuickCommandPanel, keybarEl);
@@ -5196,6 +5310,7 @@ function mBtn(label: string, title: string, onTap: () => void): HTMLButtonElemen
   b.textContent = label;
   b.title = title;
   b.setAttribute('aria-label', title);
+  if (isShare && /新建|上传|重启|分屏|第二终端|双终端|快捷命令/.test(title)) b.style.display = 'none';
   bindIntentionalClick(b, onTap);
   return b;
 }
@@ -5229,6 +5344,7 @@ mAttachBtn.className = 'm-btn';
 mAttachBtn.type = 'button';
 mAttachBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>';
 mAttachBtn.title = '上传文件';
+if (isShare) mAttachBtn.style.display = 'none';
 mAttachBtn.setAttribute('aria-label', '上传文件');
 bindIntentionalClick(mAttachBtn, () => fileInput.click());
 const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
@@ -5523,6 +5639,7 @@ function sheetRow(
 ): HTMLButtonElement {
   const b = document.createElement('button');
   b.className = 'sheet-row';
+  if (isShare && /上传|重启|分享管理|快捷命令/.test(label)) b.style.display = 'none';
   b.type = 'button';
   const i = document.createElement('span');
   i.className = 'sheet-ico';
@@ -6127,6 +6244,7 @@ renderRemoteList();
 function sheetGroup(title: string): HTMLElement {
   const h = document.createElement('div');
   h.className = 'sheet-group-title';
+  if (isShare && title === '远程主机') h.hidden = true;
   h.textContent = title;
   return h;
 }
@@ -6187,12 +6305,14 @@ sheet.append(
   sheetGroup('远程主机'),
   remoteGroup,
   sheetGroup('其他'),
+  sheetRow('↗', '分享管理', () => { window.open('/shares', '_blank', 'noopener'); }),
   sheetRow('?', '帮助：复制 / 粘贴 / 文件', () => {
     closeSheet();
     openHelp();
   }),
   sheetRow('↪', '退出登录', () => { closeSheet(); void logoutBrowser(); }),
 );
+if (isShare) for (const node of [uploadSheetButton, splitRow, statusModeRow, statusModeHint, colorRow, colorHint, remoteGroup]) node.style.display = 'none';
 sheetOverlay.append(sheet);
 document.body.append(sheetOverlay);
 bindIntentionalClick(sheetOverlay, (e) => {
@@ -6328,6 +6448,7 @@ function fmtMB(bytes: number): string {
 // JSON {error} surfaces *why* an upload failed (e.g. "file too large") instead
 // of a generic message. Never rejects — always resolves so callers can `void` it.
 function uploadFile(file: Blob, name?: string): Promise<void> {
+  if (isShare) { flashStatus('分享文件管理为只读', 2000); return Promise.resolve(); }
   return new Promise((resolve) => {
     if (!file) {
       resolve();
@@ -6432,7 +6553,7 @@ async function downloadFromHost(rawPath: string): Promise<void> {
   }
   const size = Number(head.headers.get('content-length') ?? '0');
   const a = document.createElement('a');
-  a.href = url;
+  a.href = shareUrl(url);
   a.rel = 'noopener';
   a.download = lastSegment(p) || 'download';
   document.body.append(a);
@@ -6597,19 +6718,19 @@ async function init(): Promise<void> {
       list = await fetchServerTabs(host);
     }
     if (!list && host && !offlineHosts.has(host)) offlineHosts.add(host);
-    return list ?? (host ? cached.tabs.filter(t => hostOfKey(t.name) === host) : null);
+    return list ?? (isShare ? [] : host ? cached.tabs.filter(t => hostOfKey(t.name) === host) : null);
   }));
   const server = lists[0];
   const remoteTabs = lists.slice(1).flatMap(list => list ?? []);
   let initialTabs: SavedTab[] =
     server && server.length
       ? server
-      : cached.tabs.length
+      : !isShare && cached.tabs.length
         ? cached.tabs.filter(t => !hostOfKey(t.name))
         : [];
-  if (!initialTabs.length && !remoteTabs.length) initialTabs = [{ name: defaultSessionName, displayName: defaultSessionName }];
+  if (!isShare && !initialTabs.length && !remoteTabs.length) initialTabs = [{ name: defaultSessionName, displayName: defaultSessionName }];
   initialTabs = [...initialTabs, ...remoteTabs];
-  if (urlSession && !initialTabs.some((t) => t.name === urlSession)) {
+  if (!isShare && urlSession && !initialTabs.some((t) => t.name === urlSession)) {
     initialTabs = [{ name: urlSession, displayName: urlSession }, ...initialTabs];
   }
   // This browser's order, else the one saved for this kind of device (which is
@@ -6689,10 +6810,10 @@ async function init(): Promise<void> {
   for (const t of initialTabs) {
     const s = addSession(t.name, false, t.displayName);
     s.cwd = t.cwd ?? cachedCwds.get(t.name) ?? null;
-    s.view = cachedViews.get(t.name) ?? 'one';
+    s.view = isShare ? 'one' : cachedViews.get(t.name) ?? 'one';
     // Asked for by name in the URL, or the default on a first visit: both are
     // tabs being made, not remembered, so they may create their session.
-    if (t.name === urlSession || (!hostOfKey(t.name) && !server?.length && !cached.tabs.length)) s.intendCreate();
+    if (!isShare && (t.name === urlSession || (!hostOfKey(t.name) && !server?.length && !cached.tabs.length))) s.intendCreate();
   }
 
   // This device's own last focus first, then what the server remembers for its
@@ -6701,7 +6822,8 @@ async function init(): Promise<void> {
     (n): n is string => typeof n === 'string' && n.length > 0,
   );
   const active = wanted.map((n) => sessions.find((s) => s.name === n)).find(Boolean);
-  activateSession(active ?? sessions[0]);
+  if (sessions.length) activateSession(active ?? sessions[0]);
+  else showStatus('当前分享没有可用会话');
 
   // Everything restored: from here on, changes are the user's and get saved.
   prefsReady = true;
@@ -6769,7 +6891,7 @@ function openFileBrowser(): void {
     query.tagColor = tag.color;
     if (tag.note) query.tagNote = tag.note;
     if (hostIp(session.host)) query.hostIp = hostIp(session.host);
-    fileBrowserFrame.src = `/file-browser.html?${new URLSearchParams(query)}`;
+    fileBrowserFrame.src = `${sharePage('/file-browser.html')}?${new URLSearchParams(query)}`;
   }
   fileBrowserOpen = true;
   document.body.classList.add('file-browser-open');

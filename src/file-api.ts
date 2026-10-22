@@ -136,13 +136,13 @@ async function noNestedDestination(source: string, destination: string): Promise
 const mime: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.pdf': 'application/pdf' };
 // 网页服务模式下页面与终端同源运行（个人内网使用），脚本、存储与相对路径资源均按普通静态站点处理。
 const siteMime: Record<string, string> = { ...mime, '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf', '.m4a': 'audio/mp4', '.flac': 'audio/flac' };
-async function content(req: http.IncomingMessage, res: http.ServerResponse, p: string, mode: 'inline' | 'download' | 'site'): Promise<void> {
+export async function content(req: http.IncomingMessage, res: http.ServerResponse, p: string, mode: 'inline' | 'download' | 'site'): Promise<void> {
   const handle = await fsp.open(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const stat = await handle.stat(); if (!stat.isFile()) throw new FileError('只能读取普通文件');
     const extension = path.extname(p).toLowerCase();
     const headers: Record<string, string | number> = mode === 'site'
-      ? { 'Content-Type': siteMime[extension] || 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' }
+      ? { 'Content-Type': siteMime[extension] || 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Cache-Control': String(res.getHeader('Cache-Control') || 'no-cache') }
       : { 'Content-Type': mode === 'download' ? 'application/octet-stream' : mime[extension] || 'text/plain; charset=utf-8', 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store' };
     const download = mode === 'download';
     if (download) headers['Content-Disposition'] = `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(path.basename(p))}`;

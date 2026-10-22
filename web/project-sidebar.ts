@@ -1,3 +1,4 @@
+import { shareStorage as localStorage } from './share-context.js';
 import { sortRecentEntries } from './recent-tabs.js';
 import type { QuickSessionKind } from './quick-session-nav.js';
 import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
@@ -31,6 +32,7 @@ export interface RecentVisitEntry {
 }
 
 export interface SidebarHooks {
+  readOnly?: boolean;
   recentEntries(): RecentVisitEntry[];
   navigateRecent(name?: string): void;
   removeRecent(name: string): void;
@@ -119,6 +121,7 @@ function iconButton(icon: string, title: string, onClick: (e: MouseEvent) => voi
   button.type = 'button';
   button.className = 'ps-icon-btn';
   button.title = title;
+  if (document.body.classList.contains('share-mode') && /新建|重命名/.test(title)) button.style.display = 'none';
   button.setAttribute('aria-label', title);
   button.innerHTML = icon;
   bindIntentionalClick(button, e => {
@@ -704,7 +707,6 @@ export class ProjectSidebar {
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
         chip.classList.toggle('pinned', !!session.pinned);
-        this.hooks.decorateChip(chip, session.name);
         chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
@@ -719,6 +721,7 @@ export class ProjectSidebar {
           pin.innerHTML = ICONS.pin;
           chip.append(pin);
         }
+        this.hooks.decorateChip(chip, session.name);
         bindIntentionalClick(chip, e => {
           e.stopPropagation();
           this.hooks.activate(session.name);
@@ -907,6 +910,7 @@ export class ProjectSidebar {
     title.textContent = label;
     menu.append(title);
     const item = (text: string, onPick: () => void, disabled = false, danger = false): void => {
+      if (this.hooks.readOnly && text !== '复制目录绝对路径') return;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'ps-menu-item' + (danger ? ' danger' : '');
@@ -974,6 +978,7 @@ export class ProjectSidebar {
   /** Edit a name in place; Enter or blur saves, Escape cancels. */
   private startRename(nameEl: HTMLElement, folder: { id: string; name: string },
                       save: (name: string) => void = name => this.hooks.renameFolder(folder.id, name)): void {
+    if (this.hooks.readOnly) return;
     const input = document.createElement('input');
     input.className = 'ps-rename';
     input.value = folder.name;

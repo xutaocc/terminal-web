@@ -1,3 +1,4 @@
+import { isShare, shareBase, shareFetch as fetch, shareStorage as localStorage } from './share-context.js';
 import './file-browser.css';
 import './theme.css';
 import './hosts.css';
@@ -12,7 +13,9 @@ const query = new URLSearchParams(location.search);
 // A remote session's files are that remote's: every request goes through this
 // server's /remote/<id>/ forwarder (src/remotes.ts), so the page stays same-origin.
 const host = /^[a-z0-9]{1,16}$/.test(query.get('host') || '') ? query.get('host') : '';
-const hostBase = host ? `/remote/${host}` : '';
+const hostBase = (isShare ? `${shareBase}app` : '') + (host ? `/remote/${host}` : '');
+let shareRoot = '', previewPrefix = '';
+const readActions = new Set(['进入', '预览', '源码', '浏览器打开', '下载', '详情', '复制路径', '更多']);
 const apiBase = `${hostBase}/api/files/`;
 let theme = query.get('theme');
 if (!isTheme(theme)) {
@@ -45,7 +48,7 @@ let previewItem = null, previewText = '', previewVersion = '', originalText = ''
 let toastTimer;
 function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
 // Path helpers live in file-path.js: the server may be Unix ("/a/b") or Windows ("C:\a\b").
-const parent = parentPath;
+const parent = p => isShare && shareRoot && samePath(p, shareRoot) ? shareRoot : parentPath(p);
 const isWithin = within;
 function compactPaths(inputs) { return [...new Set(inputs)].filter(p => !inputs.some(other => other !== p && isWithin(p, other))); }
 function bytes(size) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; if (size < 1073741824) return `${(size / 1048576).toFixed(1)} MB`; return `${(size / 1073741824).toFixed(2)} GB`; }
@@ -57,6 +60,7 @@ function toast(text) {
   node.textContent = text; node.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => node.style.display = 'none', 3500);
 }
 async function request(route, data, params = {}) {
+  if (isShare) { if (data !== undefined) throw new Error('分享文件管理为只读'); params = { ...params, session }; }
   const url = apiBase + route + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '');
   const response = await fetch(url, data === undefined ? { credentials: 'same-origin', cache: 'no-store' } : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   if (response.status === 401) { window.parent.postMessage({ type: 'files-auth-expired' }, location.origin); throw new Error('登录已失效，请重新登录'); }
@@ -96,6 +100,7 @@ async function initialExpand(p, force = false) {
 // 返回目录时恢复展开、选择和两个方向的滚动位置，保留进入前的操作上下文。
 function snapshot() { return { current, active, expanded: [...expanded], selected: [...selected], selecting, top: $('#tree').scrollTop, left: $('#tree').scrollLeft }; }
 async function navigate(p, record = true) {
+  if (isShare && (!shareRoot || !within(p, shareRoot))) return toast('不能访问分享目录之外的路径');
   if (busy || p === current && cache.has(p)) return;
   const before = snapshot(), generation = ++navigationGeneration; busy = true; $('#location-label').textContent = '正在读取目录…';
   try {
@@ -122,7 +127,7 @@ async function refresh() {
   const top = $('#tree').scrollTop, left = $('#tree').scrollLeft;
   const paths = [...expanded].filter(p => isWithin(p, current));
   try { await load(current, true); } catch (error) {
-    if (!isRoot(current)) { cache.delete(current); const previous = parent(current); current = previous; active = null; await initialExpand(previous, true); active = cache.get(previous).directory; render(); toast('原目录已不可访问，已返回父目录'); return; }
+    if (!isRoot(current) && !(isShare && samePath(current, shareRoot))) { cache.delete(current); const previous = parent(current); current = previous; active = null; await initialExpand(previous, true); active = cache.get(previous).directory; render(); toast('原目录已不可访问，已返回父目录'); return; }
     throw error;
   }
   for (let i = 0; i < paths.length; i += 4) await Promise.all(paths.slice(i, i + 4).map(p => load(p, true).catch(() => cache.delete(p))));
@@ -134,13 +139,13 @@ async function refresh() {
 function navigation() {
   const crumbsBox = $('#breadcrumbs'); crumbsBox.replaceChildren();
   // One button per segment — "C:\" › "Users" › … on Windows, "/" › "home" › … on Unix.
-  crumbs(current).forEach(({ label, path: target }, index) => {
+  crumbs(current).filter(c => !isShare || within(c.path, shareRoot)).forEach(({ label, path: target }, index) => {
     if (index > 1) crumbsBox.append(el('span', 'path-separator', target.includes('\\') ? '\\' : '/'));
     const here = samePath(target, current);
     const node = button(label, () => navigate(target), `crumb quiet${here ? ' current' : ''}`);
     node.setAttribute('aria-label', `进入 ${target}`); if (here) node.setAttribute('aria-current', 'location'); crumbsBox.append(node);
   });
-  $('#directory-back').disabled = !history.length; $('#up').disabled = isRoot(current);
+  $('#directory-back').disabled = !history.length; $('#up').disabled = isRoot(current) || (isShare && samePath(current, shareRoot));
   $('#location-label').textContent = samePath(current, sessionPath) ? '当前会话目录' : '当前浏览目录';
   $('#collapse').textContent = (cache.get(current)?.entries || []).some(item => item.directory && expanded.has(item.path)) ? '收起' : '展开';
 }
@@ -208,7 +213,7 @@ function footer() {
   if (selecting) actions = [['全选', () => { document.querySelectorAll('.row input').forEach(input => { input.checked = true; input.onchange(); }); }], ['压缩', () => menuAction('压缩', null)], ['更多', () => menu(null)]];
   else if (active?.path !== current) actions = active?.directory ? [['进入', () => navigate(active.path)], ['更多', () => menu(active)]] : [...(htmlExtensions.test(active.name) ? [['浏览器打开', () => openSite(active)], ['源码', () => viewSource(active)]] : [['预览', () => preview(active)]]), ['编辑', () => preview(active, true)], ['更多', () => menu(active)]];
   else actions = [['＋ 新建', () => createMenu(current)], ['↑ 上传', () => uploadInto(current)], ['更多', () => menu(active)]];
-  actions.forEach(([text, action]) => box.append(button(text, action, ['进入', '压缩', '↑ 上传'].includes(text) ? 'primary' : '')));
+  actions.filter(([text]) => !isShare || readActions.has(text)).forEach(([text, action]) => box.append(button(text, action, ['进入', '压缩', '↑ 上传'].includes(text) ? 'primary' : '')));
 }
 function menu(item) {
   if (!item && !selected.size) return toast('请先选择条目');
@@ -218,7 +223,7 @@ function menu(item) {
   if (item && !item.directory && htmlExtensions.test(item.name)) ops.unshift(['↗', '浏览器打开']);
   if (item) ops.push(['⧉', '复制路径'], ['✎', '重命名'], ['ⓘ', '详情']);
   ops.push(['▣', '复制'], ['↗', '移动'], ['▤', '压缩'], ...(windowsHost ? [] : [['⚿', '权限']]), ['∑', '统计'], ['×', '删除']);
-  ops.forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
+  ops.filter(([,label]) => !isShare || readActions.has(label)).forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
 }
 function confirmation(title, fields, execute) {
   const body = sheet(title, '确认以下信息后执行');
@@ -235,6 +240,7 @@ function inputForm(title, subtitle, fields, submitText, callback) {
   return form;
 }
 function createMenu(directory) {
+  if (isShare) return;
   const body = sheet('新建', directory);
   ['directory', 'file'].forEach(kind => body.append(button(`＋ 新建${kind === 'directory' ? '文件夹' : '文件'}`, () => inputForm('新建', directory, [['name', '名称', kind === 'directory' ? '新文件夹' : 'untitled.txt']], '创建', async inputs => {
     await request('create', { directory, name: inputs.name.value, kind }); closeDialog($('#sheet')); await refresh(); toast('已创建');
@@ -267,6 +273,7 @@ async function startJob(route, data, onDone) {
   } finally { taskInProgress = false; $('#sheet .close').disabled = false; }
 }
 async function menuAction(label, item) {
+  if (isShare && !readActions.has(label)) return;
   const paths = currentSelection(item); if (!paths.length) return toast('请先选择条目');
   if (label === '进入') { closeDialog($('#sheet')); return navigate(item.path); }
   if (label === '立即打开对应终端目录') {
@@ -281,7 +288,7 @@ async function menuAction(label, item) {
   if (label === '上传') { closeDialog($('#sheet')); return uploadInto(item.path); }
   if (label === '新建') return createMenu(item.path);
   if (label === '详情') { const detailsBody = sheet(item.name, item.path); details(await request('stat', undefined, { path: item.path }), detailsBody); return; }
-  if (label === '下载') { const anchor = el('a'); anchor.href = `${apiBase}content?${new URLSearchParams({ path: item.path, download: '1' })}`; anchor.download = item.name; anchor.click(); return; }
+  if (label === '下载') { const anchor = el('a'); anchor.href = `${apiBase}content?${new URLSearchParams({ path: item.path, download: '1', ...(isShare ? {session} : {}) })}`; anchor.download = item.name; anchor.click(); return; }
   if (label === '重命名') return inputForm('重命名', item.path, [['name', '新名称', item.name]], '重命名', async inputs => { await request('rename', { path: item.path, name: inputs.name.value }); closeDialog($('#sheet')); await refresh(); toast('已重命名'); });
   if (label === '复制' || label === '移动') return transfer(label, paths);
   if (label === '删除') return confirmation('确认永久删除', [['删除以下条目及全部子项', paths], ['删除方式', '永久删除，不能恢复']], async () => { await startJob('remove', { paths }); selected.clear(); selecting = false; await refresh(); });
@@ -364,7 +371,7 @@ async function compression(paths) {
 }
 
 let uploadDirectory = '';
-function uploadInto(p) { uploadDirectory = p; $('#upload').click(); }
+function uploadInto(p) { if (isShare) return; uploadDirectory = p; $('#upload').click(); }
 $('#upload').onchange = async event => {
   const files = [...event.target.files]; event.target.value = ''; if (!files.length) return;
   const body = sheet('上传文件', uploadDirectory), status = el('p'), progress = el('progress'), errors = el('p', 'task-errors'); progress.max = 100; progress.style.width = '100%'; body.append(status, progress, errors);
@@ -401,6 +408,7 @@ const markdownExtensions = /\.(md|markdown)$/i;
 // 后端 /site/<绝对路径> 把文件当静态网站提供，页面里的相对路径资源按所在目录解析。
 // Windows 路径以 "/C:/Users/…" 的形式放进 URL：相对路径在浏览器里按 "/" 解析，服务端再还原。
 function siteUrl(p) {
+  if (isShare) return previewPrefix + segments(normalizePath(p)).slice(segments(shareRoot).length).map(encodeURIComponent).join('/');
   const path = normalizePath(p), parts = segments(path);
   const head = path.startsWith('/') ? '' : `/${rootOf(path).slice(0, 2)}`;
   return `${hostBase}/site${head}/${parts.map(encodeURIComponent).join('/')}`;
@@ -408,18 +416,23 @@ function siteUrl(p) {
 // 指定窗口尺寸让桌面浏览器开独立窗口而非新标签；移动端浏览器会忽略尺寸并以新标签打开。
 // 只读查看源码：与预览相同的行号视图，但隐藏编辑入口。
 async function viewSource(item) { await preview(item); if (previewItem === item) $('#edit').hidden = true; }
-function openSite(item) { window.open(siteUrl(item.path), '_blank', `popup,width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`); }
+async function openSite(item) {
+  const popup = window.open(isShare ? 'about:blank' : siteUrl(item.path), '_blank', `popup,width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
+  if (isShare && popup) { popup.opener = null; try { await requestSessionPath(); popup.location.replace(siteUrl(item.path)); } catch (error) { popup.close(); toast(error.message); } }
+}
 function editingBaseline() { return originalText.replace(/\r\n?/g, '\n'); }
 function unsaved() { return !!$('#preview-content textarea') && $('#preview-content textarea').value !== editingBaseline(); }
 async function preview(item, edit = false) {
+  if (isShare) edit = false;
   if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;
   const media = !edit && (imageExtensions.test(item.name) || videoExtensions.test(item.name) || audioExtensions.test(item.name) || /\.pdf$/i.test(item.name));
   const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren(); $('#preview-title').textContent = item.name; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑'; $('#edit').hidden = $('#copy-content').hidden = !!media;
+  if (isShare) $('#edit').hidden = true;
   $('#open-site').hidden = !htmlExtensions.test(item.name); $('#render-toggle').hidden = true;
   previewItem = item; markdownView = !edit && markdownExtensions.test(item.name);
   if (media) {
     const tag = imageExtensions.test(item.name) ? 'img' : videoExtensions.test(item.name) ? 'video' : audioExtensions.test(item.name) ? 'audio' : 'iframe';
-    const node = el(tag, 'media-preview'); node.src = `${apiBase}content?${new URLSearchParams({ path: item.path })}`;
+    const node = el(tag, 'media-preview'); node.src = `${apiBase}content?${new URLSearchParams({ path: item.path, ...(isShare ? {session} : {}) })}`;
     if (tag === 'video' || tag === 'audio') { node.controls = true; node.preload = 'metadata'; node.setAttribute('playsinline', ''); node.onerror = () => toast('浏览器不支持此媒体编码，可下载或使用终端处理'); }
     if (tag === 'img') node.alt = item.name;
     if (tag === 'iframe') { node.title = item.name; node.style.width = '100%'; node.style.height = '100%'; }
@@ -436,7 +449,8 @@ async function showPreview() {
   const toggle = $('#render-toggle'); toggle.hidden = !markdownExtensions.test(previewItem.name); toggle.textContent = markdownView ? '源码' : '渲染';
   if (!markdownView) return showText();
   const { marked } = await import('marked');
-  const article = el('article', 'markdown-body'); article.innerHTML = marked.parse(previewText);
+  const article = el('article', 'markdown-body'); article.innerHTML = marked.parse(isShare ? previewText.replace(/</g, '&lt;') : previewText);
+  if (isShare) article.querySelectorAll('[href],[src]').forEach(node => { for (const attr of ['href','src']) { const value = node.getAttribute(attr); if (value && !/^(https?:|data:image\/|[^:]*$)/i.test(value.trim())) node.removeAttribute(attr); } });
   // 相对路径的图片和链接以 Markdown 文件所在目录为基准，经 /site 加载。
   const base = new URL(siteUrl(previewItem.path), location.origin);
   article.querySelectorAll('img[src]').forEach(img => { img.src = new URL(img.getAttribute('src'), base).href; });
@@ -453,6 +467,7 @@ function showText() {
   $('#editor-status').textContent = `${lines.length} 行 · 只读`; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑';
 }
 function startEditing() {
+  if (isShare) return;
   const box = $('#preview-content'); box.classList.add('editing'); $('#render-toggle').hidden = true;
   const wrapper = el('div', 'text-editor'), gutter = el('div', 'editor-gutter'), numbers = el('div', 'editor-numbers'), area = el('textarea', 'editor-input'); gutter.setAttribute('aria-hidden', 'true'); gutter.append(numbers);
   area.value = previewText; area.wrap = 'off'; area.spellcheck = false; area.setAttribute('autocapitalize', 'off'); area.setAttribute('autocomplete', 'off'); area.setAttribute('aria-label', '文本编辑');
@@ -485,10 +500,11 @@ $('#sheet').addEventListener('cancel', event => { if (taskInProgress) event.prev
 $('#preview').addEventListener('cancel', event => { event.preventDefault(); closePreview(); });
 window.addEventListener('beforeunload', event => { if (unsaved()) { event.preventDefault(); event.returnValue = ''; } });
 click($('#back'), () => { if (unsaved() && !window.confirm('当前文本未保存，是否放弃修改并返回终端？')) return; $('#preview-content').replaceChildren(); closeDialog($('#preview')); window.parent.postMessage({ type: 'files-close' }, location.origin); });
-click($('#directory-back'), back); click($('#up'), () => navigate(parent(current))); click($('#go-root'), () => navigate(rootOf(current)));
+click($('#directory-back'), back); click($('#up'), () => navigate(parent(current))); click($('#go-root'), () => navigate(isShare ? shareRoot : rootOf(current)));
 click($('#locate'), async () => { const result = await requestSessionPath(); await navigate(result); });
 click($('#copy-path'), () => copyText(current)); click($('#refresh'), refresh);
 $('#hidden').checked = false; $('#hidden').onchange = async () => { showHidden = $('#hidden').checked; for (const p of selected) if (!showHidden && segments(p).some(part => part.startsWith('.'))) selected.delete(p); if (!showHidden && active?.name.startsWith('.')) active = cache.get(current).directory; render(); };
+if (isShare) { $('#go-root').textContent = '分享根目录'; $('#select').hidden = true; $('.demo-note').textContent = '分享文件管理 · 只读 · 仅可浏览授权目录'; }
 click($('#select'), () => { selecting = !selecting; if (!selecting) selected.clear(); render(); });
 click($('#collapse'), async () => {
   const children = (cache.get(current)?.entries || []).filter(item => item.directory);
@@ -500,7 +516,7 @@ click($('#sort'), () => { const body = sheet('排序', '每一级目录独立排
 async function requestSessionPath() {
   const response = await fetch(`${hostBase}/api/sessions/cwd?${new URLSearchParams({ session })}`, { cache: 'no-store' });
   if (!response.ok) throw new Error(response.status === 401 ? '登录已失效' : '无法取得当前终端目录，请刷新或返回终端重试');
-  const result = await response.json(); sessionPath = result.path; return sessionPath;
+  const result = await response.json(); sessionPath = result.path; if (isShare) { shareRoot = result.path; previewPrefix = result.previewPrefix; } return sessionPath;
 }
 $('#tree').append(el('p', 'tree-error', '正在读取当前会话目录…'));
 $('#session-label').textContent = query.get('label') || session || '当前会话';

@@ -1,5 +1,8 @@
 /** One session's status as the server reports it (see src/agent-status.ts). */
 export interface AgentStatus {
+  instance?: string;
+  version?: number;
+  eventSeq?: number;
   state: 'idle' | 'working' | 'waiting' | 'done';
   unread: boolean;
 }

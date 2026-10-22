@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export interface SavedSession {
+  identity?: string;
   name: string;
   displayName: string;
   cwd?: string;
@@ -17,10 +19,11 @@ export class SessionStore {
       for (const tab of data) {
         if (tab && typeof tab.name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(tab.name) &&
             !tab.name.endsWith('__b') && typeof tab.displayName === 'string') {
-          this.tabs.set(tab.name, { name: tab.name, displayName: tab.displayName,
+          this.tabs.set(tab.name, { identity: typeof tab.identity === 'string' ? tab.identity : randomUUID(), name: tab.name, displayName: tab.displayName,
             cwd: typeof tab.cwd === 'string' && path.isAbsolute(tab.cwd) ? tab.cwd : undefined });
         }
       }
+      if (data.some((tab: SavedSession) => tab && typeof tab.identity !== 'string')) this.save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
@@ -33,7 +36,7 @@ export class SessionStore {
   update(tab: SavedSession): void {
     if (tab.name.endsWith('__b')) return;
     const previous = this.tabs.get(tab.name);
-    const next = { ...previous, ...tab, cwd: tab.cwd ?? previous?.cwd };
+    const next = { ...previous, ...tab, identity: previous?.identity ?? randomUUID(), cwd: tab.cwd ?? previous?.cwd };
     if (JSON.stringify(previous) === JSON.stringify(next)) return;
     this.tabs.set(tab.name, next);
     this.save();

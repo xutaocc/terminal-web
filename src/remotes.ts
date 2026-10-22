@@ -537,8 +537,10 @@ export function proxyUpgrade(req: http.IncomingMessage, socket: Duplex, head: Bu
   headers.upgrade = req.headers.upgrade ?? 'websocket';
   const upstream = (to.protocol === 'https:' ? https : http).request(to, { method: 'GET', headers, agent: false });
   const connectTimer = setTimeout(() => upstream.destroy(new Error('timeout')), CONNECT_TIMEOUT_MS);
+  socket.once('close', () => { clearTimeout(connectTimer); upstream.destroy(); });
   upstream.on('upgrade', (answer, remoteSocket, remoteHead) => {
     clearTimeout(connectTimer);
+    if (socket.destroyed) { remoteSocket.destroy(); return; }
     const lines = [`HTTP/1.1 ${answer.statusCode ?? 101} ${answer.statusMessage ?? 'Switching Protocols'}`];
     for (let i = 0; i < answer.rawHeaders.length; i += 2) {
       if (answer.rawHeaders[i].toLowerCase() !== 'set-cookie') lines.push(`${answer.rawHeaders[i]}: ${answer.rawHeaders[i + 1]}`);

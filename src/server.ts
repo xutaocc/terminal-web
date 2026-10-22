@@ -1,3 +1,4 @@
+import { TerminalControl, type ControlClient, type ControlAction } from './terminal-control.js';
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -41,6 +42,9 @@ import { FolderStore, validFolderName, validSession } from './projects.js';
 import { AgentStatusMonitor, isAgentStatusMode } from './agent-status.js';
 import { RemoteMonitor, RemoteStatusHub, RemoteStore, cleanColor, cleanLabel, cleanNote, proxyHttp, proxyUpgrade, remoteRoute, sameLabel } from './remotes.js';
 
+import { ShareService, type ShareScope } from './shares.js';
+import { ShareStore } from './share-store.js';
+import { ShareInputGuard } from './share-input.js';
 import { SessionStore } from './session-store.js';
 
 const config = loadConfig();
@@ -143,7 +147,7 @@ function mateNameOf(name: string): string {
 // a device can sleep for days.
 // ---------------------------------------------------------------------------
 
-const CLOSED_FILE = path.join(os.homedir(), ".terminal-web", "closed.json");
+const CLOSED_FILE = process.env.CLOSED_SESSIONS_FILE || path.join(os.homedir(), ".terminal-web", "closed.json");
 /** How long a closed name is refused to a stale page. */
 const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -647,8 +651,9 @@ async function handleAgentStatusRead(req: http.IncomingMessage, res: http.Server
   catch { sendJsonHttp(res, 400, { error: 'invalid body' }); return; }
   const names = Array.isArray(body?.sessions) ? body.sessions.filter((n): n is string =>
     typeof n === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(n)) : [];
-  if (typeof body.output === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.output)) agentStatus.legacyOutput(body.output);
-  agentStatus.read(names);
+  // Kept for older clients. Read cursors are now private to each visitor;
+  // execution activity is reported by the owning terminal connection only.
+  void names;
   sendJsonHttp(res, 200, { ok: true });
 }
 
@@ -726,8 +731,12 @@ async function handleScrollSession(
     sendJsonHttp(res, 400, { error: 'invalid scroll action' });
     return;
   }
+  sendJsonHttp(res, 403, { error: '请通过当前拥有操作权的终端连接翻页' });
+}
+async function scrollControlledSession(obj: {name: string; action: string}, authorized: () => boolean): Promise<void> {
   const target = `=${obj.name}:`;
   const run = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
+    if (!authorized()) { reject(new Error('operation right changed')); return; }
     execFile(TMUX, args, { timeout: 3000 }, (error, stdout) => {
       if (error) reject(error);
       else resolve(stdout.trim());
@@ -759,9 +768,9 @@ async function handleScrollSession(
       await run(['send-keys', '-t', target,
         obj.action === 'up' ? 'PPage' : obj.action === 'down' ? 'NPage' : obj.action === 'top' ? 'C-Home' : 'C-End']);
     }
-    sendJsonHttp(res, 200, { ok: true });
+
   } catch {
-    sendJsonHttp(res, 409, { error: 'session unavailable' });
+    throw new Error('session unavailable or operation right changed');
   }
 }
 
@@ -1465,6 +1474,18 @@ function handleRemoteEvents(req: http.IncomingMessage, res: http.ServerResponse)
 // HTTP server
 // ---------------------------------------------------------------------------
 
+const shares = new ShareService(new ShareStore(process.env.SHARES_FILE || path.join(os.homedir(), '.terminal-web', 'shares.json')), {
+  token: config.authToken, publicDir: config.publicDir, remotes,
+  subscribe: listener => {
+    const off = [agentStatus.subscribe(listener), remoteStatus.subscribe(listener), remoteMonitor.subscribe(listener)];
+    return () => off.forEach(fn => fn());
+  },
+  revokeControl: grant => terminalControl.revoke(`share:${grant}`),
+  info: hostInfo, folders: () => folders.get(), self: async () => ({ ...hostInfo(), label: await selfLabel() }), status: () => agentStatus.snapshot(), remoteStatuses: () => remoteStatus.snapshot(), health: () => remoteMonitor.snapshot(),
+  collect: collectSavedSessions, get: name => sessionStore.get(name), cwd: sessionCwd, closed: isClosed,
+});
+const sharedSockets = new WeakMap<WebSocket, ShareScope>();
+
 const server = http.createServer((req, res) => {
   // Wrap in a try/catch so a single bad request never takes down the process.
   void (async () => {
@@ -1475,6 +1496,8 @@ const server = http.createServer((req, res) => {
       }
       const requestUrl = new URL(req.url, "http://localhost");
       const method = req.method ?? "GET";
+
+      if (await shares.publicHttp(req, res, requestUrl)) return;
 
       // Mandatory token gate. Handles the login page and
       // the ?token=… sign-in for every route.
@@ -1491,6 +1514,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
+      if (await shares.adminHttp(req, res, requestUrl)) return;
       const viaRemote = remoteRoute(requestUrl.pathname);
       if (viaRemote) {
         const remote = await remotes.get(viaRemote.id);
@@ -1790,6 +1814,9 @@ function noteAbnormalPtyExit(): void {
 }
 
 const wss = new WebSocketServer({ noServer: true });
+const terminalControl = new TerminalControl();
+const controlTimer = setInterval(() => terminalControl.sweep(), 500); controlTimer.unref();
+const controlMetadata = new WeakMap<WebSocket, { resume: string; principal: string; label: string; admin: boolean }>();
 const socketBrowsers = new WeakMap<WebSocket, string>();
 
 function sendJson(ws: WebSocket, msg: ServerMessage): void {
@@ -1805,6 +1832,8 @@ function sendJson(ws: WebSocket, msg: ServerMessage): void {
 wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
   const ws = rawWs as LiveSocket;
   ws.isAlive = true;
+  const shareScope = shares.requests.get(req);
+  if (shareScope) sharedSockets.set(ws, shareScope);
 
   // Resolve the requested session — and the size to attach at — from the query
   // string. Spawning at the client's real size rather than 80x24 keeps the tmux
@@ -1832,6 +1861,10 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     requested = null;
   }
   const session = sanitizeSession(requested ?? config.defaultSession);
+  const controlUrl = new URL(req.url ?? '/ws', 'http://localhost');
+  const resume = /^[a-f0-9]{48}$/.test(controlUrl.searchParams.get('client') ?? '') ? controlUrl.searchParams.get('client')! : crypto.randomBytes(24).toString('hex');
+  controlMetadata.set(ws, { resume, principal: shareScope ? `share:${shareScope.grant ?? shareScope.session.identity}` : 'admin',
+    label: `${shareScope ? '分享访客' : '管理员'} ${resume.slice(0, 4)}`, admin: !shareScope });
 
   // Guard the host's system-wide pty table: refuse the connection (before
   // spawning any pty) once we're at the cap, rather than letting a runaway or
@@ -1861,7 +1894,8 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     ws.close(1000, "closed");
     return;
   }
-  startAttach(ws, session, cols, rows, createFrom, createDirectory);
+  if (shareScope) attachSession(ws, session, cols, rows);
+  else startAttach(ws, session, cols, rows, createFrom, createDirectory);
 });
 
 /**
@@ -1885,22 +1919,34 @@ function startAttach(ws: LiveSocket, session: string, cols: number, rows: number
 }
 
 /** Spawn the tmux client for `session` and wire it to this socket. */
-function attachSession(
+async function attachSession(
   ws: LiveSocket,
   session: string,
   cols: number,
   rows: number,
   startDir?: string
-): void {
+): Promise<void> {
   // A close may arrive while asynchronous directory resolution runs.
   if (ws.readyState !== WebSocket.OPEN || isClosed(session)) {
     sendJson(ws, { type: 'closed' });
     if (ws.readyState === WebSocket.OPEN) ws.close(1000, 'closed');
     return;
   }
+  // Explicit window sizing prevents a newly attached spectator changing the shared screen.
+  await new Promise<void>(resolve => execFile(TMUX, ['set-option', '-w', '-t', `=${session}:`, 'window-size', 'manual'], { timeout: 3000 }, () => resolve()));
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const initialSize = await new Promise<{cols:number;rows:number} | undefined>(resolve => execFile(TMUX,
+    ['display-message', '-p', '-t', `=${session}:`, '#{window_width} #{window_height}'], {timeout:3000}, (err, output) => {
+      const [width,height] = String(output).trim().split(' ').map(Number);
+      resolve(!err && width > 0 && height > 0 ? {cols:width,rows:height} : undefined);
+    }));
+  if (initialSize) { cols = initialSize.cols; rows = initialSize.rows; }
+  if (ws.readyState !== WebSocket.OPEN) return;
   let proc: pty.IPty;
   try {
-    proc = pty.spawn(TMUX, tmuxArgs(session, config.tmuxConfPath, startDir), {
+    proc = pty.spawn(TMUX, sharedSockets.has(ws)
+      ? ['-u', '-f', config.tmuxConfPath, 'attach-session', '-t', `=${session}`]
+      : tmuxArgs(session, config.tmuxConfPath, startDir), {
       name: "xterm-256color",
       cols,
       rows,
@@ -1935,7 +1981,7 @@ function attachSession(
   //
   // Except the second half of a split: it is reached through the tab it is
   // named after, and a tab of its own is the one thing it must not become.
-  if (!session.endsWith(MATE_SUFFIX)) {
+  if (!sharedSockets.has(ws) && !session.endsWith(MATE_SUFFIX)) {
     liveSessions.add(session);
     const saved = sessionStore.get(session);
     sessionStore.update({ name: session, displayName: saved?.displayName ?? session, cwd: startDir });
@@ -1945,6 +1991,22 @@ function attachSession(
   addSessionClient(session, ws);
 
   let closed = false;
+  const scope = sharedSockets.get(ws);
+  const controlKey = session; // owned by this host, regardless of proxy/share entry point
+  let controlClient: ControlClient | undefined;
+  let operationFence: number | undefined;
+  const validAccess = () => !scope || shares.validScope(scope);
+  const canInput = () => !!controlClient && terminalControl.accepts(controlKey, controlClient, operationFence) && validAccess() && !closed && ws.readyState === WebSocket.OPEN;
+  const meta = controlMetadata.get(ws)!;
+  controlClient = terminalControl.join(controlKey, { ...meta, readOnly: () => !scope && shares.isSessionShared('', session), valid: validAccess, send: value => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
+  } }, initialSize ?? {cols, rows}, !!scope || !shares.isSessionShared('', session));
+  const leasePing = setInterval(() => { if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch { /* closing */ } } }, 4000);
+  leasePing.unref(); ws.once('close', () => clearInterval(leasePing));
+  ws.once('close', (code) => terminalControl.leave(controlKey, controlClient!, code === 4001 || !validAccess()));
+  // New sessions must also use manual sizing; no spectator can drive window-size.
+  execFile(TMUX, ['set-option', '-w', '-t', `=${session}:`, 'window-size', 'manual'], { timeout: 3000 }, () => {});
+  let submitted = false;
 
   // tmux sends only differences, so a browser grid that has drifted from tmux's
   // model of it never gets corrected — that is the pane divider drawn a column
@@ -2030,12 +2092,15 @@ function attachSession(
   let conptyAsked = !IS_PSMUX;
   const onData = proc.onData((raw: string) => {
     let data = raw;
+    if (submitted && controlClient && terminalControl.owns(controlKey, controlClient)) agentStatus.legacyOutput(session);
     if (!conptyAsked && data.includes("\x1b[c")) {
       conptyAsked = true;
       proc.write("\x1b[?62;22c");
       data = data.replace("\x1b[c", "");
     }
     if (ws.readyState !== WebSocket.OPEN) return;
+    const scope = sharedSockets.get(ws);
+    if (scope && !shares.validScope(scope)) return;
     try {
       // node-pty emits strings; send raw bytes so xterm gets exact output.
       ws.send(Buffer.from(data, "utf8"), { binary: true });
@@ -2050,6 +2115,7 @@ function attachSession(
     );
     // Exit 1 with no signal is what a tmux client does when its server goes.
     if (exitCode === 1 && !signal) noteAbnormalPtyExit();
+    if (controlClient) terminalControl.leave(controlKey, controlClient, true);
     closed = true; // pty is already gone; avoid kill() in cleanup
     liveSessions.delete(session);
     livePtys.delete(proc);
@@ -2064,12 +2130,18 @@ function attachSession(
 
   // Keep keyboard and wheel bytes ordered while leaving tmux copy-mode.
   // Coalesce keystrokes arriving during the command so pasted text stays intact.
-  const inputQueue: string[] = [];
+  const inputQueue: { data: string; fence: number }[] = [];
   let preparingInput = false;
   const drainInput = (): void => {
     if (preparingInput || closed) return;
-    const input = inputQueue.shift();
-    if (input === undefined) return;
+    if (!canInput()) { inputQueue.length = 0; return; }
+    const scope = sharedSockets.get(ws);
+    if (scope && (!shares.validScope(scope) || ws.readyState !== WebSocket.OPEN)) { inputQueue.length = 0; return; }
+    const entry = inputQueue.shift();
+    if (!entry) return;
+    const input = entry.data;
+    const canWrite = () => canInput() && terminalControl.accepts(controlKey, controlClient!, entry.fence);
+    if (!canWrite()) { drainInput(); return; }
     if (!isKeyboardInput(input)) {
       // psmux takes a wheel from its client for copy-mode even over a program
       // that reads the mouse itself (Claude Code, vim) — tmux has a binding
@@ -2088,13 +2160,15 @@ function attachSession(
         };
         execFile(TMUX, ['display-message', '-p', '-t', target, '#{mouse_any_flag} #{pane_mode}'],
         { timeout: 3000 }, (error, stdout) => {
+          if (!canWrite()) { done(); return; }
           const [mouse, mode] = String(stdout).trim().split(' ');
           if (closed || error || mouse !== '1') {
-            if (!closed) proc.write(input);
+            if (canWrite()) proc.write(input);
             done();
             return;
           }
           const send = (): void => {
+            if (!canWrite()) { done(); return; }
             execFile(TMUX, ['send-keys', '-t', target, '-l', input], { timeout: 3000 }, done);
           };
           if (mode === 'copy-mode') {
@@ -2105,7 +2179,7 @@ function attachSession(
         });
         return;
       }
-      proc.write(input);
+      if (canWrite()) proc.write(input);
       drainInput();
       return;
     }
@@ -2117,26 +2191,48 @@ function attachSession(
       preparingInput = false;
       if (closed) { inputQueue.length = 0; return; }
       if (error) console.error('[ws] could not leave history mode:', error.message);
-      proc.write(input);
+      if (canWrite()) proc.write(input);
       drainInput();
     });
   };
 
+  const shareScope = sharedSockets.get(ws);
+  const shareGuard = shareScope ? new ShareInputGuard(shareScope.session.root, () => new Promise(resolve => {
+    execFile(TMUX, ['display-message', '-p', '-t', `=${session}:`, '#{pane_current_path}\n#{pane_current_command}'], { timeout: 2000 }, (err, stdout) => {
+      const [cwd, command] = stdout.trim().split('\n'); resolve(err || !cwd || !command ? null : { cwd, command });
+    });
+  }), () => sendJson(ws, { type: 'info', message: '普通终端不能切换到分享根目录之外；文件管理范围保持不变。' })) : null;
+  let shareInput = Promise.resolve();
+  const shareTimer = shareScope ? setInterval(() => { if (!shares.validScope(shareScope)) ws.terminate(); }, 500) : null;
+  if (shareTimer) { shareTimer.unref(); ws.once('close', () => clearInterval(shareTimer)); }
   ws.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
-    if (closed) return;
+    if (closed || (shareScope && !shares.validScope(shareScope))) return;
     try {
       if (isBinary) {
+        const fence = terminalControl.fence(controlKey, controlClient!);
+        if (fence === undefined) return;
+        // Clear bytes from a previous lease before accepting a new one.
+        if (operationFence !== fence) { inputQueue.length = 0; operationFence = fence; }
         // Raw user input bytes -> pty.
         const buf = Array.isArray(data)
           ? Buffer.concat(data.map((d) => Buffer.from(d)))
           : Buffer.from(data as ArrayBuffer);
         const input = filterDaReplies(buf.toString("utf8"));
+        if (/[\r\n]/.test(input) && !input.includes('\x1b[200~')) submitted = true;
+        if (input && shareGuard) {
+          shareInput = shareInput.then(async () => {
+            if (!terminalControl.accepts(controlKey, controlClient!, fence)) return;
+            const filtered = await shareGuard.filter(input);
+            if (terminalControl.accepts(controlKey, controlClient!, fence) && canInput()) { inputQueue.push({ data: filtered, fence }); drainInput(); }
+          }).catch(() => { ws.terminate(); });
+          return;
+        }
         if (input) {
           // Merge only adjacent keyboard chunks; mouse/keyboard order matters.
           const last = inputQueue.length - 1;
-          if (last >= 0 && isKeyboardInput(input) && isKeyboardInput(inputQueue[last])) {
-            inputQueue[last] += input;
-          } else inputQueue.push(input);
+          if (last >= 0 && isKeyboardInput(input) && inputQueue[last].fence === fence && isKeyboardInput(inputQueue[last].data)) {
+            inputQueue[last].data += input;
+          } else inputQueue.push({ data: input, fence });
           drainInput();
         }
         return;
@@ -2154,9 +2250,39 @@ function attachSession(
         return; // ignore non-JSON text frames
       }
 
+      // Read-only admins may scroll, but never send arbitrary terminal bytes.
+      if (parsed && typeof parsed === 'object' && (parsed as {type?:string}).type === 'view-scroll') {
+        if (scope || !controlClient?.readOnly?.() || !validAccess()) return;
+        const wheel = parsed as {ticks?:number; col?:number; row?:number};
+        if (!Number.isInteger(wheel.ticks) || !wheel.ticks || Math.abs(wheel.ticks!) > 100 || !Number.isInteger(wheel.col) || !Number.isInteger(wheel.row)) return;
+        const col = Math.max(1, Math.min(cols, wheel.col!));
+        const row = Math.max(1, Math.min(rows, wheel.row!));
+        proc.write(`\x1b[<${wheel.ticks! > 0 ? 64 : 65};${col};${row}M`.repeat(Math.abs(wheel.ticks!)));
+        return;
+      }
+
+      if (parsed && typeof parsed === 'object' && (parsed as {type?:string}).type === 'scroll') {
+        const action = (parsed as {action?:string}).action;
+        terminalControl.action(controlKey, controlClient!, 'interact');
+        const fence = terminalControl.fence(controlKey, controlClient!);
+        const mayView = () => !scope && !!controlClient?.readOnly?.() && validAccess();
+        if ((fence !== undefined || mayView()) && ['up','down','top','bottom'].includes(action ?? '')) {
+          void scrollControlledSession({ name: session, action: action! }, () => mayView() || (terminalControl.accepts(controlKey, controlClient!, fence) && validAccess())).catch(() => {});
+        }
+        return;
+      }
+      if (parsed && typeof parsed === 'object' && (parsed as {type?:string}).type === 'control') {
+        const message = parsed as { action?: string; target?: string };
+        if (['interact','release','heartbeat'].includes(message.action ?? '')) {
+          terminalControl.action(controlKey, controlClient!, message.action as ControlAction, typeof message.target === 'string' ? message.target : undefined);
+        }
+        return;
+      }
       if (!isClientMessage(parsed)) return;
+      if (shareScope && parsed.type !== 'resize' && parsed.type !== 'ping') return;
 
       if (parsed.type === "resize") {
+        if (!terminalControl.owns(controlKey, controlClient!)) return;
         // Same bounds as the query-string size: a client that asks for a
         // degenerate window would shrink it for every other client on the
         // session, destroying whatever is on the alternate screen.
@@ -2167,11 +2293,14 @@ function attachSession(
         // Clients re-state their size on every reconnect, so most of these
         // messages ask for the size we already have: acting on those would
         // make tmux redraw, and mark this client the "latest" one, for nothing.
-        if (next.cols && next.rows && (next.cols !== cols || next.rows !== rows)) {
+        if (next.cols && next.rows) {
           cols = next.cols;
           rows = next.rows;
           try {
+            terminalControl.resize(controlKey, controlClient!, {cols, rows});
             proc.resize(cols, rows);
+            const resizeFence = terminalControl.fence(controlKey, controlClient!);
+            if (terminalControl.accepts(controlKey, controlClient!, resizeFence)) execFile(TMUX, ['resize-window', '-t', `=${session}:`, '-x', String(cols), '-y', String(rows)], {timeout:3000}, () => {});
             scheduleRepaint();
           } catch (err) {
             console.error("[ws] resize error:", err);
@@ -2180,6 +2309,8 @@ function attachSession(
       } else if (parsed.type === "ping") {
         sendJson(ws, { type: "pong" });
       } else if (parsed.type === "restart") {
+        const restartFence = terminalControl.fence(controlKey, controlClient!);
+        if (restartFence === undefined) return;
         // Kill this session's tmux session. The attached pty (tmux client)
         // then exits, the ws closes, and the client reconnects into a fresh
         // session via `new-session -A`.
@@ -2188,6 +2319,7 @@ function attachSession(
         // not meant to cost the other twelve, which is what it does on the day
         // this command takes the server with it.
         void snapshotBeforeKill(session).then(() => {
+          if (!terminalControl.accepts(controlKey, controlClient!, restartFence)) return;
           execFile(TMUX, ["kill-session", "-t", session], (err) => {
             if (err) {
               console.error(
@@ -2212,6 +2344,7 @@ function attachSession(
   // Heartbeat bookkeeping (protocol-level pong).
   ws.on("pong", () => {
     ws.isAlive = true;
+    terminalControl.action(controlKey, controlClient!, 'heartbeat');
   });
 
   ws.on("error", (err) => {
@@ -2233,6 +2366,11 @@ wss.on("error", (err) => {
 
 // Upgrade only on the /ws path; reject everything else.
 server.on("upgrade", (req, socket, head) => {
+  void shares.upgrade(req, socket, head, () => {
+    wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+  }).then(handled => { if (!handled) upgradeAdmin(req, socket, head); }).catch(() => socket.destroy());
+});
+function upgradeAdmin(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void {
   let pathname = "/";
   try {
     pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -2281,7 +2419,7 @@ server.on("upgrade", (req, socket, head) => {
     if (id) socketBrowsers.set(ws, id);
     wss.emit("connection", ws, req);
   });
-});
+}
 
 // Heartbeat: terminate sockets that stopped responding to pings.
 const heartbeat = setInterval(() => {
