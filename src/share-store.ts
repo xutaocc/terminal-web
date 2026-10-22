@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'node:crypto';
 
 export interface ShareSession {
   host: string;
@@ -9,12 +9,15 @@ export interface ShareSession {
   displayName: string;
   hostName: string;
   root: string;
+  sourceRoot?: string;
 }
 export interface Share {
   id: string;
   name: string;
   sessions: ShareSession[];
   tokenHash: string;
+  encryptedToken?: string;
+  createRequestId?: string;
   revision: number;
   createdAt: number;
   expiresAt: number | null;
@@ -67,9 +70,56 @@ export class ShareStore {
     fs.renameSync(tmp, this.file);
     this.shares = next;
   }
-  create(name: string, sessions: ShareSession[], expiresAt: number | null) {
+  private tokenKey(create = false): Buffer {
+    const file = this.file + '.token-key';
+    try {
+      const key = fs.readFileSync(file);
+      if (key.length !== 32) throw new Error('Token 密钥损坏');
+      return key;
+    } catch (e) {
+      if (!create || (e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      fs.mkdirSync(path.dirname(file), {recursive:true, mode:0o700});
+      const key = randomBytes(32);
+      try { fs.writeFileSync(file, key, {flag:'wx', mode:0o600}); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return this.tokenKey(); throw error; }
+      return key;
+    }
+  }
+  private encryptToken(token: string, id: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.tokenKey(true), iv);
+    cipher.setAAD(Buffer.from(id));
+    const data = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), data]).toString('base64url');
+  }
+  revealToken(id: string): string | undefined {
+    const share = this.get(id);
+    if (!share || share.revokedAt) throw new Error('分享已终止或不存在');
+    if (!share.encryptedToken) return undefined;
+    try {
+      const data = Buffer.from(share.encryptedToken, 'base64url');
+      const cipher = createDecipheriv('aes-256-gcm', this.tokenKey(), data.subarray(0, 12));
+      cipher.setAuthTag(data.subarray(12, 28)); cipher.setAAD(Buffer.from(id));
+      const token = Buffer.concat([cipher.update(data.subarray(28)), cipher.final()]).toString('utf8');
+      if (digest(token) !== share.tokenHash) throw new Error('invalid token');
+      return token;
+    } catch { throw new Error('无法读取保存的 Token，请重置 Token 后重试'); }
+  }
+  delete(id: string): void {
+    const share = this.get(id);
+    if (!share?.revokedAt) throw new Error('请先终止分享，再删除记录');
+    this.save(this.shares.filter(s => s.id !== id));
+  }
+  findCreateRequest(requestId: string): Share | undefined {
+    const share = this.shares.find(s => s.createRequestId === requestId);
+    return share && structuredClone(share);
+  }
+  create(name: string, sessions: ShareSession[], expiresAt: number | null, requestId?: string) {
+    const existing = requestId ? this.findCreateRequest(requestId) : undefined;
+    if (existing) return {share:existing, token:this.revealToken(existing.id)!};
     const token = randomBytes(32).toString('base64url');
-    const share: Share = { id: randomUUID(), name, sessions, tokenHash: digest(token), revision: 1, createdAt: Date.now(), expiresAt, revokedAt: null };
+    const id = randomUUID();
+    const share: Share = { id, name, sessions, ...(requestId ? {createRequestId:requestId} : {}), tokenHash: digest(token), encryptedToken: this.encryptToken(token, id), revision: 1, createdAt: Date.now(), expiresAt, revokedAt: null };
     this.save([...this.shares, share]);
     return { share, token };
   }
@@ -77,7 +127,7 @@ export class ShareStore {
     const previous = this.get(id);
     if (!previous) throw new Error('分享不存在');
     const token = reset ? randomBytes(32).toString('base64url') : undefined;
-    const share = { ...previous, ...patch, ...(reset ? { tokenHash: digest(token!), revision: previous.revision + 1 } : {}) };
+    const share = { ...previous, ...patch, ...(reset ? { tokenHash: digest(token!), encryptedToken: this.encryptToken(token!, id), revision: previous.revision + 1 } : {}) };
     this.save(this.shares.map(s => s.id === id ? share : s));
     return { share, token };
   }

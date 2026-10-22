@@ -1,3 +1,4 @@
+import { openShareManager } from './share-manager.js';
 import { ControlBar, terminalClientId, type ControlState } from './terminal-control.js';
 import { ReadCursors, newerStatus } from './read-cursors.js';
 import { isShare, shareBase, sharePage, shareUrl, shareStorage as localStorage, shareFetch as fetch, ShareWebSocket as WebSocket, ShareEventSource as EventSource } from './share-context.js';
@@ -761,7 +762,7 @@ let pagerReady = false;
 function refreshPager(): void {
   if (!pagerReady) return;
   pager.update(pagerEnabled && mobileMQ.matches && !!activeSession && !fileBrowserOpen && !drawerOpen &&
-    sheetOverlay.classList.contains('hidden') && !touchSelectMode && !document.querySelector('.paste-overlay'));
+    sheetOverlay.classList.contains('hidden') && !touchSelectMode && !document.querySelector('.paste-overlay, .share-manager[open]'));
 }
 sidebarOpenBtn.addEventListener('click', () => sidebar.setHidden(false));
 
@@ -839,6 +840,7 @@ class Session {
   // Where the session is working, as last reported by the server (or where it
   // was asked to start). The sidebar files the tab under a project by this.
   cwd: string | null = null;
+  identity?: string;
   connected = false;
   outputActive = false;
   readonly readState = new SessionReadState();
@@ -2531,7 +2533,7 @@ function disconnectAgentStatus(host: string): void {
 function reportViewed(): void {
   // Touch devices are exempt from the focus test: framed in the iOS launcher,
   // the page often has no focus until it is tapped, though it is plainly seen.
-  if (drawerOpen || fileBrowserOpen || document.querySelector('.paste-overlay, .sheet-overlay:not(.hidden)') || document.visibilityState !== 'visible' ||
+  if (drawerOpen || fileBrowserOpen || document.querySelector('.paste-overlay, .share-manager[open], .sheet-overlay:not(.hidden)') || document.visibilityState !== 'visible' ||
       (!TOUCH_DEVICE && !document.hasFocus())) return;
   const viewed = [activeTab, activeTab?.mate].filter((s): s is Session =>
     !!s && agentModes.has(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
@@ -4025,6 +4027,7 @@ function setDisplayName(s: Session, displayName: string): void {
 }
 
 interface SavedTab {
+  identity?: string;
   name: string;
   displayName: string;
   /** Working directory, when the server reported one (cached for the sidebar). */
@@ -4109,7 +4112,7 @@ async function fetchServerTabs(host: string, timeoutMs = 2500): Promise<SavedTab
         const dn = typeof dnRaw === 'string' && dnRaw.trim() ? dnRaw : name;
         const cwdRaw = (item as SavedTab).cwd;
         const cwd = typeof cwdRaw === 'string' && isAbsolutePath(cwdRaw) ? cwdRaw : undefined;
-        out.push({ name: makeKey(host, name), displayName: dn, cwd });
+        out.push({ name: makeKey(host, name), displayName: dn, cwd, identity: typeof (item as SavedTab).identity === 'string' ? (item as SavedTab).identity : undefined });
       }
     }
     // Repair legacy server records from this device before saveTabs replaces
@@ -4431,8 +4434,9 @@ async function syncHost(host: string): Promise<void> {
     if (isMateName(t.name) && byName.has(primaryNameOf(t.name))) continue;
     const existing = sessions.find((s) => s.name === t.name);
     if (!existing) {
-      addSession(t.name, false, t.displayName).cwd = t.cwd ?? null;
+      const added = addSession(t.name, false, t.displayName); added.cwd = t.cwd ?? null; added.identity = t.identity;
     } else {
+      existing.identity = t.identity;
       if (t.cwd) existing.cwd = t.cwd;
       if (t.displayName && t.displayName !== existing.displayName) setDisplayName(existing, t.displayName);
     }
@@ -6254,6 +6258,7 @@ sheet.append(
   settingsTarget,
   sheetGroup('常用'),
   sheetRow('▤', '文件管理', () => { closeSheet(); openFileBrowser(); }),
+  sheetRow('↗', '分享管理', () => { closeSheet(); openShareManager(() => ['', ...remoteHosts.map(r => r.id)].map(host => ({host, hostName:hostLabel(host), sessions:sessions.filter(s => s.host === host && s.cwd).map(s => ({host, hostName:hostLabel(host), name:s.raw, displayName:s.displayName, root:s.cwd!, identity:s.identity, fromMain:true}))}))); }),
   uploadSheetButton,
   sheetRow('⬇', '下载文件', () => {
     closeSheet();
@@ -6305,7 +6310,6 @@ sheet.append(
   sheetGroup('远程主机'),
   remoteGroup,
   sheetGroup('其他'),
-  sheetRow('↗', '分享管理', () => { window.open('/shares', '_blank', 'noopener'); }),
   sheetRow('?', '帮助：复制 / 粘贴 / 文件', () => {
     closeSheet();
     openHelp();
@@ -6810,6 +6814,7 @@ async function init(): Promise<void> {
   for (const t of initialTabs) {
     const s = addSession(t.name, false, t.displayName);
     s.cwd = t.cwd ?? cachedCwds.get(t.name) ?? null;
+    s.identity = t.identity;
     s.view = isShare ? 'one' : cachedViews.get(t.name) ?? 'one';
     // Asked for by name in the URL, or the default on a first visit: both are
     // tabs being made, not remembered, so they may create their session.

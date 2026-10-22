@@ -1,0 +1,10 @@
+.share-manager{width:min(1040px,calc(100vw - 48px));height:min(800px,calc(100dvh - 64px));max-width:none;max-height:none;padding:0;border:1px solid var(--ui-border,#444);border-radius:14px;background:var(--ui-panel,#252526);color:var(--ui-text,#d4d4d4);overflow:hidden;box-shadow:0 20px 80px #0008}
+.share-manager[open]{display:flex;flex-direction:column}
+.share-manager::backdrop{background:#0008}
+.share-manager>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 18px;border-bottom:1px solid var(--ui-border,#444);flex:none}
+.share-manager>header h2{margin:0;font:600 16px system-ui,sans-serif}
+.share-manager>header button{border:0;border-radius:6px;background:transparent;color:inherit;font:26px/1 system-ui,sans-serif;cursor:pointer;width:36px;height:36px}
+.share-manager>header button:hover{background:#ffffff15}
+.share-manager>header button:focus-visible{outline:2px solid #619bff}
+.share-manager>iframe{display:block;width:100%;flex:1;min-height:0;border:0;background:var(--ui-surface,#1e1e1e)}
+@media(max-width:650px){.share-manager{width:calc(100vw - 12px);height:calc(100dvh - 16px);border-radius:10px}.share-manager>header{padding:8px 12px}}

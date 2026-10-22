@@ -76,19 +76,30 @@ export class ShareService {
     }, 500);
     timer.unref();
   }
-  private policySync: Promise<void> = Promise.resolve();
-  private syncRemotePolicies(): Promise<void> {
-    // Serialize snapshots so an older update cannot restore a revoked grant.
-    this.policySync = this.policySync.catch(() => {}).then(async () => {
+  private policyQueues = new Map<string, Promise<void>>();
+  private policyAcknowledged = new Map<string, string>();
+  private async syncRemotePolicies(hosts?: string[]): Promise<void> {
+    try {
+      if (hosts && !hosts.length) return;
       const source = createHmac('sha256', this.d.token).update('share-policy-source').digest('hex');
-      const remotes = await this.d.remotes.list();
-      const active = this.store.list().filter(s => activeShare(s));
-      await Promise.allSettled(remotes.map(async remote => {
-        const sessions = active.flatMap(s => s.sessions.filter(item => item.host === remote.id).map(item => ({name:item.name, identity:item.identity, expiresAt:s.expiresAt})));
-        await fetch(remote.url + PEER + '/policy', { method:'POST', headers:{ Cookie:`tw_auth=${encodeURIComponent(remote.token)}`, 'Content-Type':'application/json' }, body:JSON.stringify({source,sessions}), signal:AbortSignal.timeout(8000), redirect:'error' });
+      const remotes = (await this.d.remotes.list()).filter(r => !hosts || hosts.includes(r.id));
+      await Promise.allSettled(remotes.map(remote => {
+        const previous = this.policyQueues.get(remote.id) ?? Promise.resolve();
+        const next = previous.catch(() => {}).then(async () => {
+          // Compute the latest snapshot when this host's turn starts, not when queued.
+          const sessions = this.store.list().filter(s => activeShare(s)).flatMap(s => s.sessions.filter(item => item.host === remote.id).map(item => ({name:item.name, identity:item.identity, expiresAt:s.expiresAt})));
+          const payload = JSON.stringify({source,sessions});
+          const signature = digest(remote.url + remote.token + payload);
+          if (this.policyAcknowledged.get(remote.id) === signature) return;
+          const response = await fetch(remote.url + PEER + '/policy', {method:'POST', headers:{Cookie:`tw_auth=${encodeURIComponent(remote.token)}`, 'Content-Type':'application/json'}, body:payload, signal:AbortSignal.timeout(3000), redirect:'error'});
+          await response.arrayBuffer();
+          if (response.ok) this.policyAcknowledged.set(remote.id, signature);
+        });
+        this.policyQueues.set(remote.id, next);
+        void next.finally(() => { if (this.policyQueues.get(remote.id) === next) this.policyQueues.delete(remote.id); }).catch(() => {});
+        return next;
       }));
-    });
-    return this.policySync.catch(() => {});
+    } catch { /* The periodic sync retries unavailable hosts. */ }
   }
   private bindRemote(remote: Remote, close: () => void, done: (fn: () => void) => void): void {
     this.remoteBindings.set(close, { id: remote.id, url: remote.url, token: remote.token });
@@ -125,39 +136,60 @@ export class ShareService {
       return scope;
     } catch { throw new ShareError('会话授权已失效', 403); }
   }
-  private async remoteJson(remote: Remote, route: string): Promise<any> {
-    const r = await fetch(remote.url + PEER + route, { headers: { Cookie: `tw_auth=${encodeURIComponent(remote.token)}` }, signal: AbortSignal.timeout(8000), redirect: 'error' });
+  private async remoteJson(remote: Remote, route: string, timeoutMs = 8000): Promise<any> {
+    const r = await fetch(remote.url + PEER + route, { headers: { Cookie: `tw_auth=${encodeURIComponent(remote.token)}` }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
     if (!r.ok || !r.headers.get('content-type')?.includes('application/json')) throw new ShareError('远端不可用或尚未升级分享协议', 503);
     return r.json();
   }
   private async localCatalog(): Promise<ShareSession[]> {
     const tabs = await this.d.collect();
-    const result: ShareSession[] = [];
-    for (const tab of tabs) {
-      if (!tab.cwd || !tab.identity) continue;
-      try { result.push({ host: '', hostName: '本机', name: tab.name, identity: tab.identity, displayName: tab.displayName, root: await fs.realpath(tab.cwd) }); } catch { /* unavailable */ }
-    }
-    return result;
-  }
-  private async catalog() {
-    const local = await this.localCatalog();
-    const groups = await Promise.all((await this.d.remotes.list()).map(async remote => {
-      try { const data = await this.remoteJson(remote, '/catalog'); if (data.version !== 3 || !Array.isArray(data.sessions)) throw 0;
-        return { host: remote.id, hostName: remote.name, sessions: data.sessions.map((s: ShareSession) => ({ ...s, host: remote.id, hostName: remote.name })) };
-      } catch { return { host: remote.id, hostName: remote.name, sessions: [], error: '远端离线或需升级至支持分享的版本' }; }
+    const result = await Promise.all(tabs.map(async tab => {
+      if (!tab.cwd || !tab.identity) return null;
+      try { return { host: '', hostName: '本机', name: tab.name, identity: tab.identity, displayName: tab.displayName, sourceRoot: tab.cwd, root: await fs.realpath(tab.cwd) }; } catch { return null; }
     }));
-    return [{ host: '', hostName: '本机', sessions: local }, ...groups];
+    return result.filter((s): s is ShareSession => s !== null);
+  }
+  private catalogCache = new Map<string, {until:number; value:ShareSession[]}>();
+  private catalogFlights = new Map<string, Promise<ShareSession[]>>();
+  private remoteCatalog(remote: Remote, fresh = false): Promise<ShareSession[]> {
+    const cacheKey = digest(remote.id + remote.url + remote.token);
+    const cached = this.catalogCache.get(cacheKey);
+    if (!fresh && cached && cached.until > Date.now()) return Promise.resolve(cached.value);
+    const pending = this.catalogFlights.get(cacheKey);
+    if (pending) return pending;
+    const request = this.remoteJson(remote, '/catalog', 3000).then(data => {
+      if (data.version !== 3 || !Array.isArray(data.sessions)) throw new ShareError('远端需要升级分享协议', 503);
+      const value = data.sessions.map((s: ShareSession) => ({...s, host:remote.id, hostName:remote.name}));
+      this.catalogCache.set(cacheKey, {until:Date.now()+5000, value});
+      return value;
+    });
+    this.catalogFlights.set(cacheKey, request);
+    void request.finally(() => this.catalogFlights.delete(cacheKey)).catch(() => {});
+    return request;
+  }
+  private async catalog(hosts?: Set<string>) {
+    const remotes = (await this.d.remotes.list()).filter(r => !hosts || hosts.has(r.id));
+    // Local and remote inventories run together; no sequential full-host scan.
+    const local = !hosts || hosts.has('') ? this.localCatalog() : Promise.resolve([]);
+    const groups = Promise.all(remotes.map(async remote => {
+      try { return {host:remote.id, hostName:remote.name, sessions:await this.remoteCatalog(remote, !!hosts)}; }
+      catch { return {host:remote.id, hostName:remote.name, sessions:[], error:'主机暂未响应（3 秒）或需要升级，可稍后重新加载'}; }
+    }));
+    const [sessions, remoteGroups] = await Promise.all([local, groups]);
+    return [{host:'', hostName:'本机', sessions}, ...remoteGroups];
   }
   private async selection(raw: unknown, old: ShareSession[] = []): Promise<ShareSession[]> {
     if (!Array.isArray(raw) || !raw.length || raw.length > 100) throw new ShareError('请选择 1 至 100 个会话');
-    const groups = await this.catalog();
+    for (const entry of raw) if (!entry || typeof entry.host !== 'string' || typeof entry.name !== 'string') throw new ShareError('无效会话');
+    const groups = await this.catalog(new Set(raw.map(entry => entry.host)));
     const all = groups.flatMap(g => g.sessions) as ShareSession[];
     const selected: ShareSession[] = [];
     for (const entry of raw) {
-      if (!entry || typeof entry.host !== 'string' || typeof entry.name !== 'string') throw new ShareError('无效会话');
+      if (entry.fromMain && !entry.identity) throw new ShareError('此会话尚未获得身份信息，请先取消勾选、刷新会话列表，再重新选择', 409);
       const prior = old.find(s => key(s) === key(entry));
       const current = all.find(s => key(s) === key(entry));
-      if (!prior && current && ((entry.root !== undefined && entry.root !== current.root) || (entry.identity !== undefined && entry.identity !== current.identity))) throw new ShareError('会话或目录已变化，请重新打开选择器确认', 409);
+      if (!prior && !current) throw new ShareError('所选会话或主机暂不可用，请重新加载后再试', 409);
+      if (!prior && current && ((entry.root !== undefined && entry.root !== current.root && entry.root !== current.sourceRoot) || (entry.identity !== undefined && entry.identity !== current.identity))) throw new ShareError('会话或目录已变化，请重新打开选择器确认', 409);
       const s = prior ?? current;
       if (!s || (current && prior && current.identity !== prior.identity)) throw new ShareError('会话已变化，请移除后重新选择');
       if (!selected.some(item => key(item) === key(s))) selected.push(s);
@@ -165,8 +197,8 @@ export class ShareService {
     return selected;
   }
   private publicShare(s: Share) {
-    const { tokenHash: _, ...rest } = s;
-    return { ...rest, status: s.revokedAt ? 'revoked' : activeShare(s) ? 'active' : 'expired', connections: this.terminalConnections.get(s.id)?.size ?? 0 };
+    const { tokenHash: _, encryptedToken, createRequestId: _request, ...rest } = s;
+    return { ...rest, tokenAvailable: !!encryptedToken, status: s.revokedAt ? 'revoked' : activeShare(s) ? 'active' : 'expired', connections: this.terminalConnections.get(s.id)?.size ?? 0 };
   }
   private async stampAssets(html: string): Promise<string> {
     const files = ['dist/terminal.js', 'dist/terminal.css', 'styles.css', 'dist/file-browser.js', 'dist/file-browser.css', 'dist/shares.js', 'dist/shares.css'];
@@ -396,9 +428,25 @@ export class ShareService {
       if (req.method === 'GET') { json(res, 200, { shares: this.store.list().map(s => this.publicShare(s)) }); return true; }
       if (req.method !== 'POST') throw new ShareError('不支持的操作', 405);
       const b = await body(req);
+      if (b.action === 'create' && b.requestId !== undefined) {
+        if (typeof b.requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(b.requestId)) throw new ShareError('无效请求标识');
+        const existing = this.store.findCreateRequest(b.requestId);
+        if (existing) { json(res, 200, {share:this.publicShare(existing), token:this.store.revealToken(existing.id)}); return true; }
+      }
       const old = typeof b.id === 'string' ? this.store.get(b.id) : undefined;
       if (b.action !== 'create' && !old) throw new ShareError('分享不存在', 404);
+      if (b.action === 'delete') {
+        if (!old?.revokedAt) throw new ShareError('请先终止分享，再删除记录', 409);
+        this.disconnect(old.id, old); this.store.delete(old.id);
+        json(res, 200, {ok:true}); return true;
+      }
       if (old?.revokedAt) throw new ShareError('已终止的分享不能恢复', 409);
+      if (b.action === 'token') {
+        const token = this.store.revealToken(old!.id);
+        if (!token) throw new ShareError('此历史记录仅保存了 Token 摘要，无法还原。请先重置一次，此后即可随时查看和复制。', 409);
+        json(res, 200, {share:this.publicShare(old!), token}); return true;
+      }
+
       let result: { share: Share; token?: string };
       if (b.action === 'revoke') result = this.store.update(old!.id, { revokedAt: Date.now() });
       else if (b.action === 'reset') result = this.store.update(old!.id, {}, true);
@@ -408,10 +456,12 @@ export class ShareService {
         const expiresAt = b.expiresAt === null ? null : Number(b.expiresAt);
         if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) throw new ShareError('有效期必须晚于当前时间');
         const sessions = await this.selection(b.sessions, old?.sessions);
-        result = old ? this.store.update(old.id, { name, sessions, expiresAt }) : this.store.create(name, sessions, expiresAt);
+        result = old ? this.store.update(old.id, { name, sessions, expiresAt }) : this.store.create(name, sessions, expiresAt, b.requestId);
       } else throw new ShareError('未知操作');
       if (old) this.disconnect(old.id, old);
-      await this.syncRemotePolicies();
+      // Resetting a token does not change which sessions are shared. Do not
+      // wait for every remote host (including offline hosts) to sync unchanged policy.
+      if (b.action !== 'reset') await this.syncRemotePolicies([...new Set([...(old?.sessions ?? []), ...result.share.sessions].map(s => s.host).filter(Boolean))]);
       json(res, 200, { share: this.publicShare(result.share), ...(result.token ? { token: result.token } : {}) });
     } catch (e) { this.error(res, e); }
     return true;
