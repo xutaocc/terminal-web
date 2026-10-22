@@ -24,7 +24,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
-import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit } from './recent-tabs.js';
+import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit, storedVisitCapacity } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { mergePins } from './pin-order.js';
@@ -3200,7 +3200,7 @@ let recentTabs: string[] = (() => {
 })();
 let recentTabsChanged = false;
 let recentVisitLimit = (() => {
-  try { return visitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitLimit') ?? 'null')); }
+  try { return storedVisitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitLimit') ?? 'null'), Number(localStorage.getItem('tw.recentVisitLimitVersion'))); }
   catch { return visitCapacity(null); }
 })();
 let recentVisits: string[] = (() => {
@@ -3215,8 +3215,9 @@ function storeRecentVisits(): void {
   try {
     localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
     localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
+    localStorage.setItem('tw.recentVisitLimitVersion', '2');
   } catch { /* server preferences remain available */ }
-  savePrefs({ recentVisits, recentVisitLimit });
+  savePrefs({ recentVisits, recentVisitLimit, recentVisitLimitVersion: 2 });
   sidebar.updateRecent();
 }
 
@@ -4083,6 +4084,7 @@ interface UiPrefs {
   recentTabs?: string[];
   recentVisits?: string[];
   recentVisitLimit?: number;
+  recentVisitLimitVersion?: number;
   /** The order the user dragged tabs and sidebar sessions into. */
   tabOrder?: string[];
   /** The order the servers' blocks were dragged into in the sidebar ('' is this server). */
@@ -6624,15 +6626,17 @@ async function init(): Promise<void> {
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
   }
   if (!recentVisitsChanged) {
-    recentVisitLimit = visitCapacity(prefs.recentVisitLimit ?? recentVisitLimit);
+    if (prefs.recentVisitLimit !== undefined) recentVisitLimit = storedVisitCapacity(prefs.recentVisitLimit, prefs.recentVisitLimitVersion);
     const visits = prefs.recentVisits ?? prefs.recentTabs;
     if (Array.isArray(visits)) recentVisits = [...new Set(visits.filter((n): n is string => typeof n === 'string'))].slice(0, recentVisitLimit);
     else recentVisits = recentVisits.slice(0, recentVisitLimit);
     try {
       localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
       localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
+      localStorage.setItem('tw.recentVisitLimitVersion', '2');
     } catch { /* ignore */ }
     refreshRecentLimitUI();
+    if (prefs.recentVisitLimitVersion !== 2) savePrefs({ recentVisitLimit, recentVisitLimitVersion: 2 });
   }
   if (!recentTabsChanged && Array.isArray(prefs.recentTabs)) {
     const list = prefs.recentTabs.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX);

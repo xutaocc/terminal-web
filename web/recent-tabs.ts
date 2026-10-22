@@ -29,7 +29,7 @@ export function recentStrength(list: readonly string[], name: string, max = RECE
 }
 
 /** Navigation capacity is independent of the ten highlighted tabs. */
-export const RECENT_VISITS_DEFAULT = 5;
+export const RECENT_VISITS_DEFAULT = 8;
 export const RECENT_VISITS_LIMIT = 50;
 export function visitCapacity(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value)
@@ -44,4 +44,15 @@ export function nextRecentVisit(list: readonly string[], current: string | null,
     if (available(name)) return name;
   }
   return null;
+}
+
+/** One-time migration from the original five-session default. */
+export function storedVisitCapacity(value: unknown, version: unknown): number {
+  return value === 5 && version !== 2 ? RECENT_VISITS_DEFAULT : visitCapacity(value);
+}
+
+/** Presentation order never changes the MRU list used for eviction/navigation. */
+export function sortRecentEntries<T extends { title: string; name: string }>(entries: readonly T[]): T[] {
+  return [...entries].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN', { numeric: true, sensitivity: 'base' })
+    || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
 }

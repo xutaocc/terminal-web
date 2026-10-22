@@ -945,6 +945,7 @@ interface UiPrefs {
   recentTabs?: string[];
   recentVisits?: string[];
   recentVisitLimit?: number;
+  recentVisitLimitVersion?: number;
   /** Shared session order across desktop and touch devices. */
   tabOrder?: string[];
   /** Shared order of the servers' blocks in the sidebar ('' is this server). */
@@ -1046,6 +1047,7 @@ async function handleSetPrefs(
     if (typeof obj.keyboardLocked === "boolean") next.keyboardLocked = obj.keyboardLocked;
     if (typeof obj.pager === "boolean") next.pager = obj.pager;
     if (typeof obj.zoomKeys === "boolean") next.zoomKeys = obj.zoomKeys;
+    if (obj.recentVisitLimitVersion === 2) next.recentVisitLimitVersion = 2;
     if (typeof obj.recentVisitLimit === 'number' && Number.isFinite(obj.recentVisitLimit)) {
       next.recentVisitLimit = Math.max(1, Math.min(50, Math.round(obj.recentVisitLimit)));
     }

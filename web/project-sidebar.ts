@@ -1,3 +1,4 @@
+import { sortRecentEntries } from './recent-tabs.js';
 import type { QuickSessionKind } from './quick-session-nav.js';
 import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { bindIntentionalClick } from './intentional-click.js';
@@ -476,7 +477,7 @@ export class ProjectSidebar {
     const next = [...entries.slice(at + 1), ...entries.slice(0, at + 1)].find(e => !e.offline);
     this.recentButton.title = next ? `点击循环切换，下一个：${next.title}` : '暂无可访问会话';
     this.recentMenu.replaceChildren();
-    for (const entry of entries) {
+    for (const entry of sortRecentEntries(entries)) {
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'ps-recent-entry';
