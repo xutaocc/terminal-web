@@ -1845,24 +1845,9 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
   if (create) {
     clearClosed(session);
   } else if (isClosed(session)) {
-    // Closed on purpose, and this connect is not asking for it back — a page
-    // that slept through the close, reconnecting what it had. Unless the
-    // session is somehow there anyway (made from a shell, say), it gets told
-    // the tab is closed rather than a fresh empty session under the old name.
-    void listTmuxSessions().then((names) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (names?.includes(session)) {
-        startAttach(ws, session, cols, rows);
-        return;
-      }
-      console.log(`[ws] refused "${session}": closed, and not asked to create it`);
-      sendJson(ws, { type: "closed" });
-      try {
-        ws.close(1000, "closed");
-      } catch {
-        /* ignore */
-      }
-    });
+    // A kill may still be waiting for its snapshot. Only create=1 reopens it.
+    sendJson(ws, { type: "closed" });
+    ws.close(1000, "closed");
     return;
   }
   startAttach(ws, session, cols, rows, createFrom, createDirectory);
@@ -1896,6 +1881,12 @@ function attachSession(
   rows: number,
   startDir?: string
 ): void {
+  // A close may arrive while asynchronous directory resolution runs.
+  if (ws.readyState !== WebSocket.OPEN || isClosed(session)) {
+    sendJson(ws, { type: 'closed' });
+    if (ws.readyState === WebSocket.OPEN) ws.close(1000, 'closed');
+    return;
+  }
   let proc: pty.IPty;
   try {
     proc = pty.spawn(TMUX, tmuxArgs(session, config.tmuxConfPath, startDir), {

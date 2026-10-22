@@ -861,7 +861,7 @@ export class ProjectSidebar {
     const sep2 = document.createElement('div');
     sep2.className = 'ps-menu-sep';
     menu.append(sep2);
-    item(card ? '关闭这个目录的全部会话' : '关闭会话', () => this.hooks.closeSessions(names), false, true);
+    item(pinned === undefined ? '关闭这个目录的全部会话' : '关闭会话', () => this.hooks.closeSessions(names), false, true);
     document.body.append(menu);
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(e.clientX, innerWidth - rect.width - 8))}px`;

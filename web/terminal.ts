@@ -3319,8 +3319,9 @@ function confirmCloseSession(list: Session | Session[]): void {
   cancel.addEventListener('click', close);
   confirm.addEventListener('click', () => {
     close();
-    // One at a time: each handles its own tab switch and folder clean-up.
-    for (const s of many) closeSession(s);
+    // Remove the whole batch before choosing a replacement. Opening each next
+    // tab while it is itself waiting to close starts unnecessary WS attaches.
+    closeSessionBatch(many);
   });
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
@@ -3340,27 +3341,31 @@ function addFallbackTab(): void {
   addSession(name, true).intendCreate();
 }
 
-function closeSession(s: Session): void {
-  queueMicrotask(pruneRecentTabs);
-  const idx = sessions.indexOf(s);
-  if (idx < 0) return;
-  // The confirm box already said this takes the folder with it.
-  const folder = folderOf(s);
-  if (wouldEmpty(folder, [s.name], folderMembers)) expectedEmptied.add(folder);
-  // Guard against a server sync that raced the kill re-adding this tab.
-  recentlyClosed.set(s.name, performance.now());
-  // Closing a tab kills its tmux session for good (its programs are terminated).
-  s.kill();
-  sessions.splice(idx, 1);
-  s.tabEl?.remove();
-  s.dispose();
-  if (activeTab === s) {
+function closeSessionBatch(list: readonly Session[]): void {
+  const closing = new Set(list.filter(s => sessions.includes(s)));
+  if (!closing.size) return;
+  const previous = activeTab;
+  const previousIndex = previous ? sessions.indexOf(previous) : 0;
+  for (const s of closing) {
+    const folder = folderOf(s);
+    if (wouldEmpty(folder, [...closing].map(x => x.name), folderMembers)) expectedEmptied.add(folder);
+    recentlyClosed.set(s.name, performance.now());
+  }
+  // Detach the full batch locally before any surviving tab can be activated.
+  for (const s of closing) {
+    s.kill();
+    sessions.splice(sessions.indexOf(s), 1);
+    s.tabEl?.remove();
+    s.dispose();
+  }
+  if (previous && closing.has(previous)) {
     activeTab = null;
     activeSession = null;
-    const next = nextTabAfter(s, idx);
+    const next = nextTabAfter(previous, Math.min(previousIndex, sessions.length));
     if (next) activateSession(next);
   }
-  if (sessions.length === 0) addFallbackTab();
+  if (!sessions.length) addFallbackTab();
+  queueMicrotask(pruneRecentTabs);
   refreshMobileUI();
   saveTabs();
 }

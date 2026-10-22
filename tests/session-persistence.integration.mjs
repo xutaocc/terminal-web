@@ -96,6 +96,20 @@ try {
   await post('kill', { name: 'legacy' });
   await post('adopt', { names: [], directories: [{ name: 'legacy', cwd: directory }] });
   assert.ok(!(await tabs()).some(t => t.name === 'legacy'), 'cache must not revive a closed tab');
+  tmux('new-session', '-d', '-s', 'legacy', '-c', directory);
+  const stale = new WebSocket(`ws://127.0.0.1:${port}/ws?session=legacy`, { headers });
+  const closedMessage = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('closed session accepted a stale connection')), 3000);
+    stale.on('message', message => {
+      try {
+        if (JSON.parse(message.toString()).type === 'closed') { clearTimeout(timeout); resolve(); }
+      } catch {}
+    });
+    stale.on('error', reject);
+  });
+  await closedMessage;
+  stale.close();
+  tmux('kill-session', '-t', '=legacy');
   const ws = await attach();
   ws.close();
   await post('kill', { name: 'saved' });
