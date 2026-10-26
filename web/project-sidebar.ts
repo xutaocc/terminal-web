@@ -34,6 +34,8 @@ export interface RecentVisitEntry {
 export interface SidebarHooks {
   readOnly?: boolean;
   recentEntries(): RecentVisitEntry[];
+  recentLimit(): number;
+  setRecentLimit(count: number): void;
   navigateRecent(name?: string): void;
   removeRecent(name: string): void;
   /** Apply persistent session marks before a new chip enters the document. */
@@ -163,6 +165,9 @@ export class ProjectSidebar {
   private readonly recentButton = document.createElement('button');
   private readonly recentToggle = document.createElement('button');
   private readonly recentMenu = document.createElement('div');
+  private readonly recentItems = document.createElement('div');
+  private readonly recentLimitInput = document.createElement('input');
+  private readonly recentPresets = new Map<number, HTMLButtonElement>();
   private readonly recentWrap = document.createElement('div');
   private recentSignature = '';
 
@@ -213,13 +218,31 @@ export class ProjectSidebar {
     this.recentButton.disabled = true;
     this.recentToggle.className = 'ps-quick-pill ps-recent-toggle';
     this.recentToggle.textContent = '▾';
-    this.recentToggle.disabled = true;
+    this.recentToggle.disabled = false;
     this.recentToggle.setAttribute('aria-label', '展开最近访问会话');
     this.recentToggle.setAttribute('aria-expanded', 'false');
     this.recentToggle.setAttribute('aria-controls', 'ps-recent-menu');
     this.recentMenu.id = 'ps-recent-menu';
     this.recentMenu.className = 'ps-recent-menu';
     this.recentMenu.hidden = true;
+    const settings = document.createElement('form'); settings.className = 'ps-recent-settings';
+    const heading = document.createElement('div'); heading.textContent = '最近访问数量'; heading.className = 'ps-recent-settings-label';
+    const presets = document.createElement('div'); presets.className = 'ps-recent-presets';
+    for (const count of [2, 3, 5, 8, 10]) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = String(count);
+      button.title = `只在最近 ${count} 个会话间切换`;
+      bindIntentionalClick(button, () => hooks.setRecentLimit(count));
+      this.recentPresets.set(count, button); presets.append(button);
+    }
+    const custom = document.createElement('label'); custom.className = 'ps-recent-custom';
+    const input = this.recentLimitInput; input.type = 'number'; input.min = '1'; input.max = '50'; input.step = '1'; input.required = true; input.inputMode = 'numeric'; input.setAttribute('aria-label', '自定义最近访问数量，1 到 50');
+    const apply = document.createElement('button'); apply.type = 'submit'; apply.textContent = '设置';
+    custom.append('自定义', input, apply);
+    settings.addEventListener('submit', event => { event.preventDefault(); if (input.reportValidity()) hooks.setRecentLimit(Number(input.value)); });
+    const hint = document.createElement('small'); hint.textContent = '点击主按钮循环切换，刷新后保留设置';
+    settings.append(heading, presets, custom, hint);
+    this.recentMenu.append(settings, this.recentItems);
+
     bindIntentionalClick(this.recentButton, () => { this.closeRecent(); hooks.navigateRecent(); });
     bindIntentionalClick(this.recentToggle, () => {
       this.updateRecent();
@@ -471,16 +494,19 @@ export class ProjectSidebar {
 
   updateRecent(): void {
     const entries = this.hooks.recentEntries();
-    const signature = JSON.stringify(entries);
+    const limit = this.hooks.recentLimit();
+    const signature = JSON.stringify([limit, entries]);
     if (signature === this.recentSignature) return;
     this.recentSignature = signature;
-    this.recentButton.textContent = `◷ 最近访问 ${entries.length}`;
+    this.recentButton.textContent = `◷ 最近访问 ${limit}`;
     this.recentButton.disabled = !entries.some(e => !e.offline);
-    this.recentToggle.disabled = !entries.length;
+    this.recentToggle.disabled = false;
     const at = entries.findIndex(e => e.current);
     const next = [...entries.slice(at + 1), ...entries.slice(0, at + 1)].find(e => !e.offline);
     this.recentButton.title = next ? `点击循环切换，下一个：${next.title}` : '暂无可访问会话';
-    this.recentMenu.replaceChildren();
+    if (document.activeElement !== this.recentLimitInput) this.recentLimitInput.value = String(limit);
+    for (const [count, button] of this.recentPresets) button.setAttribute('aria-pressed', String(count === limit));
+    this.recentItems.replaceChildren();
     for (const entry of sortRecentEntries(entries)) {
       const item = document.createElement('div');
       item.className = 'ps-recent-item';
@@ -507,7 +533,7 @@ export class ProjectSidebar {
       remove.setAttribute('aria-label', `从最近访问移除：${entry.title}`);
       bindIntentionalClick(remove, () => {
         const hadFocus = document.activeElement === remove;
-        const at = [...this.recentMenu.children].indexOf(item);
+        const at = [...this.recentItems.children].indexOf(item);
         this.hooks.removeRecent(entry.name);
         if (hadFocus) {
           const remaining = this.recentMenu.querySelectorAll<HTMLButtonElement>('.ps-recent-remove');
@@ -516,9 +542,9 @@ export class ProjectSidebar {
         }
       });
       item.append(row, remove);
-      this.recentMenu.append(item);
+      this.recentItems.append(item);
     }
-    if (!entries.length) this.closeRecent();
+    if (!entries.length) { const empty = document.createElement('div'); empty.className = 'ps-recent-empty'; empty.textContent = '暂无最近访问会话'; this.recentItems.append(empty); }
   }
 
   updateQuickCounts(counts: Record<QuickSessionKind, number>): void {

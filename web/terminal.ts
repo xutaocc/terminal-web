@@ -661,6 +661,8 @@ const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   readOnly: isShare,
   recentEntries: () => recentVisitEntries(),
+  recentLimit: () => recentVisitLimit,
+  setRecentLimit: count => setRecentVisitLimit(count),
   navigateRecent: name => navigateRecentVisit(name),
   removeRecent: name => {
     removedRecentVisits.add(name);
@@ -3310,7 +3312,7 @@ let recentTabs: string[] = (() => {
 })();
 let recentTabsChanged = false;
 let recentVisitLimit = (() => {
-  try { return storedVisitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitLimit') ?? 'null'), Number(localStorage.getItem('tw.recentVisitLimitVersion'))); }
+  try { return storedVisitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitQuickLimit') ?? localStorage.getItem('tw.recentVisitLimit') ?? 'null'), Number(localStorage.getItem('tw.recentVisitLimitVersion'))); }
   catch { return visitCapacity(null); }
 })();
 // Keep explicit removals across reloads even when the server write is delayed.
@@ -5789,12 +5791,17 @@ const recentLimitButton = sheetRow('◷', `最近访问会话数：${recentVisit
   if (value === null) return;
   const count = Number(value.trim());
   if (!Number.isInteger(count) || count < 1 || count > 50) { flashStatus('请输入 1–50 的整数', 1800); return; }
+  setRecentVisitLimit(count);
+});
+function setRecentVisitLimit(count: number): void {
+  if (!Number.isInteger(count) || count < 1 || count > 50) return;
   recentVisitsChanged = true;
   recentVisitLimit = visitCapacity(count);
   recentVisits = recentVisits.slice(0, recentVisitLimit);
+  try { localStorage.setItem('tw.recentVisitQuickLimit', String(recentVisitLimit)); } catch { /* optional cache */ }
   storeRecentVisits();
   refreshRecentLimitUI();
-});
+}
 function refreshRecentLimitUI(): void {
   const label = recentLimitButton.querySelector('span:last-child');
   if (label) label.textContent = `最近访问会话数：${recentVisitLimit}`;
@@ -6772,9 +6779,12 @@ async function init(): Promise<void> {
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
   }
   if (!recentVisitsChanged) {
-    if (prefs.recentVisitLimit !== undefined) recentVisitLimit = storedVisitCapacity(prefs.recentVisitLimit, prefs.recentVisitLimitVersion);
+    let localLimit: number | null = null;
+    try { const value = Number(localStorage.getItem('tw.recentVisitQuickLimit')); if (Number.isInteger(value) && value >= 1 && value <= 50) localLimit = value; } catch {}
+    if (localLimit !== null) recentVisitLimit = localLimit;
+    else if (prefs.recentVisitLimit !== undefined) recentVisitLimit = storedVisitCapacity(prefs.recentVisitLimit, prefs.recentVisitLimitVersion);
     const visits = prefs.recentVisits ?? prefs.recentTabs;
-    if (Array.isArray(visits)) recentVisits = restoreRecentVisits(visits, removedRecentVisits, recentVisitLimit);
+    if (localLimit === null && Array.isArray(visits)) recentVisits = restoreRecentVisits(visits, removedRecentVisits, recentVisitLimit);
     else recentVisits = recentVisits.slice(0, recentVisitLimit);
     try {
       localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
