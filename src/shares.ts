@@ -1,3 +1,4 @@
+import type { ViewerStateStore } from './viewer-state.js';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -37,6 +38,7 @@ export async function sharePath(root: string, relative: string): Promise<string>
   return actual;
 }
 interface Dependencies {
+  viewerState?: ViewerStateStore;
   token: string; publicDir: string; remotes: RemoteStore;
   collect(): Promise<SavedSession[]>;
   get(name: string): SavedSession | undefined;
@@ -147,7 +149,7 @@ export class ShareService {
       if (!tab.cwd || !tab.identity) return null;
       try { return { host: '', hostName: '本机', name: tab.name, identity: tab.identity, displayName: tab.displayName, sourceRoot: tab.cwd, root: await fs.realpath(tab.cwd) }; } catch { return null; }
     }));
-    return result.filter((s): s is ShareSession => s !== null);
+    return result.filter((s): s is NonNullable<typeof s> => s !== null);
   }
   private catalogCache = new Map<string, {until:number; value:ShareSession[]}>();
   private catalogFlights = new Map<string, Promise<ShareSession[]>>();
@@ -235,6 +237,9 @@ export class ShareService {
     if (route === '/auth/logout' && method === 'POST') {
       res.setHeader('Set-Cookie', `${this.cookieName(s.id)}=; Path=/share/${s.id}/; HttpOnly; SameSite=Strict; Max-Age=0`); json(res, 200, { ok: true }); return;
     }
+    if (route === '/api/viewer-state' && !host && this.d.viewerState) {
+      await this.d.viewerState.http(req, res, 'share:' + s.id + ':' + s.tokenHash, name => s.sessions.some(item => name === (item.host ? '@' + item.host + '/' : '') + item.name)); return;
+    }
     if (route === '/api/agent-status/read' && method === 'POST') { json(res, 200, { ok: true }); return; }
     if (!['GET', 'HEAD'].includes(method)) throw new ShareError('分享无权修改会话或文件', 403);
     if (route === '/api/sessions') {
@@ -278,6 +283,8 @@ export class ShareService {
         res.write(`event: health\ndata: ${JSON.stringify(Object.fromEntries(Object.entries(this.d.health()).filter(([id]) => hosts.includes(id))))}\n\n`);
       };
       this.track(s.id, () => { if (!res.destroyed) { res.write('event: share-ended\ndata: {}\n\n'); res.end(); } }, done => res.once('close', done));
+      const unsubscribeViewer = this.d.viewerState?.subscribe(scope => { if (scope === 'share:' + s.id + ':' + s.tokenHash && !res.destroyed) res.write('event: viewer-state\ndata: {}\n\n'); });
+      res.once('close', () => unsubscribeViewer?.());
       emit(); const unsubscribe = this.d.subscribe(emit);
       const timer = setInterval(() => { if (!res.destroyed) res.write('event: ping\ndata: \n\n'); }, 15000); timer.unref(); res.once('close', () => { clearInterval(timer); unsubscribe(); }); return;
     }

@@ -47,7 +47,10 @@ import { ShareStore } from './share-store.js';
 import { ShareInputGuard } from './share-input.js';
 import { SessionStore } from './session-store.js';
 
+import { ViewerStateStore } from './viewer-state.js';
 const config = loadConfig();
+const viewerState = new ViewerStateStore(process.env.VIEWER_STATE_FILE || path.join(os.homedir(), '.terminal-web', 'viewer-state.json'));
+const adminViewer = 'admin:' + crypto.createHash('sha256').update(config.authToken).digest('hex');
 const sessionStore = new SessionStore(process.env.SESSIONS_FILE ||
   path.join(os.homedir(), '.terminal-web', 'sessions.json'));
 const quickCommands = new QuickCommandStore(process.env.QUICK_COMMANDS_FILE ||
@@ -619,6 +622,8 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
     'X-Accel-Buffering': 'no',
   });
   const send = (snapshot: unknown): void => { res.write(`data: ${JSON.stringify(snapshot)}\n\n`); };
+  const viewerChanged = (scope: string) => { if (scope === adminViewer && !res.destroyed) res.write('event: viewer-state\ndata: {}\n\n'); };
+  const unsubscribeViewer = viewerState.subscribe(viewerChanged);
   send(agentStatus.snapshot());
   const unsubscribe = agentStatus.subscribe(send);
   // A page asks for remote health on its own server's status stream (?health=1)
@@ -640,6 +645,7 @@ function handleAgentStatusEvents(req: http.IncomingMessage, res: http.ServerResp
   req.on('close', () => {
     clearInterval(keepAlive);
     unsubscribe();
+    unsubscribeViewer();
     unsubscribeHealth();
     unsubscribeRemote();
   });
@@ -1475,7 +1481,7 @@ function handleRemoteEvents(req: http.IncomingMessage, res: http.ServerResponse)
 // ---------------------------------------------------------------------------
 
 const shares = new ShareService(new ShareStore(process.env.SHARES_FILE || path.join(os.homedir(), '.terminal-web', 'shares.json')), {
-  token: config.authToken, publicDir: config.publicDir, remotes,
+  viewerState, token: config.authToken, publicDir: config.publicDir, remotes,
   subscribe: listener => {
     const off = [agentStatus.subscribe(listener), remoteStatus.subscribe(listener), remoteMonitor.subscribe(listener)];
     return () => off.forEach(fn => fn());
@@ -1515,6 +1521,9 @@ const server = http.createServer((req, res) => {
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
       if (await shares.adminHttp(req, res, requestUrl)) return;
+      if (requestUrl.pathname === '/api/viewer-state') {
+        await viewerState.http(req, res, adminViewer, name => /^(?:@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(name)); return;
+      }
       const viaRemote = remoteRoute(requestUrl.pathname);
       if (viaRemote) {
         const remote = await remotes.get(viaRemote.id);

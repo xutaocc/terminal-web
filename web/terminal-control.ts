@@ -14,7 +14,7 @@ export const terminalClientId = (() => {
 export class ControlBar {
   readonly el = document.createElement('div');
   state: ControlState | null = null;
-  constructor(private readonly send: (action: string, target?: string) => void) {
+  constructor(_send: (action: string, target?: string) => void) {
     this.el.className = 'terminal-control'; this.el.setAttribute('aria-label','终端操作权'); this.disconnected();
   }
   unsupported(): void { this.el.hidden=false; this.el.textContent='请升级此主机服务'; }

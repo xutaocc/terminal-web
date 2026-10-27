@@ -1,6 +1,7 @@
+import { ViewerStateSync } from './viewer-state.js';
 import { openShareManager } from './share-manager.js';
 import { ControlBar, terminalClientId, type ControlState } from './terminal-control.js';
-import { ReadCursors, newerStatus } from './read-cursors.js';
+import { newerStatus } from './read-cursors.js';
 import { isShare, shareBase, sharePage, shareUrl, shareStorage as localStorage, shareFetch as fetch, ShareWebSocket as WebSocket, ShareEventSource as EventSource } from './share-context.js';
 import { QuickSessionNavigator, type QuickSessionKind, type QuickSessionEntry } from './quick-session-nav.js';
 import '@xterm/xterm/css/xterm.css';
@@ -28,7 +29,7 @@ import { brandMark } from './brand-mark.js';
 import { bindTabContext } from './tab-context.js';
 import { FloatingPager } from './pager.js';
 import { PinchZoom, WheelZoom, zoomKey } from './font-zoom.js';
-import { keepRecent, RECENT_TABS_MAX, recentStrength, touchRecent, visitCapacity, nextRecentVisit, storedVisitCapacity, restoreRecentVisits } from './recent-tabs.js';
+import { keepRecent, recentStrength, touchRecent, visitCapacity, nextRecentVisit } from './recent-tabs.js';
 import { type AgentStatus, combineStatus, INDICATOR_LABEL, wantsAttention } from './agent-indicator.js';
 import { hostOfKey, hostUrl, isAbsolutePath, LABEL_COLORS, LABEL_MAX, labelBadge, makeKey, type RemoteHost, shortAddresses, splitKey } from './hosts.js';
 import { mergePins } from './pin-order.js';
@@ -665,9 +666,7 @@ const sidebar = new ProjectSidebar({
   setRecentLimit: count => setRecentVisitLimit(count),
   navigateRecent: name => navigateRecentVisit(name),
   removeRecent: name => {
-    removedRecentVisits.add(name);
-    persistRemovedRecentVisits();
-    recentVisitsChanged = true;
+    readCursors.send({type: 'remove', session: name});
     recentVisits = keepRecent(recentVisits, key => key !== name);
     storeRecentVisits();
   },
@@ -844,6 +843,7 @@ class Session {
   cwd: string | null = null;
   identity?: string;
   connected = false;
+  hasRenderedOutput = false;
   outputActive = false;
   readonly readState = new SessionReadState();
   private outputTracker: OutputActivityTracker | null = null;
@@ -2120,6 +2120,7 @@ class Session {
   private setConnected(state: boolean): void {
     this.connected = state;
     if (!state) {
+      this.hasRenderedOutput = false;
       this.controlBar.disconnected(); this.pendingSeq = []; this.term.options.disableStdin = true;
       if (this.controlHeartbeat) clearInterval(this.controlHeartbeat); this.controlHeartbeat = null;
     }
@@ -2284,6 +2285,9 @@ class Session {
       if (ev.data instanceof ArrayBuffer) {
         this.term.write(new Uint8Array(ev.data), () => {
           if (this.disposed || this.ws !== socket || !outputTracker) return;
+          const firstRender = !this.hasRenderedOutput;
+          this.hasRenderedOutput = true;
+          if (firstRender) updateOutputActivity();
           const buffer = this.term.buffer.active;
           const lines: string[] = [];
           for (let i = buffer.baseY; i < buffer.baseY + this.term.rows; i++) {
@@ -2448,17 +2452,23 @@ function hasRecentOutput(s: Session): boolean {
 
 // ---------------------------------------------------------------------------
 // Agent status from the server (src/agent-status.ts): working / waiting / done
-// and unread for every session, whether or not this page has opened it, the
-// same on every device. The mode, picked in the settings sheet, says where it
-// comes from. Legacy browsers report their output heuristic to the server too,
-// so read acknowledgements and activity are shared across devices.
+// for every session. Execution is shared; unread is derived from the authenticated
+// viewer’s server-owned cursor. The detector mode never owns a viewer’s reads.
 // ---------------------------------------------------------------------------
 type AgentMode = 'hooks' | 'screen' | 'legacy';
 /** host -> where that server's statuses come from; missing while it has not said. */
 const agentModes = new Map<string, AgentMode>();
 /** Session key -> status, for every server. */
 let agentStatuses = new Map<string, AgentStatus>();
-const readCursors = new ReadCursors(localStorage);
+const readCursors = new ViewerStateSync(state => {
+  recentVisitLimit = state.limit;
+  recentVisits = [...state.recent];
+  for (const [key, status] of agentStatuses) agentStatuses.set(key, {...status, unread: readCursors.unread(key, status)});
+  paintRecentTabs();
+  sidebar.updateRecent();
+  refreshRecentLimitUI();
+  refreshMobileUI();
+}, fetch);
 const agentSources = new Map<string, EventSource>();
 
 function legacyUnread(s: Session): boolean {
@@ -2492,6 +2502,8 @@ function connectAgentStatus(host: string): void {
   // events) and every remote's status (`remote` events).
   const source = new EventSource('/api/agent-status/events?health=1');
   agentSources.set(host, source);
+  source.addEventListener('viewer-state', () => { void readCursors.refresh(); });
+  source.onopen = () => { void readCursors.refresh(); };
   source.onmessage = (event: MessageEvent) => {
     try {
       takeAgentStatus(host, JSON.parse(event.data as string));
@@ -2538,7 +2550,7 @@ function reportViewed(): void {
   if (drawerOpen || fileBrowserOpen || document.querySelector('.paste-overlay, .share-manager[open], .sheet-overlay:not(.hidden)') || document.visibilityState !== 'visible' ||
       (!TOUCH_DEVICE && !document.hasFocus())) return;
   const viewed = [activeTab, activeTab?.mate].filter((s): s is Session =>
-    !!s && agentModes.has(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
+    !!s && s.connected && s.hasRenderedOutput && agentModes.has(s.host) && isActive(s) && !s.el.classList.contains('hidden') &&
     !!agentStatuses.get(s.name)?.unread);
   if (!viewed.length) return;
   for (const s of viewed) {
@@ -2547,13 +2559,6 @@ function reportViewed(): void {
     agentStatuses.set(s.name, { ...status, unread: false });
   }
 }
-
-window.addEventListener('storage', event => {
-  const prefix = isShare ? `${shareBase}:tw.read.` : 'tw.read.';
-  if (!event.key?.startsWith(prefix)) return;
-  for (const [key, status] of agentStatuses) agentStatuses.set(key, { ...status, unread: readCursors.unread(key, status) });
-  refreshMobileUI();
-});
 
 /** A tab's statuses: its own and its split half's. */
 function statusesOf(s: Session): (AgentStatus | undefined)[] {
@@ -2578,9 +2583,8 @@ function updateOutputActivity(): void {
     if (members.length && serverStatusActive(members[0].host)) {
       const indicator = combineStatus(members.flatMap(s => statusesOf(s)));
       for (const cls of ['working', 'waiting', 'unread', 'done'] as const) dot.classList.toggle(cls, indicator === cls);
-      const unread = members.some(s => statusesOf(s).some(status => status?.unread));
-      dot.classList.toggle('has-unread', unread);
-      label = INDICATOR_LABEL[indicator] + (unread && indicator !== 'unread' ? ' · 有未读更新' : '');
+      dot.classList.remove('has-unread');
+      label = INDICATOR_LABEL[indicator];
     } else {
       const working = members.some(s => hasRecentOutput(s));
       const unread = members.some(s => legacyUnread(s) || (!!s.mate && legacyUnread(s.mate)));
@@ -2588,7 +2592,7 @@ function updateOutputActivity(): void {
       // As in output-activity.ts: the spinner outranks unread, so a running turn
       // never shows the check (and with it, the spinner's animation).
       dot.classList.toggle('unread', unread && !working);
-      dot.classList.remove('waiting', 'done');
+      dot.classList.remove('waiting', 'done', 'has-unread');
       label = working ? '近期有输出' : unread ? '未读' : '已读';
     }
     dot.setAttribute('title', label);
@@ -2682,7 +2686,8 @@ function quickStatusEntries(): QuickSessionEntry[] {
     if (s && !offlineHosts.has(s.host)) {
       if (serverStatusActive(s.host)) {
         const indicator = combineStatus(statusesOf(s));
-        if (indicator === 'unread' || indicator === 'working') kind = indicator;
+        if (indicator === 'waiting' || indicator === 'unread') kind = 'unread';
+        else if (indicator === 'working') kind = 'working';
       } else if (hasRecentOutput(s)) kind = 'working';
       else if (attentionOf(s) === 'unread') kind = 'unread';
     }
@@ -3297,53 +3302,18 @@ function addSession(name: string, makeActive: boolean, displayName?: string): Se
 }
 
 // ---------------------------------------------------------------------------
-// Recently picked sessions (web/recent-tabs.ts): the last RECENT_TABS_MAX the
+// Recently picked sessions (web/recent-tabs.ts): the configured number the
 // user chose by hand — a tab, a sidebar chip or card, the phone list, an
 // attention pill, a new session — have a pale-yellow bottom border, stronger
 // the more recent. Opening the page, or a closed tab handing over to its
-// neighbour, is not a pick. Kept per device class on the server, like the
-// other prefs, so a phone and a PC each keep their own.
+// neighbour, is not a pick. One token-owned list drives highlighting and cycling
+// on every device, synchronized by ViewerStateSync.
 // ---------------------------------------------------------------------------
-let recentTabs: string[] = (() => {
-  try {
-    const v = JSON.parse(localStorage.getItem('tw.recentTabs') ?? '[]');
-    return Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX) : [];
-  } catch { return []; }
-})();
-let recentTabsChanged = false;
-let recentVisitLimit = (() => {
-  try { return storedVisitCapacity(JSON.parse(localStorage.getItem('tw.recentVisitQuickLimit') ?? localStorage.getItem('tw.recentVisitLimit') ?? 'null'), Number(localStorage.getItem('tw.recentVisitLimitVersion'))); }
-  catch { return visitCapacity(null); }
-})();
-// Keep explicit removals across reloads even when the server write is delayed.
-const removedRecentVisitsKey = `tw.recentVisitsRemoved.${TOUCH_DEVICE ? 'touch' : 'desktop'}`;
-const removedRecentVisits = new Set<string>((() => {
-  try {
-    const value = JSON.parse(localStorage.getItem(removedRecentVisitsKey) ?? '[]');
-    return Array.isArray(value) ? value.filter((name): name is string => typeof name === 'string') : [];
-  } catch { return []; }
-})());
-function persistRemovedRecentVisits(): void {
-  try { localStorage.setItem(removedRecentVisitsKey, JSON.stringify([...removedRecentVisits])); }
-  catch { /* optional local cache */ }
-}
-
-let recentVisits: string[] = (() => {
-  try {
-    const value = JSON.parse(localStorage.getItem('tw.recentVisits') ?? 'null');
-    return restoreRecentVisits(Array.isArray(value) ? value : recentTabs, removedRecentVisits, recentVisitLimit);
-  } catch { return restoreRecentVisits(recentTabs, removedRecentVisits, recentVisitLimit); }
-})();
-let recentVisitsChanged = false;
-
+let recentVisitLimit = 8;
+let recentVisits: string[] = [];
 function storeRecentVisits(): void {
-  try {
-    localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
-    localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
-    localStorage.setItem('tw.recentVisitLimitVersion', '2');
-  } catch { /* server preferences remain available */ }
-  savePrefs({ recentVisits, recentVisitLimit, recentVisitLimitVersion: 2 });
   sidebar.updateRecent();
+  paintRecentTabs();
 }
 
 function recentVisitEntries() {
@@ -3373,22 +3343,9 @@ function navigateRecentVisit(name?: string): void {
   if (mobileMQ.matches) flashStatus(`已切换到：${session.displayName}`, 1400);
 }
 
-function setRecentTabs(next: string[], save = true): void {
-  if (next.length === recentTabs.length && next.every((n, i) => n === recentTabs[i])) return;
-  recentTabs = next;
-  if (save) {
-    try { localStorage.setItem('tw.recentTabs', JSON.stringify(next)); } catch { /* server prefs keep it */ }
-    savePrefs({ recentTabs: next });
-  }
-  paintRecentTabs();
-}
-
 /** The user chose this session: it becomes the most recent, then it is shown. */
 function pickSession(s: Session): void {
-  if (removedRecentVisits.delete(s.name)) persistRemovedRecentVisits();
-  recentTabsChanged = true;
-  setRecentTabs(touchRecent(recentTabs, s.name));
-  recentVisitsChanged = true;
+  readCursors.send({type: 'visit', session: s.name});
   recentVisits = touchRecent(recentVisits, s.name, recentVisitLimit);
   storeRecentVisits();
   activateSession(s);
@@ -3402,7 +3359,7 @@ function pickSession(s: Session): void {
  */
 function markRecent(el: Element | null | undefined, name: string): void {
   if (!(el instanceof HTMLElement)) return;
-  const strength = recentStrength(recentTabs, name);
+  const strength = recentStrength(recentVisits, name, recentVisitLimit);
   el.classList.toggle('recent', strength > 0);
   if (strength > 0) el.style.setProperty('--recent', strength.toFixed(2));
   else el.style.removeProperty('--recent');
@@ -3422,9 +3379,8 @@ function pruneRecentTabs(): void {
   const alive = new Set(sessions.map(s => s.name));
   // A remote that is only offline keeps its place: its tabs come back with it.
   const keep = (n: string) => alive.has(n) || (hostOfKey(n) !== '' && offlineHosts.has(hostOfKey(n)));
-  setRecentTabs(keepRecent(recentTabs, keep));
   const next = keepRecent(recentVisits, keep);
-  if (next.length !== recentVisits.length) { recentVisits = next; recentVisitsChanged = true; storeRecentVisits(); }
+  if (next.length !== recentVisits.length) { recentVisits = next; storeRecentVisits(); }
 }
 
 function activateSession(s: Session): void {
@@ -5795,10 +5751,9 @@ const recentLimitButton = sheetRow('◷', `最近访问会话数：${recentVisit
 });
 function setRecentVisitLimit(count: number): void {
   if (!Number.isInteger(count) || count < 1 || count > 50) return;
-  recentVisitsChanged = true;
   recentVisitLimit = visitCapacity(count);
+  readCursors.send({type: 'limit', limit: recentVisitLimit});
   recentVisits = recentVisits.slice(0, recentVisitLimit);
-  try { localStorage.setItem('tw.recentVisitQuickLimit', String(recentVisitLimit)); } catch { /* optional cache */ }
   storeRecentVisits();
   refreshRecentLimitUI();
 }
@@ -6778,30 +6733,6 @@ async function init(): Promise<void> {
     const locked = prefs[`keyboardLocked${suffix}`] ?? (kind === deviceKind ? prefs.keyboardLocked : undefined);
     if (!keyboardLockChanged && typeof locked === 'boolean') setKeyboardLocked(locked, kind, false);
   }
-  if (!recentVisitsChanged) {
-    let localLimit: number | null = null;
-    try { const value = Number(localStorage.getItem('tw.recentVisitQuickLimit')); if (Number.isInteger(value) && value >= 1 && value <= 50) localLimit = value; } catch {}
-    if (localLimit !== null) recentVisitLimit = localLimit;
-    else if (prefs.recentVisitLimit !== undefined) recentVisitLimit = storedVisitCapacity(prefs.recentVisitLimit, prefs.recentVisitLimitVersion);
-    const visits = prefs.recentVisits ?? prefs.recentTabs;
-    if (localLimit === null && Array.isArray(visits)) recentVisits = restoreRecentVisits(visits, removedRecentVisits, recentVisitLimit);
-    else recentVisits = recentVisits.slice(0, recentVisitLimit);
-    try {
-      localStorage.setItem('tw.recentVisits', JSON.stringify(recentVisits));
-      localStorage.setItem('tw.recentVisitLimit', String(recentVisitLimit));
-      localStorage.setItem('tw.recentVisitLimitVersion', '2');
-    } catch { /* ignore */ }
-    refreshRecentLimitUI();
-    if (prefs.recentVisitLimitVersion !== 2 || removedRecentVisits.size) {
-      savePrefs({ recentVisits, recentVisitLimit, recentVisitLimitVersion: 2 });
-    }
-  }
-  if (!recentTabsChanged && Array.isArray(prefs.recentTabs)) {
-    const list = prefs.recentTabs.filter((n): n is string => typeof n === 'string').slice(0, RECENT_TABS_MAX);
-    setRecentTabs(list, false);
-    try { localStorage.setItem('tw.recentTabs', JSON.stringify(list)); } catch { /* ignore */ }
-  }
-  if (!hostOrderChanged && Array.isArray(prefs.hostOrder)) hostOrder = prefs.hostOrder.filter((h): h is string => typeof h === 'string');
   if (!zoomKeysChanged && typeof prefs.zoomKeys === 'boolean' && prefs.zoomKeys !== zoomShortcutsEnabled) {
     setZoomShortcuts(prefs.zoomKeys);
   }
@@ -6950,3 +6881,9 @@ window.addEventListener('message', event => {
 window.addEventListener('resize', sizeFileBrowser);
 window.visualViewport?.addEventListener('resize', sizeFileBrowser);
 window.visualViewport?.addEventListener('scroll', sizeFileBrowser);
+
+// Initial full state and periodic repair complement SSE invalidations.
+void readCursors.refresh();
+setInterval(() => { if (document.visibilityState === 'visible') void readCursors.refresh(); }, 15000);
+window.addEventListener('focus', () => { void readCursors.refresh(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void readCursors.refresh(); });

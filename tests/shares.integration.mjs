@@ -24,7 +24,7 @@ async function start(label, previous) {
   if (!windows) { serverMux = path.join(folder, 'tmux-wrapper'); await fs.writeFile(serverMux, `#!/bin/sh\nexec "${tmux}" -L ${muxSocket}-${label} "$@"\n`, {mode:0o700}); }
   const port = previous?.port ?? await freePort(); const token = previous?.token ?? randomBytes(24).toString('hex');
   const env = { ...process.env, HOST: '127.0.0.1', PORT: String(port), AUTH_TOKEN: token, TMUX_BIN: serverMux, AGENT_STATUS_MODE: 'hooks' };
-  for (const [variable, file] of Object.entries({ SESSIONS_FILE: 'sessions', SHARES_FILE: 'shares', REMOTES_FILE: 'remotes', PREFS_FILE: 'prefs', AGENT_STATUS_FILE: 'agent', PROJECTS_FILE: 'projects', QUICK_COMMANDS_FILE: 'commands', CLOSED_SESSIONS_FILE: 'closed' })) env[variable] = path.join(folder, file + '.json');
+  for (const [variable, file] of Object.entries({ SESSIONS_FILE: 'sessions', SHARES_FILE: 'shares', REMOTES_FILE: 'remotes', PREFS_FILE: 'prefs', AGENT_STATUS_FILE: 'agent', VIEWER_STATE_FILE: 'viewer', PROJECTS_FILE: 'projects', QUICK_COMMANDS_FILE: 'commands', CLOSED_SESSIONS_FILE: 'closed' })) env[variable] = path.join(folder, file + '.json');
   const proc = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(proc);
   let log = ''; proc.stdout.on('data', b => log += b); proc.stderr.on('data', b => log += b);
   const server = { proc, port, token, mux: serverMux, base: `http://127.0.0.1:${port}`, folder, log: () => log };
@@ -62,6 +62,16 @@ try {
   const created = await api(A, '/api/shares', { action: 'create', name: '本机与远程联调', sessions: [{ host: '', name: n1 }, { host: remote.id, name: n2 }], expiresAt: null });
   assert(!JSON.stringify(await api(A, '/api/shares')).includes(created.token)); assert(!JSON.stringify(await api(A, '/api/shares')).includes('tokenHash'));
   const cookie = await login(A, created); const prefix = `/share/${created.share.id}/`;
+  const viewer = prefix + 'app/api/viewer-state';
+  await api(A, '/api/viewer-state', {type:'read', session:n1, instance:'test', seq:10});
+  assert.deepEqual((await api(A, viewer, undefined, cookie)).reads, {});
+  await api(A, viewer, {type:'read', session:n1, instance:'test', seq:5}, cookie);
+  assert.equal((await api(A, viewer, undefined, cookie)).reads[JSON.stringify([n1,'test'])], 5);
+  assert.equal((await api(A, '/api/viewer-state')).reads[JSON.stringify([n1,'test'])], 10);
+  await api(A, viewer, {type:'visit', session:`@${remote.id}/${n2}`}, cookie);
+  assert.deepEqual((await api(A, viewer, undefined, cookie)).recent, [`@${remote.id}/${n2}`]);
+  assert.equal((await request(A, viewer, {type:'visit',session:n3}, cookie)).status, 400);
+  assert.deepEqual((await api(A, '/api/viewer-state')).recent, []);
   const state = await api(A, prefix + 'state', undefined, cookie); assert.equal(state.sessions.length, 2); assert(!JSON.stringify(state).includes(n3));
   for (const route of ['/api/sessions', '/api/access', '/api/shares', '/api/remotes', '/api/share-peer/catalog', `/remote/${remote.id}/api/sessions`]) assert.equal((await request(A, route, undefined, cookie)).status, 401, route);
   assert.equal((await request(A, prefix + 'login', { token: 'wrong' }, '')).status, 401);
