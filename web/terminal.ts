@@ -1,3 +1,4 @@
+import { confirmAction } from './confirm-dialog.js';
 import { ViewerStateSync } from './viewer-state.js';
 import { openShareManager } from './share-manager.js';
 import { ControlBar, terminalClientId, type ControlState } from './terminal-control.js';
@@ -3955,7 +3956,7 @@ async function promptNewFolder(host: string = activeSession?.host ?? ''): Promis
  * unless the target folder already has a card for that directory: the two
  * merge under the target's name.
  */
-function moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): void {
+async function moveSessions(names: string[], folderId: string, card?: { cwd: string; name: string }): Promise<void> {
   const from = folderMembers[names[0]] ?? '';
   // Merging into a card the target already has for this directory: its name wins.
   const moving = new Set(names);
@@ -3964,7 +3965,7 @@ function moveSessions(names: string[], folderId: string, card?: { cwd: string; n
   const leaving = folders.find(f => f.id === from && wouldEmpty(f.id, names, folderMembers));
   if (leaving) {
     const target = folders.find(f => f.id === folderId)?.name ?? '未分组';
-    if (!window.confirm(`这是文件夹「${leaving.name}」里最后的会话，移到「${target}」后该文件夹会删除。继续吗？`)) return;
+    if (!await confirmAction(`这是文件夹「${leaving.name}」里最后的会话，移到「${target}」后该文件夹会删除。继续吗？`)) return;
     expectedEmptied.add(leaving.id);
   }
   folderMembers = { ...folderMembers };
@@ -6198,8 +6199,8 @@ function renderRemoteList(): void {
     const edit = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn', textContent: '编辑' });
     edit.addEventListener('click', () => openRemoteForm(remote));
     const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'tb-btn danger', textContent: '移除' });
-    remove.addEventListener('click', () => {
-      if (!window.confirm(`移除远程主机「${remote.name}」？只是不再在这里显示，远程上的会话不会结束。`)) return;
+    remove.addEventListener('click', async () => {
+      if (!await confirmAction(`移除远程主机「${remote.name}」？只是不再在这里显示，远程上的会话不会结束。`)) return;
       void editRemotes({ action: 'remove', id: remote.id }, '正在移除…');
     });
     row.append(text, ...(retryButton ? [retryButton] : []), edit, remove);

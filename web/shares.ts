@@ -1,3 +1,4 @@
+import { confirmAction } from './confirm-dialog.js';
 import './shares.css';
 import './theme.css';
 import { applyDocumentTheme, isTheme } from './theme.js';
@@ -16,8 +17,9 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 const embedded = window.parent !== window && new URLSearchParams(location.search).get('embedded') === '1';
 if (embedded) {
   document.body.classList.add('embedded');
-  const requestClose = () => {
-    if (document.querySelector('dialog[open]') && !confirm('当前有未关闭的操作或 Token 展示。确认关闭分享管理？')) return;
+  const requestClose = async () => {
+    if (document.querySelector('.app-confirm[open]')) return;
+    if (document.querySelector('dialog[open]') && !await confirmAction('关闭后将离开当前操作或 Token 展示，未保存的内容不会保留。', '关闭分享管理？', '关闭管理')) return;
     window.parent.postMessage({type:'share-manager-close'}, location.origin);
   };
   window.addEventListener('message', event => {
@@ -197,12 +199,12 @@ async function admin() {
     if (s.status !== 'revoked') actions.append(button('复制分享信息', async () => {
       const r = await api('/api/shares', {action:'token', id:s.id}); credentials(r.share, r.token);
     }, '', '正在读取…'), button('编辑', () => editShare(s)), button('重置 Token', async () => {
-      if (!confirm('旧 Token 和已登录的访客将立即失效。确认重置？')) return;
+      if (!await confirmAction('旧 Token 和已登录的访客将立即失效，需要使用新 Token 重新登录。', '重置 Token？', '重置')) return;
       notice('正在重置 Token，旧访问凭据即将失效，请稍候…');
       const r = await api('/api/shares', { action: 'reset', id: s.id });
       credentials(r.share, r.token); notice('Token 已重置，可复制新的访问凭据'); await admin();
     }, '', '正在重置…'), button('终止分享', async () => {
-      if (!confirm(`终止「${s.name}」后访客立即断开，原会话和任务继续运行。此操作不能恢复，确认终止？`)) return;
+      if (!await confirmAction(`终止「${s.name}」后访客立即断开，原会话和任务继续运行。此操作不能恢复。`, '终止分享？', '终止分享')) return;
       await api('/api/shares', { action: 'revoke', id: s.id }); await admin(); notice('分享已终止');
     }, 'danger'));
     actions.append(button('复制配置', () => editShare(s, true)));
@@ -219,7 +221,7 @@ async function admin() {
     }
 
     if (s.status === 'revoked') actions.append(button('删除记录', async () => {
-      if (!confirm(`删除「${s.name}」的分享记录？仅删除已终止的分享记录，不会删除原会话或文件。`)) return;
+      if (!await confirmAction(`删除「${s.name}」的分享记录？仅删除已终止的分享记录，不会删除原会话或文件。`, '删除分享记录？', '删除记录')) return;
       await api('/api/shares', {action:'delete', id:s.id}); await admin(); notice('分享记录已删除');
     }, 'danger', '正在删除…'));
     card.append(actions); app.append(card);

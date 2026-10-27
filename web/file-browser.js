@@ -1,3 +1,4 @@
+import { confirmAction } from './confirm-dialog.js';
 import { isShare, shareBase, shareFetch as fetch, shareStorage as localStorage } from './share-context.js';
 import './file-browser.css';
 import './theme.css';
@@ -426,7 +427,7 @@ function editingBaseline() { return originalText.replace(/\r\n?/g, '\n'); }
 function unsaved() { return !!$('#preview-content textarea') && $('#preview-content textarea').value !== editingBaseline(); }
 async function preview(item, edit = false) {
   if (!fileWritable) edit = false;
-  if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;
+  if (unsaved() && !await confirmAction('当前文本尚未保存，是否放弃修改？')) return;
   const media = !edit && (imageExtensions.test(item.name) || videoExtensions.test(item.name) || audioExtensions.test(item.name) || /\.pdf$/i.test(item.name));
   const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren(); $('#preview-title').textContent = item.name; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑'; $('#edit').hidden = $('#copy-content').hidden = !!media;
   if (!fileWritable) $('#edit').hidden = true;
@@ -493,15 +494,15 @@ click($('#edit'), async () => {
 click($('#render-toggle'), () => { markdownView = !markdownView; return showPreview(); });
 click($('#open-site'), () => openSite(previewItem));
 click($('#copy-content'), () => copyText($('#preview-content textarea')?.value ?? previewText));
-function closePreview() {
-  if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;
+async function closePreview() {
+  if (unsaved() && !await confirmAction('当前文本尚未保存，是否放弃修改？')) return;
   $('#preview-content').replaceChildren(); closeDialog($('#preview')); document.body.append($('#toast'));
 }
 document.querySelectorAll('.close').forEach(node => click(node, () => node.closest('dialog').id === 'preview' ? closePreview() : closeDialog(node.closest('dialog'))));
 $('#sheet').addEventListener('cancel', event => { if (taskInProgress) event.preventDefault(); });
 $('#preview').addEventListener('cancel', event => { event.preventDefault(); closePreview(); });
 window.addEventListener('beforeunload', event => { if (unsaved()) { event.preventDefault(); event.returnValue = ''; } });
-click($('#back'), () => { if (unsaved() && !window.confirm('当前文本未保存，是否放弃修改并返回终端？')) return; $('#preview-content').replaceChildren(); closeDialog($('#preview')); window.parent.postMessage({ type: 'files-close' }, location.origin); });
+click($('#back'), async () => { if (unsaved() && !await confirmAction('当前文本未保存，是否放弃修改并返回终端？')) return; $('#preview-content').replaceChildren(); closeDialog($('#preview')); window.parent.postMessage({ type: 'files-close' }, location.origin); });
 click($('#directory-back'), back); click($('#up'), () => navigate(parent(current))); click($('#go-root'), () => navigate(isShare ? shareRoot : rootOf(current)));
 click($('#locate'), async () => { const result = await requestSessionPath(); await navigate(result); });
 click($('#copy-path'), () => copyText(current)); click($('#refresh'), refresh);
