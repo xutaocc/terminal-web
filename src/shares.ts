@@ -477,7 +477,7 @@ export class ShareService {
         this.disconnect(old.id, old); this.store.delete(old.id);
         json(res, 200, {ok:true}); return true;
       }
-      if (old?.revokedAt) throw new ShareError('已终止的分享不能恢复', 409);
+      if (old?.revokedAt && b.action !== 'restore') throw new ShareError('分享已终止，请先恢复分享', 409);
       if (b.action === 'file-access') {
         if (typeof b.enabled !== 'boolean') throw new ShareError('无效开关值');
         const result = this.store.update(old!.id, {fileWrite:b.enabled});
@@ -492,7 +492,17 @@ export class ShareService {
       }
 
       let result: { share: Share; token?: string };
-      if (b.action === 'revoke') result = this.store.update(old!.id, { revokedAt: Date.now() });
+      if (b.action === 'restore') {
+        if (!old?.revokedAt) throw new ShareError('仅已终止的分享可以恢复，请刷新列表', 409);
+        const expiresAt = b.expiresAt === null ? null : Number(b.expiresAt);
+        if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) throw new ShareError('有效期必须晚于当前时间');
+        const sessions = await this.selection(old.sessions, old.sessions);
+        // Another request may restore/reset/delete this record while the catalog is loading.
+        const current = this.store.get(old.id);
+        if (!current?.revokedAt || current.revision !== old.revision) throw new ShareError('分享已变化，请刷新后重试', 409);
+        result = this.store.update(old.id, { revokedAt: null, expiresAt, sessions }, true);
+      }
+      else if (b.action === 'revoke') result = this.store.update(old!.id, { revokedAt: Date.now() });
       else if (b.action === 'reset') result = this.store.update(old!.id, {}, true);
       else if (b.action === 'create' || b.action === 'update') {
         const name = typeof b.name === 'string' ? b.name.trim() : '';

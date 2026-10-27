@@ -185,6 +185,15 @@ try {
     assert.equal(admin1.readyState, WebSocket.OPEN); assert.equal(admin2.readyState, WebSocket.OPEN);
     assert.equal((await request(A, prefix + 'state', undefined, nextCookie)).status, 410);
     assert.equal((await request(A, prefix + 'files?index=1&op=download&path=hello.txt', undefined, nextCookie)).status, 410);
+    const restored = await api(A, '/api/shares', {action:'restore', id:created.share.id, expiresAt:null});
+    assert.equal(restored.share.status, 'active');
+    assert.notEqual(restored.token, rotated.token);
+    assert.deepEqual(restored.share.sessions, rotated.share.sessions);
+    assert.equal((await request(A, prefix + 'login', {token:rotated.token}, '')).status, 401);
+    assert.equal((await request(A, prefix + 'state', undefined, nextCookie)).status, 401);
+    await login(A, restored);
+    assert.equal((await request(A, '/api/shares', {action:'restore', id:created.share.id, expiresAt:null})).status, 409);
+    await api(A, '/api/shares', {action:'revoke', id:created.share.id});
     const editable = await api(A, '/api/shares', { action: 'create', name: '范围调整', sessions: [{ host: '', name: n1 }, { host: remote.id, name: n2 }], expiresAt: null });
     const editableCookie = await login(A, editable); const ep = `/share/${editable.share.id}/`;
     const remoteEditing = await ws(A, ep + 'ws?index=1', editableCookie);
