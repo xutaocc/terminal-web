@@ -201,7 +201,7 @@ export class ProjectSidebar {
       dot.className = `tab-dot ${kind}`;
       dot.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
-      label.textContent = kind === 'unread' ? '待读' : '执行中';
+      label.textContent = kind === 'unread' ? '待处理' : '执行中';
       const count = document.createElement('span');
       count.className = 'ps-quick-count';
       count.textContent = '0';
@@ -550,7 +550,7 @@ export class ProjectSidebar {
   updateQuickCounts(counts: Record<QuickSessionKind, number>): void {
     for (const [kind, pill] of this.quickPills) {
       const n = counts[kind];
-      const label = kind === 'unread' ? '待读' : '执行中';
+      const label = kind === 'unread' ? '待处理' : '执行中';
       const text = n > 99 ? '99+' : String(n);
       const count = pill.querySelector('.ps-quick-count')!;
       if (count.textContent !== text) count.textContent = text;
