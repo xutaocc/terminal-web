@@ -2357,3 +2357,34 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-recent-settings small { display: block; margin-top: 8px; font-size: 11px; color: var(--ui-muted, #aaa); }
 .ps-recent-settings :is(button,input):focus-visible { outline: 2px solid var(--ui-primary, #2472c8); outline-offset: 2px; }
 .ps-recent-empty { padding: 12px 8px; opacity: .65; font-size: 12px; }
+
+/* Compact touch session manager; keep each action distinct without desktop-sized gaps. */
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer #sidebar { font-size: 12px; }
+  .drawer .ps-top { min-height: 40px; padding-inline: 10px; }
+  .drawer .ps-top .brand-mark { font-size: 12px; }
+  .drawer .ps-header { min-height: 32px; margin-top: 0; padding-inline: 12px 8px; }
+  .drawer .ps-title { font-size: 11px; letter-spacing: .04em; }
+  .drawer .ps-icon-btn { min-width: 32px; width: 32px; height: 32px; font-size: 18px; touch-action: manipulation; }
+  .drawer .ps-quick-status { gap: 5px; padding: 4px 10px 8px; }
+  .drawer .ps-quick-pill { min-height: 36px; padding: 4px 9px; gap: 5px; font-size: 12px; }
+  .drawer .ps-recent-toggle { min-width: 32px; padding-inline: 7px; }
+  .drawer .ps-list { padding: 0 6px 6px; }
+  .drawer .ps-host-head, .drawer .ps-group-head { min-height: 36px; gap: 4px; flex-wrap: nowrap; }
+  .drawer .ps-host-name, .drawer .ps-group-name { flex: 1; }
+  .drawer .ps-group-actions { flex: none; gap: 0; background: transparent; }
+  .drawer .ps-group-actions .ps-icon-btn { min-width: 28px; width: 28px; }
+  .drawer .ps-host + .ps-host { margin-top: 6px; padding-top: 4px; }
+  .drawer .ps-host-attention { font-size: 10px; padding-inline: 5px; }
+  .drawer .ps-card { margin: 2px 0 4px 4px; padding: 4px 7px 6px; border-radius: 7px; }
+  .drawer .ps-card-row { flex-wrap: nowrap; min-height: 32px; gap: 5px; }
+  .drawer .ps-card-add { margin: 0; }
+  .drawer .ps-card-name { font-size: 12px; font-weight: 500; }
+  .drawer .ps-card-sub { margin: 0 0 0 15px; font-size: 10px; line-height: 1.4; }
+  .drawer .ps-chips { margin: 4px 0 0 13px; gap: 3px; }
+  .drawer .ps-chip-wrap { gap: 3px; }
+  .drawer .ps-chip { min-height: 36px; height: 36px; padding-inline: 7px; font-size: 12px; }
+  .drawer .ps-chip-wrap > .ps-icon-btn { height: 36px; }
+  .drawer .ps-footer { min-height: 40px; padding: 2px 8px max(2px, env(safe-area-inset-bottom)); }
+  .drawer .ps-footer .ps-icon-btn { width: 36px; min-width: 36px; height: 36px; }
+}
