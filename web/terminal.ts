@@ -1,3 +1,4 @@
+import { summarizeShares, type ShareSummaryRecord } from './share-summary.js';
 import { mountMobileActions } from './mobile-actions.js';
 import { confirmAction } from './confirm-dialog.js';
 import { ViewerStateSync } from './viewer-state.js';
@@ -740,6 +741,42 @@ const sidebar = new ProjectSidebar({
   },
 });
 document.body.prepend(sidebar.el);
+let shareSummaryRecords: ShareSummaryRecord[] = [];
+let fetchingShareSummary = false;
+function paintShareSummary(): void {
+  if (isShare) return;
+  const summary = summarizeShares(shareSummaryRecords, new Map(sessions.map(s => [s.name, s.identity])));
+  sidebar.updateSharing(summary.count, summary.sessions);
+  paintMobileSharing();
+}
+function paintMobileSharing(): void {
+  const summary = summarizeShares(shareSummaryRecords, new Map(sessions.map(s => [s.name, s.identity])));
+  const count = isShare ? 1 : summary.count;
+  mShareCount.hidden = count === 0;
+  mShareCount.textContent = `分享 ${count}`;
+  mShareCount.title = isShare ? '当前分享 Token' : `${count} 个有效分享 Token`;
+  mSharedLock.hidden = !activeSession || (!isShare && !summary.sessions.has(activeSession.name));
+}
+async function refreshShareSummary(): Promise<void> {
+  if (isShare || fetchingShareSummary || document.hidden) return;
+  fetchingShareSummary = true;
+  try {
+    const response = await fetch('/api/shares', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return;
+    const data = await response.json() as {shares: ShareSummaryRecord[]};
+    if (Array.isArray(data.shares)) { shareSummaryRecords = data.shares; paintShareSummary(); }
+  } catch { /* Keep the last known state while offline. */ }
+  finally { fetchingShareSummary = false; }
+}
+if (!isShare) {
+  void refreshShareSummary();
+  setInterval(() => { paintShareSummary(); void refreshShareSummary(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshShareSummary(); });
+  window.addEventListener('message', event => {
+    if (event.origin === location.origin && event.data?.type === 'share-state-changed' &&
+        event.source === document.querySelector<HTMLIFrameElement>('iframe[title="分享管理"]')?.contentWindow) void refreshShareSummary();
+  });
+}
 
 // Floating page buttons; shown by refreshPager() once everything is set up.
 const pager = new FloatingPager({
@@ -5379,7 +5416,12 @@ mCaret.textContent = '▾';
 const mTitleHost = document.createElement('span');
 const mTitleIp = document.createElement('span');
 mTitleIp.className = 'm-title-ip';
-mRecent.append(mTitleDot, mTitleHost);
+const mSharedLock = document.createElement('span');
+mSharedLock.className = 'ps-share-lock m-shared-lock'; mSharedLock.hidden = true;
+mSharedLock.setAttribute('role', 'img'); mSharedLock.setAttribute('aria-label', '分享中的会话');
+mSharedLock.title = '分享中的会话';
+mSharedLock.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3" y="7" width="10" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4a3 3 0 0 1 6 0v3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+mRecent.append(mTitleDot, mSharedLock, mTitleHost);
 mSession.append(mTitleLabel, mTitleIp, mCaret);
 mTitle.append(mRecent, mSession);
 bindIntentionalClick(mRecent, () => navigateRecentVisit());
@@ -5395,16 +5437,14 @@ mAttachBtn.title = '上传文件';
 if (isShare) mAttachBtn.style.display = 'none';
 mAttachBtn.setAttribute('aria-label', '上传文件');
 bindIntentionalClick(mAttachBtn, () => fileInput.click());
-const mKeyboardLockBtn = mBtn('', '键盘锁定', () => {
-  keyboardLockChanged = true;
-  setKeyboardLocked(!layoutSettings.keyboardLocked.mobile, 'mobile');
-});
-mKeyboardLockBtn.classList.add('m-keyboard-lock');
-mKeyboardLockBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/></svg>';
+const mShareCount = document.createElement('span');
+mShareCount.className = 'm-share-count';
+mShareCount.hidden = true;
+mShareCount.setAttribute('role', 'status');
 const mMoreBtn = mBtn('⋯', '设置', () => openSheet());
 
 const mFilesBtn = mBtn('📁', '文件管理', () => openFileBrowser());
-mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mKeyboardLockBtn, mMoreBtn);
+mobilebar.append(mMenuBtn, mTitle, mFilesBtn, mAttachBtn, mShareCount, mMoreBtn);
 document.body.append(mobilebar);
 
 // --- Sessions drawer (bottom sheet) ----------------------------------------
@@ -5771,9 +5811,6 @@ function setKeyboardLocked(locked: boolean, kind: LayoutKind = currentLayout(), 
   refreshLayoutSettingsUI();
   if (kind !== currentLayout()) return;
   keyboardLocked = locked;
-  mKeyboardLockBtn.classList.toggle('active', locked);
-  mKeyboardLockBtn.setAttribute('aria-pressed', String(locked));
-  mKeyboardLockBtn.title = locked ? '键盘锁定：已开启' : '键盘锁定：已关闭';
   for (const session of sessions) {
     session.setKeyboardLocked(locked);
     session.mate?.setKeyboardLocked(locked);
@@ -6410,6 +6447,7 @@ function refreshMobileUI(): void {
   document.title = (attention ? `(${attention}) ` : '') +
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
   mTitleLabel.textContent = s ? s.displayName : '—';
+  paintMobileSharing();
   mTitleHost.replaceChildren(...(s ? [hostBadge(s.host)] : []));
   mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));
   if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); renderAccessLink(); }

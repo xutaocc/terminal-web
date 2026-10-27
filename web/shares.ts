@@ -54,7 +54,9 @@ async function api(url: string, data?: unknown) {
   try {
     const r = await fetch(url, { cache:'no-store', signal:AbortSignal.timeout(45000), ...(data === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}) });
     if (!r.headers.get('content-type')?.includes('application/json')) throw new ApiError('登录已失效，请刷新页面重新登录', 401);
-    const result = await r.json(); if (!r.ok) throw new ApiError(result.error ?? '操作失败', r.status); return result;
+    const result = await r.json(); if (!r.ok) throw new ApiError(result.error ?? '操作失败', r.status);
+    if (data !== undefined && embedded) window.parent.postMessage({type:'share-state-changed'}, location.origin);
+    return result;
   } catch (error) {
     if (error instanceof Error && ['TimeoutError','AbortError'].includes(error.name)) throw new ApiError(data === undefined ? '加载超过 45 秒，请检查网络后重试。' : '等待超过 45 秒，操作可能已保存。创建分享可在此重试，不会重复创建；其他操作请先刷新列表确认结果。', 408);
     throw error;
