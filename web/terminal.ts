@@ -2599,7 +2599,7 @@ function updateOutputActivity(): void {
       // never shows the check (and with it, the spinner's animation).
       dot.classList.toggle('unread', unread && !working);
       dot.classList.remove('waiting', 'done', 'has-unread');
-      label = working ? '近期有输出' : unread ? '未读' : '已读';
+      label = working ? '近期有输出' : unread ? '待读' : '已读';
     }
     dot.setAttribute('title', label);
     dot.setAttribute('aria-label', label);
@@ -2619,7 +2619,7 @@ function updateOutputActivity(): void {
 
 // ---------------------------------------------------------------------------
 // Each server's folder head says what in it is waiting for you — a question
-// (等待确认) or a finished, unread result (未读) — so a folded folder still
+// (等待确认) or a finished, unread result (待读) — so a folded folder still
 // tells you. Running, read and idle sessions are left to their own dots.
 // ---------------------------------------------------------------------------
 type Attention = 'waiting' | 'unread';
@@ -2643,12 +2643,12 @@ function attentionList(host: string): { s: Session; kind: Attention }[] {
   return [...list.filter(x => x.kind === 'waiting'), ...list.filter(x => x.kind === 'unread')];
 }
 
-/** "1 待确认 · 2 未读" for one server, and whether any of it is a question. */
+/** "待确认 1 · 待读 2" for one server, and whether any of it is a question. */
 function attentionSummary(host: string): { text: string; waiting: number; total: number } {
   const list = attentionList(host);
   const waiting = list.filter(x => x.kind === 'waiting').length;
   const unread = list.length - waiting;
-  const text = [waiting ? `${waiting} 待确认` : '', unread ? `${unread} 未读` : ''].filter(Boolean).join(' · ');
+  const text = [waiting ? `待确认 ${waiting}` : '', unread ? `待读 ${unread}` : ''].filter(Boolean).join(' · ');
   return { text, waiting, total: list.length };
 }
 
@@ -2659,7 +2659,7 @@ function paintHostAttention(): void {
     pill.textContent = text;
     pill.hidden = !text;
     pill.classList.toggle('waiting', waiting > 0);
-    pill.title = text ? `${text}：点击跳到${waiting ? '等待确认' : '未读'}的会话` : '';
+    pill.title = text ? `${text}：点击跳到${waiting ? '等待确认' : '待读'}的会话` : '';
   }
   const quick = quickStatusEntries();
   sidebar.updateQuickCounts({ unread: quick.filter(e => e.kind === 'unread').length, working: quick.filter(e => e.kind === 'working').length });

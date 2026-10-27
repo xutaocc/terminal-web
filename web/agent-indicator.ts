@@ -13,7 +13,7 @@ export type Indicator = 'waiting' | 'working' | 'unread' | 'done' | 'idle';
 export const INDICATOR_LABEL: Record<Indicator, string> = {
   waiting: '等待你确认',
   working: '执行中',
-  unread: '已完成（未读）',
+  unread: '已完成（待读）',
   done: '已完成',
   idle: '空闲',
 };
