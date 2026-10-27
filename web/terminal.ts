@@ -519,7 +519,7 @@ const addBtn = document.createElement('button');
 addBtn.className = 'tab-add';
 addBtn.type = 'button';
 addBtn.textContent = '+';
-addBtn.title = '新建会话';
+addBtn.title = '新建会话（右键配置默认填充命令）';
 if (isShare) addBtn.style.display = 'none';
 
 const controlsEl = document.createElement('div');
@@ -875,6 +875,7 @@ class Session {
   private receiveControl(state: ControlState): void {
     const previouslyOwned = this.canOperate;
     this.controlBar.update(state);
+    this.tryPrefillCommand();
     this.term.options.disableStdin = !this.canInteract;
     for (const label of document.querySelectorAll<HTMLElement>('[data-control-session]')) {
       if (label.dataset.controlSession === this.name) decorateReadonly(label, this.name);
@@ -902,6 +903,25 @@ class Session {
   // for its first attach, so a page that sleeps for a day and wakes up cannot
   // pass for one.
   private createUntil = 0;
+  private initialCommand = '';
+  private prefillTimer: ReturnType<typeof setTimeout> | undefined;
+  private prefillDelayElapsed = false;
+  prefillNewCommand(command: string): void { this.initialCommand = command; }
+  private schedulePrefillCommand(): void {
+    clearTimeout(this.prefillTimer);
+    this.prefillDelayElapsed = false;
+    // Start once per connection; terminal output never resets this deadline.
+    if (this.initialCommand) this.prefillTimer = setTimeout(() => {
+      this.prefillDelayElapsed = true;
+      this.tryPrefillCommand();
+    }, 1000);
+  }
+  private tryPrefillCommand(): void {
+    if (this.disposed || !this.prefillDelayElapsed || !this.initialCommand || !this.canOperate || this.ws?.readyState !== WebSocket.OPEN) return;
+    const command = this.initialCommand;
+    this.initialCommand = '';
+    this.send(command); // Plain text only: deliberately no Enter/newline.
+  }
   private createFrom: string | null = null;
   private createDirectory: string | null = null;
 
@@ -1542,6 +1562,8 @@ class Session {
   }
 
   private send(data: string): void {
+    // Terminal capability/focus replies are not user typing.
+    if (!data.startsWith('\x1b')) this.initialCommand = '';
     if (!this.canInteract) return;
     this.stopTouchScroll();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -2122,6 +2144,8 @@ class Session {
   private setConnected(state: boolean): void {
     this.connected = state;
     if (!state) {
+      clearTimeout(this.prefillTimer);
+      this.prefillDelayElapsed = false;
       this.hasRenderedOutput = false;
       this.controlBar.disconnected(); this.pendingSeq = []; this.term.options.disableStdin = true;
       if (this.controlHeartbeat) clearInterval(this.controlHeartbeat); this.controlHeartbeat = null;
@@ -2236,6 +2260,7 @@ class Session {
     let outputTracker: OutputActivityTracker | null = null;
 
     socket.onopen = () => {
+      this.schedulePrefillCommand();
       this.lastHeard = performance.now();
       outputTracker = new OutputActivityTracker(performance.now());
       this.outputTracker = outputTracker;
@@ -3582,6 +3607,8 @@ function domPrompt(opts: {
   /** Where to start the initial selection in `value` (default: select all). */
   selectFrom?: number;
   okText?: string;
+  dismissOnBackdrop?: boolean;
+  clickToConfirm?: boolean;
   directory?: (signal: AbortSignal) => Promise<string>;
   onDirectoryChange?: (directory: string) => void;
 }): Promise<string | null> {
@@ -3693,13 +3720,16 @@ function domPrompt(opts: {
     };
     cancel.addEventListener('click', () => finish(null));
     ok.addEventListener('click', () => finish(input.value));
+    if (opts.clickToConfirm) overlay.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); }
+    }, true);
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) finish(null);
+      if (e.target === overlay && opts.dismissOnBackdrop !== false) finish(null);
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (!ok.disabled) finish(input.value);
+        if (!opts.clickToConfirm && !ok.disabled) finish(input.value);
       } else if (e.key === 'Escape') {
         e.preventDefault();
         finish(null);
@@ -3748,7 +3778,10 @@ async function promptAddSession(
   const displayName = raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 64) || suggestion;
   const id = await newSessionId(displayName, sessions.filter(s => s.host === host).map(s => s.raw));
   const name = makeKey(host, id);
+  const prefs = await fetchServerPrefs();
+  const command = prefs?.newSessionCommand ?? '';
   const session = addSession(name, false, displayName);
+  if (typeof command === 'string' && command.length <= 2000 && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(command)) session.prefillNewCommand(command);
   session.cwd = directory || startDir || origin?.cwd || null;
   session.intendCreate(origin?.name, directory);
   // Filed before it is shown, so it lands in its folder rather than flickering
@@ -3776,7 +3809,10 @@ async function openTerminalIn(directory: string, dirName: string): Promise<void>
   const label = dirName.replace(/[\x00-\x1f\x7f]/g, '').trim() || directory.split(/[\\/]/).filter(Boolean).pop() || 'root';
   const displayName = newSessionName(label, sessions.map(s => s.displayName));
   const name = makeKey(host, await newSessionId(displayName, sessions.filter(s => s.host === host).map(s => s.raw)));
+  const prefs = await fetchServerPrefs();
+  const command = prefs?.newSessionCommand ?? '';
   const session = addSession(name, false, displayName);
+  if (typeof command === 'string' && command.length <= 2000 && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(command)) session.prefillNewCommand(command);
   session.cwd = directory;
   session.intendCreate(undefined, directory);
   const folderId = from && from.host === host ? folderOf(from) : looseKey(host);
@@ -4185,6 +4221,7 @@ async function readoptTabs(host: string, tabs: SavedTab[]): Promise<void> {
 const PREF_SCOPE = TOUCH_DEVICE ? 'touch' : 'desktop';
 
 interface UiPrefs {
+  newSessionCommand?: string;
   theme?: ThemeName;
   activeTab?: string;
   /** The recently picked sessions, newest first (web/recent-tabs.ts). */
@@ -4949,6 +4986,31 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 bindIntentionalClick(addBtn, () => { void promptAddSession(); });
+addBtn.addEventListener('contextmenu', event => {
+  event.preventDefault();
+  if (isShare || mobileMQ.matches) return;
+  void configureNewSessionCommand();
+});
+async function configureNewSessionCommand(): Promise<void> {
+  if (isShare) return;
+  const prefs = await fetchServerPrefs();
+  if (!prefs) { flashStatus('无法读取默认命令，请稍后重试', 3000); return; }
+  const value = await domPrompt({
+    label: '新建终端默认填充命令（只填入，不执行；PC / 手机共用，留空关闭）：',
+    value: prefs.newSessionCommand ?? '', okText: '保存',
+    dismissOnBackdrop: false, clickToConfirm: true,
+  });
+  if (value === null) return;
+  if (value.length > 2000 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) {
+    flashStatus('请输入不含换行或控制字符的单行命令，最多 2000 字符', 3500); return;
+  }
+  try {
+    const response = await fetch('/api/prefs', {method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({scope: PREF_SCOPE, newSessionCommand: value.trim()})});
+    if (!response.ok) throw new Error('save failed');
+    flashStatus(value.trim() ? '默认命令已保存：新建时只填入，不执行' : '已关闭默认命令填充', 3000);
+  } catch { flashStatus('保存失败，请重试', 3000); }
+}
 
 // A line icon in the bar's own colour, like the ⋯ beside it — the yellow 📁
 // emoji stood out against the dark bar. (The phone bar keeps its own.)
@@ -5767,6 +5829,13 @@ function setPagerEnabled(on: boolean): void {
 }
 setPagerEnabled(pagerEnabled);
 
+const newSessionCommandButton = sheetRow('⌨', '新建默认命令', () => {
+  closeSheet();
+  void configureNewSessionCommand();
+});
+newSessionCommandButton.title = 'PC、手机及顶部＋右键共用，后保存的配置覆盖原值；留空关闭';
+if (isShare) newSessionCommandButton.style.display = 'none';
+
 const recentLimitButton = sheetRow('◷', `最近访问会话数：${recentVisitLimit}`, async () => {
   closeSheet();
   const value = await domPrompt({ label: '最近访问会话数（1–50）', value: String(recentVisitLimit) });
@@ -6289,6 +6358,7 @@ sheet.append(
   layoutHint,
   pagerButton,
   sheetGroup('设置'),
+  newSessionCommandButton,
   recentLimitButton,
   statusModeRow,
   statusModeHint,

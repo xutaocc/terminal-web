@@ -940,6 +940,7 @@ const PREFS_FILE = process.env.PREFS_FILE || path.join(os.homedir(), ".terminal-
 configureColorPolicy(`${PREFS_FILE}.colors.json`);
 
 interface UiPrefs {
+  newSessionCommand?: string;
   theme?: "dark" | "light";
   /** Tab (tmux session) this device class last had focused. */
   activeTab?: string;
@@ -1020,7 +1021,7 @@ async function handleGetPrefs(
   // order when migrating a file that predates the shared scope.
   const hostOrder = all.shared?.hostOrder ?? all.desktop?.hostOrder ?? all.touch?.hostOrder;
   const tabOrder = all.shared?.tabOrder ?? all.desktop?.tabOrder ?? all.touch?.tabOrder;
-  sendJsonHttp(res, 200, { prefs: { ...(all[scope] ?? {}), ...(hostOrder ? { hostOrder } : {}), ...(tabOrder ? { tabOrder } : {}) } });
+  sendJsonHttp(res, 200, { prefs: { ...(all[scope] ?? {}), newSessionCommand: all.shared?.newSessionCommand ?? '', ...(hostOrder ? { hostOrder } : {}), ...(tabOrder ? { tabOrder } : {}) } });
 }
 
 /** Merge a partial update into one scope's prefs ({ scope, ...fields }). */
@@ -1039,6 +1040,10 @@ async function handleSetPrefs(
   const scope = prefScope(obj?.scope);
   if (!scope) {
     sendJsonHttp(res, 400, { error: "bad scope" });
+    return;
+  }
+  if (obj.newSessionCommand !== undefined && (typeof obj.newSessionCommand !== 'string' || obj.newSessionCommand.length > 2000 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(obj.newSessionCommand))) {
+    sendJsonHttp(res, 400, { error: '默认命令须为不含换行或控制字符的单行文本，最多 2000 字符' });
     return;
   }
   const operation = prefsWrite.then(async () => {
@@ -1095,6 +1100,7 @@ async function handleSetPrefs(
       all.shared = { ...all.shared, hostOrder: next.hostOrder };
     }
     if (Array.isArray(obj.tabOrder)) all.shared = { ...all.shared, tabOrder: next.tabOrder };
+    if (typeof obj.newSessionCommand === 'string') all.shared = { ...all.shared, newSessionCommand: obj.newSessionCommand.trim() };
     all[scope] = next;
     await writePrefs(all);
     prefsCache = all;
