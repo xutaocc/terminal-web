@@ -1,0 +1,34 @@
+dialog.mobile-actions {
+  position: fixed; inset: auto 0 0; margin: 0; box-sizing: border-box;
+  width: 100%; max-width: none; max-height: calc(var(--visible-h, 100dvh) - 24px);
+  padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+  border: 1px solid var(--ui-border, #454545); border-bottom: 0; border-radius: 16px 16px 0 0;
+  background: var(--ui-panel, #252526); color: var(--ui-text, #e5e5e5);
+  overflow: hidden;
+}
+dialog.mobile-actions[open] { display: flex; flex-direction: column; gap: 8px; }
+dialog.mobile-actions::backdrop { background: #0007; }
+dialog.mobile-actions .ps-menu {
+  position: static; width: 100%; min-width: 0; max-width: none; max-height: none;
+  box-sizing: border-box; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  border: 0; border-radius: 0; padding: 0; box-shadow: none; touch-action: pan-y;
+}
+dialog.mobile-actions .ps-menu-title { padding: 10px 12px; overflow-wrap: anywhere; }
+dialog.mobile-actions .ps-menu-item { min-height: 44px; padding: 10px 12px; font-size: 14px; }
+dialog.mobile-actions .mobile-actions-cancel {
+  flex: none; width: 100%; min-height: 44px; border: 1px solid var(--ui-border, #454545);
+  border-radius: 10px; background: var(--ui-raised, #333); color: inherit;
+  font: 600 14px system-ui, sans-serif;
+}
+dialog.mobile-actions button:focus-visible { outline: 2px solid #60b7ff; outline-offset: -2px; }
+/* Keep the operation target visible while the actions scroll independently. */
+dialog.mobile-actions .mobile-actions-context {
+  flex: none; max-height: 30dvh; overflow-y: auto; overscroll-behavior: contain;
+  padding: 8px 12px 12px; border-bottom: 1px solid var(--ui-border, #454545);
+  font: 12px/1.5 system-ui, sans-serif; overflow-wrap: anywhere;
+}
+.mobile-actions-host { display: flex; align-items: center; gap: 7px; color: var(--ui-muted, #aaa); }
+.mobile-actions-host > span:last-child { min-width: 0; }
+.mobile-actions-scope { margin-top: 8px; font-size: 14px; font-weight: 600; }
+.mobile-actions-directory { margin-top: 5px; color: var(--ui-text, #ddd); }
+.mobile-actions-path { margin-top: 3px; color: var(--ui-muted, #aaa); font-size: 11px; user-select: text; }

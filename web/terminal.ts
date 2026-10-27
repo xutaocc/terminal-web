@@ -1,3 +1,4 @@
+import { mountMobileActions } from './mobile-actions.js';
 import { confirmAction } from './confirm-dialog.js';
 import { ViewerStateSync } from './viewer-state.js';
 import { openShareManager } from './share-manager.js';
@@ -2888,12 +2889,15 @@ function orderTabStrip(): void {
 }
 
 let tabMenu: HTMLElement | null = null;
+let dismissMobileTabMenu: (() => void) | null = null;
 function closeTabMenu(): void {
+  dismissMobileTabMenu?.();
+  dismissMobileTabMenu = null;
   tabMenu?.remove();
   tabMenu = null;
 }
 document.addEventListener('pointerdown', e => {
-  if (tabMenu && !tabMenu.contains(e.target as Node)) closeTabMenu();
+  if (!dismissMobileTabMenu && tabMenu && !tabMenu.contains(e.target as Node)) closeTabMenu();
 }, true);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTabMenu(); });
 
@@ -2916,13 +2920,16 @@ function openTabMenu(s: Session, x: number, y: number): void {
     b.type = 'button';
     b.className = `ps-menu-item ${cls}`;
     b.textContent = text;
-    b.addEventListener('click', () => { closeTabMenu(); onPick(); });
+    bindIntentionalClick(b, () => { closeTabMenu(); onPick(); }, menu);
     menu.append(b);
   };
   item(isPinned(s) ? '取消置顶' : '置顶到目录最前', () => pinSession(s.name, !isPinned(s)));
   item('编辑会话信息', () => void showSessionNote(s));
   item('复制目录绝对路径', () => void copyCurrentPath(s, false));
   item('关闭会话', () => confirmCloseSession(s), 'danger');
+  tabMenu = menu;
+  dismissMobileTabMenu = mountMobileActions(menu, closeTabMenu, sidebar.actionContext(s.name));
+  if (dismissMobileTabMenu) return;
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;

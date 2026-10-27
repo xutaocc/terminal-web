@@ -1,3 +1,4 @@
+import { mobileActions, mountMobileActions, type ActionContext } from './mobile-actions.js';
 import { shareStorage as localStorage } from './share-context.js';
 import { sortRecentEntries } from './recent-tabs.js';
 import type { QuickSessionKind } from './quick-session-nav.js';
@@ -160,6 +161,7 @@ export class ProjectSidebar {
     hostBlock?: string;
   } | null = null;
   private menu: HTMLElement | null = null;
+  private dismissMobileMenu: (() => void) | null = null;
   private readonly quickPills = new Map<QuickSessionKind, HTMLButtonElement>();
 
   private readonly recentButton = document.createElement('button');
@@ -276,7 +278,7 @@ export class ProjectSidebar {
     this.el.append(top, header, quick, this.list, footer, handle);
     this.applyWidth();
     document.addEventListener('pointerdown', e => {
-      if (this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
+      if (!this.dismissMobileMenu && this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
       if (!this.recentWrap.contains(e.target as Node)) this.closeRecent();
     });
     document.addEventListener('keydown', e => {
@@ -435,8 +437,9 @@ export class ProjectSidebar {
 
   /** Dragging a server's header takes its whole block along (see bindHostReorder). */
   private bindHostDrag(head: HTMLElement, host: string): void {
-    head.draggable = true;
+    head.draggable = !mobileActions();
     head.addEventListener('dragstart', e => {
+      if (mobileActions()) { e.preventDefault(); return; }
       e.stopPropagation();
       this.dragging = { names: [], from: '', hostBlock: host };
       if (e.dataTransfer) {
@@ -733,7 +736,7 @@ export class ProjectSidebar {
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
         chip.classList.toggle('pinned', !!session.pinned);
-        chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）`;
+        chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}${mobileActions() ? '（点击进入，更多操作请点右侧 ⋯）' : '（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）'}`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
         chipDot.dataset.sessions = session.name;
@@ -757,6 +760,7 @@ export class ProjectSidebar {
         this.bindChipReorder(chip, session.name, chipIn);
         chip.addEventListener('contextmenu', e => {
           e.preventDefault();
+          if (mobileActions()) { e.stopPropagation(); return; }
           e.stopPropagation();
           this.openMenu(e, [session.name], group.key, session.displayName, undefined, !!session.pinned);
         });
@@ -778,6 +782,7 @@ export class ProjectSidebar {
       if (dir.cwd) this.bindReorder(card, group.key, dir.cwd, dirs.map(d => d.cwd).filter(Boolean));
       card.addEventListener('contextmenu', e => {
         e.preventDefault();
+        if (mobileActions()) { e.stopPropagation(); return; }
         this.openMenu(e, names, group.key, `${label.textContent}（${names.length} 个会话）`, carry);
       });
       el.append(card);
@@ -790,8 +795,9 @@ export class ProjectSidebar {
   // -------------------------------------------------------------------------
   private bindDrag(el: HTMLElement, names: string[], from: string, card?: { cwd: string; name: string }, cardCwd?: string,
                    chipIn?: string): void {
-    el.draggable = true;
+    el.draggable = !mobileActions();
     el.addEventListener('dragstart', e => {
+      if (mobileActions()) { e.preventDefault(); return; }
       e.stopPropagation();
       this.dragging = { names, from, card, cardCwd, chipIn };
       if (e.dataTransfer) {
@@ -923,6 +929,18 @@ export class ProjectSidebar {
     this.openMenu({ clientX: rect.left, clientY: rect.bottom } as MouseEvent, names, from, label, card, pinned);
   }
 
+  actionContext(name: string, count = 1, directoryOnly = false): ActionContext | undefined {
+    const section = this.lastRender?.sections.find(s => s.host === hostOfKey(name));
+    const group = section?.groups.find(g => g.items.some(s => s.name === name));
+    const session = group?.items.find(s => s.name === name);
+    if (!section || !group || !session) return undefined;
+    const path = session.cwd || '';
+    const directory = this.dirNames[group.key]?.[path] || path.split(/[\\/]/).filter(Boolean).pop() || (path ? '/' : '目录未知');
+    return { tag: section.tag, remote: section.remote, hostTitle: section.title,
+      directory, path, folder: group.folder?.name,
+      session: directoryOnly ? undefined : session.displayName, count };
+  }
+
   private openMenu(e: MouseEvent, names: string[], from: string, label: string, card?: { cwd: string; name: string },
                    pinned?: boolean): void {
     this.closeMenu();
@@ -989,6 +1007,9 @@ export class ProjectSidebar {
     sep2.className = 'ps-menu-sep';
     menu.append(sep2);
     item(pinned === undefined ? '关闭这个目录的全部会话' : '关闭会话', () => this.hooks.closeSessions(names), false, true);
+    this.menu = menu;
+    this.dismissMobileMenu = mountMobileActions(menu, () => this.closeMenu(), this.actionContext(names[0], names.length, pinned === undefined));
+    if (this.dismissMobileMenu) return;
     document.body.append(menu);
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(e.clientX, innerWidth - rect.width - 8))}px`;
@@ -997,6 +1018,8 @@ export class ProjectSidebar {
   }
 
   closeMenu(): void {
+    this.dismissMobileMenu?.();
+    this.dismissMobileMenu = null;
     this.menu?.remove();
     this.menu = null;
   }
