@@ -1481,7 +1481,7 @@ function handleRemoteEvents(req: http.IncomingMessage, res: http.ServerResponse)
 // ---------------------------------------------------------------------------
 
 const shares = new ShareService(new ShareStore(process.env.SHARES_FILE || path.join(os.homedir(), '.terminal-web', 'shares.json')), {
-  viewerState, token: config.authToken, publicDir: config.publicDir, remotes,
+  viewerState, maxUpload: config.uploadMaxBytes, token: config.authToken, publicDir: config.publicDir, remotes,
   subscribe: listener => {
     const off = [agentStatus.subscribe(listener), remoteStatus.subscribe(listener), remoteMonitor.subscribe(listener)];
     return () => off.forEach(fn => fn());

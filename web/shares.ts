@@ -10,7 +10,7 @@ window.addEventListener('message', event => {
 window.addEventListener('storage', event => { if (event.key?.startsWith('tw.theme.') && isTheme(event.newValue)) applyDocumentTheme(event.newValue); });
 
 type Session = { fromMain?: boolean; identity?: string; host: string; hostName: string; name: string; displayName: string; root: string; available?: boolean; error?: string };
-type Share = { id: string; name: string; sessions: Session[]; expiresAt: number | null; createdAt: number; lastAccessAt?: number; status: string; connections: number };
+type Share = { fileWrite?: boolean; id: string; name: string; sessions: Session[]; expiresAt: number | null; createdAt: number; lastAccessAt?: number; status: string; connections: number };
 type Group = { host: string; hostName: string; sessions: Session[]; error?: string };
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const embedded = window.parent !== window && new URLSearchParams(location.search).get('embedded') === '1';
@@ -40,9 +40,10 @@ function button(text: string, fn: () => void | Promise<void>, cls = '', loading 
   const b = el('button', text, cls); b.type = 'button';
   b.onclick = async () => {
     if (b.disabled) return;
+    const previousText = b.textContent;
     b.disabled = true; b.setAttribute('aria-busy', 'true'); b.textContent = loading;
     try { await fn(); } catch (e) { notice((e as Error).message); }
-    finally { b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = text; }
+    finally { b.disabled = false; b.removeAttribute('aria-busy'); if (b.textContent === loading) b.textContent = previousText; }
   };
   return b;
 }
@@ -151,7 +152,7 @@ async function editShare(old?: Share, duplicate = false) {
   }, 'quiet', '正在刷新…');
   const catalogBar = el('div', '', 'catalog-toolbar'); catalogBar.append(source, refresh);
   d.append(field('分享名称', name), field('到期时间（留空表示永不过期）', expiry), field('选择已有会话', search), catalogBar, choices, count,
-    el('p', '所示目录将固定为文件管理根目录。访客直接操作原终端，多人输入会互相影响；终端及 Claude Code 仍保留原系统权限。文件管理仅允许浏览、预览和下载。', 'muted'));
+    el('p', '所示目录将固定为文件管理根目录。访客直接操作原终端，多人输入会互相影响；终端及 Claude Code 仍保留原系统权限。文件管理默认只读，创建后可通过“文件操作”开关开放授权目录内的修改功能。', 'muted'));
   let createPayload = '', createRequestId = '';
   const save = button('确认保存', async () => {
     if (!name.reportValidity()) return;
@@ -205,6 +206,18 @@ async function admin() {
       await api('/api/shares', { action: 'revoke', id: s.id }); await admin(); notice('分享已终止');
     }, 'danger'));
     actions.append(button('复制配置', () => editShare(s, true)));
+    if (s.status !== 'revoked') {
+      const toggle = button(`文件操作 ${s.fileWrite ? '开' : '关'}`, async () => {
+        const result = await api('/api/shares', {action:'file-access', id:s.id, enabled:!s.fileWrite});
+        s.fileWrite = result.share.fileWrite === true;
+        toggle.textContent = `文件操作 ${s.fileWrite ? '开' : '关'}`;
+        toggle.setAttribute('aria-checked', String(s.fileWrite));
+        notice(s.fileWrite ? '文件操作已开启，仅限授权目录' : '文件操作已关闭，分享文件管理恢复只读');
+      }, 'file-access-toggle');
+      toggle.setAttribute('role','switch'); toggle.setAttribute('aria-label','文件操作'); toggle.setAttribute('aria-checked',String(s.fileWrite === true));
+      toggle.title = '允许在授权目录内编辑、上传、新建、移动和删除文件'; actions.append(toggle);
+    }
+
     if (s.status === 'revoked') actions.append(button('删除记录', async () => {
       if (!confirm(`删除「${s.name}」的分享记录？仅删除已终止的分享记录，不会删除原会话或文件。`)) return;
       await api('/api/shares', {action:'delete', id:s.id}); await admin(); notice('分享记录已删除');

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type http from 'node:http';
-export interface ViewerState { revision: number; reads: Record<string, number>; recent: string[]; limit: number }
+export interface ViewerState { revision: number; reads: Record<string, number>; recent: string[]; limit: number; initialized?: Record<string, boolean> }
 class ViewerInputError extends Error {}
 export const cursorKey = (session: string, instance: string) => JSON.stringify([session, instance]);
 /** Per credential state; never accepts a credential/scope supplied by the browser. */
@@ -15,6 +15,35 @@ export class ViewerStateStore {
   }
   subscribe(listener: (scope: string) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   async snapshot(scope: string): Promise<ViewerState> { await this.ready; return structuredClone(this.data[scope] ?? {revision: 0, reads: {}, recent: [], limit: 8}); }
+  /** Called only by the authorization layer, never by a browser operation. */
+  async initialize(scope: string, entries: {session: string; identity: string; instance: string; seq: number}[]): Promise<void> {
+    const run = this.writes.then(async () => {
+      const state = await this.snapshot(scope);
+      state.initialized ??= {};
+      let changed = false;
+      for (const entry of entries) {
+        const identity = cursorKey(entry.session, entry.identity);
+        if (state.initialized[identity]) continue;
+        // Existing users keep their read/unread history during migration.
+        const hasRead = Object.keys(state.reads).some(key => JSON.parse(key)[0] === entry.session);
+        if (!hasRead) state.reads[cursorKey(entry.session, entry.instance)] = entry.seq;
+        state.initialized[identity] = true;
+        changed = true;
+      }
+      if (changed) await this.persist(scope, state);
+    });
+    this.writes = run.then(() => {}, () => {});
+    return run;
+  }
+  private async persist(scope: string, state: ViewerState): Promise<void> {
+    state.revision++;
+    const next = {...this.data, [scope]: state};
+    await fs.mkdir(path.dirname(this.file), {recursive: true});
+    await fs.writeFile(this.file + '.tmp', JSON.stringify(next), {mode: 0o600});
+    await fs.rename(this.file + '.tmp', this.file);
+    this.data = next;
+    for (const listener of this.listeners) listener(scope);
+  }
   async update(scope: string, operation: any, allowed: (session: string) => boolean): Promise<ViewerState> {
     const run = this.writes.then(async () => {
       const state = await this.snapshot(scope);
@@ -32,17 +61,18 @@ export class ViewerStateStore {
         if (!Number.isInteger(operation.limit) || operation.limit < 1 || operation.limit > 50) throw new ViewerInputError('invalid limit');
         state.limit = operation.limit; state.recent = state.recent.slice(0, state.limit);
       } else throw new ViewerInputError('invalid operation');
-      state.revision++;
-      const next = {...this.data, [scope]: state};
-      await fs.mkdir(path.dirname(this.file), {recursive: true});
-      await fs.writeFile(this.file + '.tmp', JSON.stringify(next), {mode: 0o600});
-      await fs.rename(this.file + '.tmp', this.file);
-      this.data = next;
-      for (const listener of this.listeners) listener(scope);
+      await this.persist(scope, state);
       return structuredClone(state);
     });
     this.writes = run.then(() => {}, () => {});
     return run;
+  }
+  visible(state: ViewerState, allowed: (session: string) => boolean): ViewerState {
+    const result = structuredClone(state);
+    delete result.initialized;
+    result.recent = result.recent.filter(allowed);
+    result.reads = Object.fromEntries(Object.entries(result.reads).filter(([key]) => allowed(JSON.parse(key)[0])));
+    return result;
   }
   async http(req: http.IncomingMessage, res: http.ServerResponse, scope: string, allowed: (session: string) => boolean): Promise<void> {
     let state: ViewerState;
@@ -57,8 +87,7 @@ export class ViewerStateStore {
     } catch (error) {
       res.writeHead(error instanceof ViewerInputError ? 400 : 500).end('Viewer state request failed'); return;
     }
-    state.recent = state.recent.filter(allowed);
-    state.reads = Object.fromEntries(Object.entries(state.reads).filter(([key]) => allowed(JSON.parse(key)[0])));
+    state = this.visible(state, allowed);
     res.writeHead(200, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}).end(JSON.stringify(state));
   }
 }

@@ -27,11 +27,11 @@ export class ViewerStateSync {
     if (this.unread(session, status)) this.send({type: 'read', session, instance: status.instance ?? 'legacy', seq: status.eventSeq!});
   }
   send(operation: Operation): void { this.queue.push(operation); void this.flush(); }
-  private accept(state: ViewerState): void { if (state.revision >= this.state.revision) this.state = state; this.changed(this.effective()); }
+  receive(state: ViewerState): void { if (state.revision >= this.state.revision) this.state = state; this.changed(this.effective()); }
   async refresh(): Promise<void> {
     if (this.refreshing) { this.refreshAgain = true; return; }
     this.refreshing = true;
-    try { const response = await this.request('/api/viewer-state', {cache: 'no-store', signal: AbortSignal.timeout(10000)}); if (response.ok) this.accept(await response.json()); }
+    try { const response = await this.request('/api/viewer-state', {cache: 'no-store', signal: AbortSignal.timeout(10000)}); if (response.ok) this.receive(await response.json()); }
     catch { /* reconnect/poll retries */ }
     finally {
       this.refreshing = false;
@@ -46,7 +46,7 @@ export class ViewerStateSync {
       while (this.queue.length) {
         const response = await this.request('/api/viewer-state', {method: 'POST', signal: AbortSignal.timeout(10000), headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.queue[0])});
         if (!response.ok) { if (response.status === 400) this.queue.shift(); break; }
-        const state = await response.json(); this.queue.shift(); this.accept(state);
+        const state = await response.json(); this.queue.shift(); this.receive(state);
       }
     } catch { /* retain pending operations until reconnected */ }
     finally { this.flushing = false; }

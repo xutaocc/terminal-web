@@ -13,7 +13,7 @@ import type { SavedSession } from './session-store.js';
 
 const PEER = '/api/share-peer';
 const SCOPE = 'x-tw-share-scope';
-export interface ShareScope { grant?: string; authorize?: () => boolean; session: ShareSession; expiresAt: number | null }
+export interface ShareScope { grant?: string; fileWrite?: boolean; fileOwner?: string; authorize?: () => boolean; session: ShareSession; expiresAt: number | null }
 export class ShareError extends Error { constructor(message: string, public status = 400) { super(message); } }
 const json = (res: http.ServerResponse, status: number, value: unknown) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value));
@@ -39,6 +39,7 @@ export async function sharePath(root: string, relative: string): Promise<string>
 }
 interface Dependencies {
   viewerState?: ViewerStateStore;
+  maxUpload?: number;
   token: string; publicDir: string; remotes: RemoteStore;
   collect(): Promise<SavedSession[]>;
   get(name: string): SavedSession | undefined;
@@ -63,6 +64,7 @@ export class ShareService {
   private terminalConnections = new Map<string, Set<Duplex>>();
   private connections = new Map<string, Set<() => void>>();
   private remoteBindings = new Map<() => void, Pick<Remote, 'id' | 'url' | 'token'>>();
+  private filePermissionListeners = new Map<string, Set<(enabled: boolean) => void>>();
   private attempts = new Map<string, { count: number; until: number }>();
   constructor(readonly store: ShareStore, private d: Dependencies) {
     void this.syncRemotePolicies();
@@ -89,7 +91,7 @@ export class ShareService {
         const previous = this.policyQueues.get(remote.id) ?? Promise.resolve();
         const next = previous.catch(() => {}).then(async () => {
           // Compute the latest snapshot when this host's turn starts, not when queued.
-          const sessions = this.store.list().filter(s => activeShare(s)).flatMap(s => s.sessions.filter(item => item.host === remote.id).map(item => ({name:item.name, identity:item.identity, expiresAt:s.expiresAt})));
+          const sessions = this.store.list().filter(s => activeShare(s)).flatMap(s => s.sessions.filter(item => item.host === remote.id).map(item => ({name:item.name, identity:item.identity, expiresAt:s.expiresAt, root:item.root, fileWrite:s.fileWrite === true, fileGrant:this.fileGrant(s)})));
           const payload = JSON.stringify({source,sessions});
           const signature = digest(remote.url + remote.token + payload);
           if (this.policyAcknowledged.get(remote.id) === signature) return;
@@ -118,6 +120,7 @@ export class ShareService {
     let set = this.connections.get(id); if (!set) this.connections.set(id, set = new Set()); set.add(close);
     done(() => { set!.delete(close); if (!set!.size) this.connections.delete(id); });
   }
+  private fileGrant(s: Share): string { return createHmac('sha256', this.d.token).update('files:' + s.id + ':' + s.tokenHash).digest('hex'); }
   private signature(s: Share, value: string): string { return createHmac('sha256', this.d.token).update(`${s.id}:${s.revision}:${s.tokenHash}:${value}:${value.startsWith('preview:') ? digest(JSON.stringify(s.sessions)) : ''}`).digest('hex'); }
   private cookieName(id: string) { return `tw_share_${id.replaceAll('-', '')}`; }
   private authed(req: http.IncomingMessage, s: Share): boolean {
@@ -228,6 +231,16 @@ export class ShareService {
     const names = new Set(s.sessions.filter(item => item.host === host).map(item => item.name));
     return { mode: snapshot?.mode ?? 'hooks', sessions: Object.fromEntries(Object.entries(snapshot?.sessions ?? {}).filter(([name]) => names.has(name))) };
   }
+  private async initializeViewer(s: Share): Promise<void> {
+    if (!this.d.viewerState) return;
+    const entries = s.sessions.flatMap(session => {
+      const status = this.statusFor(s, session.host).sessions[session.name] as {instance?: string; eventSeq?: number} | undefined;
+      if (!status?.instance || !Number.isSafeInteger(status.eventSeq) || status.eventSeq! < 0) return [];
+      return [{session: (session.host ? '@' + session.host + '/' : '') + session.name,
+        identity: session.identity, instance: status.instance, seq: status.eventSeq!}];
+    });
+    await this.d.viewerState.initialize('share:' + s.id + ':' + s.tokenHash, entries);
+  }
   private async application(req: http.IncomingMessage, res: http.ServerResponse, s: Share, route: string, url: URL): Promise<void> {
     const remoteRoute = /^\/remote\/([a-z0-9]{1,16})(\/.*)$/.exec(route);
     const host = remoteRoute?.[1] ?? ''; route = remoteRoute?.[2] ?? route;
@@ -238,10 +251,11 @@ export class ShareService {
       res.setHeader('Set-Cookie', `${this.cookieName(s.id)}=; Path=/share/${s.id}/; HttpOnly; SameSite=Strict; Max-Age=0`); json(res, 200, { ok: true }); return;
     }
     if (route === '/api/viewer-state' && !host && this.d.viewerState) {
+      await this.initializeViewer(s);
       await this.d.viewerState.http(req, res, 'share:' + s.id + ':' + s.tokenHash, name => s.sessions.some(item => name === (item.host ? '@' + item.host + '/' : '') + item.name)); return;
     }
     if (route === '/api/agent-status/read' && method === 'POST') { json(res, 200, { ok: true }); return; }
-    if (!['GET', 'HEAD'].includes(method)) throw new ShareError('分享无权修改会话或文件', 403);
+    if (!['GET', 'HEAD'].includes(method) && !(method === 'POST' && route.startsWith('/api/files/') && s.fileWrite === true)) throw new ShareError('分享无权修改会话或文件', 403);
     if (route === '/api/sessions') {
       const tabs = allowed.map(item => ({ name: item.name, displayName: (!host && this.d.get(item.name)?.displayName) || item.displayName, cwd: item.root }));
       json(res, 200, { tabs }); return;
@@ -273,15 +287,22 @@ export class ShareService {
     if (route === '/api/agent-status') { json(res, 200, this.statusFor(s, host)); return; }
     if (route === '/api/agent-status/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-      const emit = () => {
+      const emit = () => { void (async () => {
+        await this.initializeViewer(this.store.get(s.id) ?? s);
         if (res.destroyed) return;
         const current = this.store.get(s.id);
         if (!current || !this.authed(req, current)) { res.write('event: share-ended\ndata: {}\n\n'); res.end(); return; }
+        if (this.d.viewerState) {
+          const viewer = await this.d.viewerState.snapshot('share:' + current.id + ':' + current.tokenHash);
+          if (res.destroyed || !this.authed(req, this.store.get(s.id) ?? current)) return;
+          const allowed = new Set(current.sessions.map(item => (item.host ? '@' + item.host + '/' : '') + item.name));
+          res.write(`event: viewer-state\ndata: ${JSON.stringify(this.d.viewerState.visible(viewer, name => allowed.has(name)))}\n\n`);
+        }
         res.write(`data: ${JSON.stringify(this.statusFor(current, ''))}\n\n`);
         const hosts = [...new Set(current.sessions.map(item => item.host).filter(Boolean))];
         for (const id of hosts) res.write(`event: remote\ndata: ${JSON.stringify({ host: id, status: this.statusFor(current, id) })}\n\n`);
         res.write(`event: health\ndata: ${JSON.stringify(Object.fromEntries(Object.entries(this.d.health()).filter(([id]) => hosts.includes(id))))}\n\n`);
-      };
+      })().catch(() => { if (!res.destroyed) res.end(); }); };
       this.track(s.id, () => { if (!res.destroyed) { res.write('event: share-ended\ndata: {}\n\n'); res.end(); } }, done => res.once('close', done));
       const unsubscribeViewer = this.d.viewerState?.subscribe(scope => { if (scope === 'share:' + s.id + ':' + s.tokenHash && !res.destroyed) res.write('event: viewer-state\ndata: {}\n\n'); });
       res.once('close', () => unsubscribeViewer?.());
@@ -292,16 +313,17 @@ export class ShareService {
     const session = allowed.find(item => item.name === name);
     if (!session) throw new ShareError('会话未授权', 403);
     const index = s.sessions.indexOf(session);
-    if (route === '/api/sessions/cwd') { json(res, 200, { path: session.root, readOnly: true, previewPrefix: this.previewPrefix(s, index) }); return; }
+    if (route === '/api/sessions/cwd') { json(res, 200, { path: session.root, readOnly: s.fileWrite !== true, previewPrefix: this.previewPrefix(s, index) }); return; }
     if (route === '/api/sessions/note') { json(res, 200, { note: '', displayName: session.displayName }); return; }
     const fileRoute = route === '/api/download' ? 'content' : route.startsWith('/api/files/') ? route.slice('/api/files/'.length) : '';
-    if (!['list', 'stat', 'text', 'content'].includes(fileRoute)) throw new ShareError('分享无权访问此功能', 403);
+    if (!(s.fileWrite === true ? ['list','stat','text','content','write','create','rename','upload','copy','move','remove','chmod','scan','compression-plan','compress','job','cancel'] : ['list', 'stat', 'text', 'content']).includes(fileRoute)) throw new ShareError('分享无权访问此功能', 403);
     const params = new URLSearchParams(url.searchParams); params.set('route', fileRoute);
     if (route === '/api/download') params.set('download', '1');
-    const scope: ShareScope = { session, expiresAt: s.expiresAt, authorize: () => { const current = this.store.get(s.id); return !!current && this.authed(req, current) && current.sessions.some(item => key(item) === key(session) && item.identity === session.identity); } };
+    const scope: ShareScope = { session, fileWrite: s.fileWrite === true, fileOwner: this.fileGrant(s), expiresAt: s.expiresAt, authorize: () => { const current = this.store.get(s.id); return !!current && this.authed(req, current) && current.sessions.some(item => key(item) === key(session) && item.identity === session.identity) && (!s.fileWrite || current.fileWrite === true); } };
     this.track(s.id, () => res.destroy(), done => res.once('close', done));
     if (host) {
       const remote = await this.d.remotes.get(host); if (!remote) throw new ShareError('远程主机已移除', 410);
+      if (method === 'POST' && s.fileWrite === true && !(await this.remoteJson(remote, '/catalog')).fileOperations) throw new ShareError('远程主机需升级后才能使用分享文件操作',409);
       if (res.destroyed || !scope.authorize!()) return;
       req.headers[SCOPE] = Buffer.from(JSON.stringify(scope)).toString('base64url');
       this.bindRemote(remote, () => res.destroy(), done => res.once('close', done));
@@ -312,16 +334,16 @@ export class ShareService {
   private async applicationFiles(req: http.IncomingMessage, res: http.ServerResponse, scope: ShareScope, params: URLSearchParams): Promise<void> {
     if (!this.validScope(scope)) throw new ShareError('会话授权已失效', 410);
     const route = params.get('route') ?? '';
-    if (!['list', 'stat', 'text', 'content'].includes(route) || !['GET', 'HEAD'].includes(req.method ?? '')) throw new ShareError('文件管理只读', 403);
-    const input = params.get('path') ?? '';
-    const raw = path.isAbsolute(input) ? input : path.resolve(scope.session.root, input);
-    const relative = path.relative(scope.session.root, raw).split(path.sep).join('/');
-    const checked = await sharePath(scope.session.root, relative);
-    if (!this.validScope(scope) || res.destroyed) throw new ShareError('会话授权已失效', 410);
-    const target = new URL('/api/files/' + route, 'http://localhost'); target.search = params.toString(); target.searchParams.set('path', checked);
+    const writable = scope.fileWrite === true;
+    if ((!writable && (!['list','stat','text','content'].includes(route) || !['GET','HEAD'].includes(req.method ?? ''))) || route === 'open-terminal') throw new ShareError('文件管理只读', 403);
+    const target = new URL('/api/files/' + route, 'http://localhost'); target.search = params.toString();
     const timer = setInterval(() => { if (!this.validScope(scope)) res.destroy(); }, 500); timer.unref(); res.once('close', () => clearInterval(timer));
-    await handleFileApi(req, res, target, { maxUpload: 0, tmuxConf: '' });
+    await handleFileApi(req, res, target, { maxUpload: this.d.maxUpload ?? 100 * 1024 * 1024, tmuxConf: '', scope: {
+      root: scope.session.root, owner: JSON.stringify([scope.fileOwner ?? 'readonly', scope.session.identity, scope.session.root]), writable,
+      authorize: () => this.validScope(scope) && (!writable || (scope.authorize ? scope.authorize() : !!scope.fileOwner && this.store.remoteFileAllowed(scope.fileOwner, scope.session))),
+    } });
   }
+
   async publicHttp(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
     if (!url.pathname.startsWith('/share/') && !url.pathname.startsWith('/share-assets/')) return false;
     try {
@@ -377,6 +399,14 @@ export class ShareService {
         const expiry = Math.min(Date.now() + 30 * 60_000, s.expiresAt ?? Infinity);
         json(res, 200, { prefix: `preview/${index}/${expiry}.${this.signature(s, `preview:${index}:${expiry}`)}/` }); return true;
       }
+      if (action === 'file-permissions' && req.method === 'GET') {
+        res.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-store','X-Accel-Buffering':'no'});
+        const send = (enabled: boolean) => { if (!res.destroyed) res.write(`data: ${JSON.stringify({fileWrite:enabled})}\n\n`); };
+        const listeners = this.filePermissionListeners.get(id) ?? new Set(); listeners.add(send); this.filePermissionListeners.set(id,listeners);
+        send(s.fileWrite === true);
+        const timer = setInterval(() => { const current=this.store.get(id); if (!current || !this.authed(req,current)) res.end(); else send(current.fileWrite === true); },5000); timer.unref();
+        res.once('close',()=>{clearInterval(timer);listeners.delete(send);if(!listeners.size)this.filePermissionListeners.delete(id);}); return true;
+      }
       if (action === 'file-browser.html' && req.method === 'GET') { await this.applicationPage(res, id, 'file-browser.html'); return true; }
       if (action.startsWith('app/')) { await this.application(req, res, s, '/' + action.slice(4), url); return true; }
       if (action === 'logout' && req.method === 'POST') {
@@ -423,12 +453,12 @@ export class ShareService {
       if (url.pathname === PEER + '/policy' && req.method === 'POST') {
         const b = await body(req);
         if (typeof b.source !== 'string' || !/^[a-f0-9]{64}$/.test(b.source) || !Array.isArray(b.sessions) || b.sessions.length > 10000 || b.sessions.some((s: any) => !s || typeof s.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(s.name) || typeof s.identity !== 'string' || !s.identity || (s.expiresAt !== null && (!Number.isFinite(s.expiresAt) || s.expiresAt <= 0)))) throw new ShareError('invalid share policy');
-        this.store.setRemotePolicy(b.source, b.sessions.map((s: any) => ({name:s.name, identity:s.identity, expiresAt:s.expiresAt})));
+        this.store.setRemotePolicy(b.source, b.sessions.map((s: any) => ({name:s.name, identity:s.identity, expiresAt:s.expiresAt, root:typeof s.root === 'string' ? s.root : undefined, fileWrite:s.fileWrite === true, fileGrant:typeof s.fileGrant === 'string' ? s.fileGrant : undefined})));
         json(res, 200, {ok:true}); return true;
       }
       if (url.pathname === PEER + '/release-control' && req.method === 'POST') { const b = await body(req); if (typeof b.grant !== 'string' || !/^[a-f0-9]{64}$/.test(b.grant)) throw new ShareError('invalid grant'); this.d.revokeControl(b.grant); json(res, 200, {ok:true}); return true; }
-      if (url.pathname === PEER + '/catalog' && req.method === 'GET') { json(res, 200, { version: 3, info: this.d.info(), folders: await this.d.folders(), sessions: await this.localCatalog() }); return true; }
-      if (url.pathname === PEER + '/files-app' && ['GET', 'HEAD'].includes(req.method ?? '')) { await this.applicationFiles(req, res, this.peerScope(req), url.searchParams); return true; }
+      if (url.pathname === PEER + '/catalog' && req.method === 'GET') { json(res, 200, { version: 3, fileOperations: true, info: this.d.info(), folders: await this.d.folders(), sessions: await this.localCatalog() }); return true; }
+      if (url.pathname === PEER + '/files-app' && ['GET', 'HEAD', 'POST'].includes(req.method ?? '')) { await this.applicationFiles(req, res, this.peerScope(req), url.searchParams); return true; }
       if (url.pathname === PEER + '/files' && ['GET', 'HEAD'].includes(req.method ?? '')) { await this.files(req, res, this.peerScope(req), url.searchParams); return true; }
       if (url.pathname === '/api/shares/catalog' && req.method === 'GET') { json(res, 200, { groups: await this.catalog() }); return true; }
       if (url.pathname !== '/api/shares') throw new ShareError('不存在', 404);
@@ -448,6 +478,13 @@ export class ShareService {
         json(res, 200, {ok:true}); return true;
       }
       if (old?.revokedAt) throw new ShareError('已终止的分享不能恢复', 409);
+      if (b.action === 'file-access') {
+        if (typeof b.enabled !== 'boolean') throw new ShareError('无效开关值');
+        const result = this.store.update(old!.id, {fileWrite:b.enabled});
+        await this.syncRemotePolicies([...new Set(result.share.sessions.map(item => item.host).filter(Boolean))]);
+        for (const listener of this.filePermissionListeners.get(old!.id) ?? []) listener(b.enabled);
+        json(res, 200, {share:this.publicShare(result.share)}); return true;
+      }
       if (b.action === 'token') {
         const token = this.store.revealToken(old!.id);
         if (!token) throw new ShareError('此历史记录仅保存了 Token 摘要，无法还原。请先重置一次，此后即可随时查看和复制。', 409);
@@ -465,6 +502,7 @@ export class ShareService {
         const sessions = await this.selection(b.sessions, old?.sessions);
         result = old ? this.store.update(old.id, { name, sessions, expiresAt }) : this.store.create(name, sessions, expiresAt, b.requestId);
       } else throw new ShareError('未知操作');
+      if (b.action !== 'revoke') await this.initializeViewer(result.share);
       if (old) this.disconnect(old.id, old);
       // Resetting a token does not change which sessions are shared. Do not
       // wait for every remote host (including offline hosts) to sync unchanged policy.

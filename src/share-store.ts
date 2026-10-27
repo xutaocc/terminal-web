@@ -15,6 +15,7 @@ export interface Share {
   id: string;
   name: string;
   sessions: ShareSession[];
+  fileWrite?: boolean;
   tokenHash: string;
   encryptedToken?: string;
   createRequestId?: string;
@@ -26,7 +27,7 @@ export interface Share {
 }
 export const digest = (token: string): string => createHash('sha256').update(token).digest('hex');
 export const activeShare = (s: Share, now = Date.now()): boolean => !s.revokedAt && (!s.expiresAt || s.expiresAt > now);
-export interface RemoteSharePolicy { name: string; identity: string; expiresAt: number | null }
+export interface RemoteSharePolicy { name: string; identity: string; expiresAt: number | null; fileGrant?: string; fileWrite?: boolean; root?: string }
 export class ShareStore {
   private shares: Share[];
   private remotePolicies: Record<string, RemoteSharePolicy[]> = {};
@@ -50,6 +51,9 @@ export class ShareStore {
   list(): Share[] { return structuredClone(this.shares); }
   remotelyShared(name: string, identity: string | undefined): boolean {
     return Object.values(this.remotePolicies).some(items => items.some(item => item.name === name && item.identity === identity && (!item.expiresAt || item.expiresAt > Date.now())));
+  }
+  remoteFileAllowed(grant: string, session: ShareSession): boolean {
+    return Object.values(this.remotePolicies).some(items => items.some(item => item.fileGrant === grant && item.fileWrite === true && item.name === session.name && item.identity === session.identity && item.root === session.root && (!item.expiresAt || item.expiresAt > Date.now())));
   }
   setRemotePolicy(source: string, sessions: RemoteSharePolicy[]): void {
     if (JSON.stringify(this.remotePolicies[source] ?? []) === JSON.stringify(sessions)) return;
@@ -123,7 +127,7 @@ export class ShareStore {
     this.save([...this.shares, share]);
     return { share, token };
   }
-  update(id: string, patch: Partial<Pick<Share, 'name' | 'sessions' | 'expiresAt' | 'revokedAt' | 'lastAccessAt'>>, reset = false) {
+  update(id: string, patch: Partial<Pick<Share, 'name' | 'sessions' | 'expiresAt' | 'revokedAt' | 'lastAccessAt' | 'fileWrite'>>, reset = false) {
     const previous = this.get(id);
     if (!previous) throw new Error('分享不存在');
     const token = reset ? randomBytes(32).toString('base64url') : undefined;

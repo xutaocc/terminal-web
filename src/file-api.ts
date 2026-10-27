@@ -1,3 +1,4 @@
+import { checkFileScope, FileScopeError, type FileScope } from './file-scope.js';
 import type http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -63,7 +64,7 @@ async function body(req: http.IncomingMessage, limit = TEXT_LIMIT + 65536): Prom
   catch { throw new FileError('请求 JSON 无效'); }
 }
 function message(error: unknown): string {
-  if (error instanceof FileError) return error.message;
+  if (error instanceof FileError || error instanceof FileScopeError) return error.message;
   const err = error as NodeJS.ErrnoException;
   const names: Record<string, string> = { ENOENT: '文件或目录不存在', EACCES: '没有访问权限', EPERM: '没有操作权限', ENOTDIR: '目标不是目录', EEXIST: '目标已存在', ENOSPC: '磁盘空间不足', EXDEV: '跨文件系统移动失败', EBUSY: '文件正在使用', ELOOP: '符号链接循环' };
   return `${names[err.code || ''] || '文件操作失败'}${err.path ? `：${err.path}` : ''}`;
@@ -112,21 +113,22 @@ export function compressionParent(inputs: string[]): string {
   }
   return parent;
 }
-interface Job { id: string; status: 'running' | 'complete' | 'failed' | 'cancelled'; operation: string; count: number; current: string; result?: unknown; error?: string; failures: { path: string; error: string }[]; cancelled: boolean; cancel?: () => void; }
+interface Job { owner?: string; authorize?: () => boolean; id: string; status: 'running' | 'complete' | 'failed' | 'cancelled'; operation: string; count: number; current: string; result?: unknown; error?: string; failures: { path: string; error: string }[]; cancelled: boolean; cancel?: () => void; }
 // 任务独立于 HTTP 连接运行：手机断网不会取消已启动的操作。
 // 状态仅保存在服务进程内，不提供服务重启或服务器重启后的恢复保证。
 const jobs = new Map<string, Job>();
-function task(operation: string, run: (job: Job) => Promise<unknown>): Job {
+function task(operation: string, run: (job: Job) => Promise<unknown>, scope?: FileScope): Job {
   if ([...jobs.values()].filter(j => j.status === 'running').length >= 3) throw new FileError('后台任务繁忙，请稍后重试', 429);
   if (jobs.size > 100) for (const [id, job] of jobs) { if (job.status !== 'running') jobs.delete(id); if (jobs.size <= 80) break; }
-  const job: Job = { id: crypto.randomUUID(), operation, status: 'running', count: 0, current: '', failures: [], cancelled: false };
+  const job: Job = { owner:scope?.owner, authorize:scope?.authorize, id: crypto.randomUUID(), operation, status: 'running', count: 0, current: '', failures: [], cancelled: false };
   jobs.set(job.id, job);
-  void run(job).then(result => { job.result = result; job.status = job.cancelled ? 'cancelled' : 'complete'; }).catch(error => { job.error = message(error); job.status = job.cancelled ? 'cancelled' : 'failed'; });
+  const permissionTimer = scope ? setInterval(() => { if (!scope.authorize()) { job.cancelled=true; job.cancel?.(); } },200) : undefined; permissionTimer?.unref();
+  void run(job).then(result => { job.result = result; job.status = job.cancelled ? 'cancelled' : 'complete'; }).catch(error => { job.error = message(error); job.status = job.cancelled ? 'cancelled' : 'failed'; }).finally(() => clearInterval(permissionTimer));
   return job;
 }
-function checkpoint(job: Job, p: string): void { if (job.cancelled) throw new FileError('操作已取消'); job.current = p; job.count++; }
+function checkpoint(job: Job, p: string): void { if (job.authorize && !job.authorize()) { job.cancelled = true; job.cancel?.(); } if (job.cancelled) throw new FileError('操作已取消'); job.current = p; job.count++; }
 // 先生成包含/排除清单供前端确认；执行时消费计划，避免重复提交创建多个压缩包。
-const plans = new Map<string, { inputs: string[]; exclusions: string[]; entries: WalkEntry[]; parent: string; expires: number }>();
+const plans = new Map<string, { inputs: string[]; exclusions: string[]; entries: WalkEntry[]; parent: string; expires: number; owner?: string }>();
 async function noNestedDestination(source: string, destination: string): Promise<void> {
   const stat = await fsp.lstat(source);
   if (!stat.isDirectory()) return;
@@ -176,14 +178,14 @@ async function publish(temporary: string, target: string): Promise<void> {
     await fsp.copyFile(temporary, target, fs.constants.COPYFILE_EXCL);
   }
 }
-async function upload(req: http.IncomingMessage, destination: string, name: string, maxBytes: number): Promise<void> {
+async function upload(req: http.IncomingMessage, destination: string, name: string, maxBytes: number, scope?: FileScope): Promise<void> {
   await directory(destination);
   const target = path.join(destination, basename(name)); await unused(target);
   const temporary = path.join(destination, `.tw-upload-${crypto.randomUUID()}`);
   const handle = await fsp.open(temporary, 'wx', 0o600); let size = 0;
   try {
-    for await (const chunk of req) { const data = Buffer.from(chunk); size += data.length; if (size > maxBytes) throw new FileError('上传超过大小限制', 413); let offset = 0; while (offset < data.length) offset += (await handle.write(data, offset, data.length - offset)).bytesWritten; }
-    await handle.close(); await publish(temporary, target);
+    for await (const chunk of req) { if (scope) await checkFileScope(scope,target,true); const data = Buffer.from(chunk); size += data.length; if (size > maxBytes) throw new FileError('上传超过大小限制', 413); let offset = 0; while (offset < data.length) offset += (await handle.write(data, offset, data.length - offset)).bytesWritten; }
+    await handle.close(); if (scope) await checkFileScope(scope,target,true); await publish(temporary, target);
   } finally { await handle.close().catch(() => {}); await fsp.unlink(temporary).catch(() => {}); }
 }
 async function textFile(p: string): Promise<{ data: Buffer; version: string }> {
@@ -241,10 +243,23 @@ export async function handleSite(req: http.IncomingMessage, res: http.ServerResp
   }
   return true;
 }
-export async function handleFileApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, options: { maxUpload: number; tmuxConf: string }): Promise<boolean> {
+export async function handleFileApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, options: { maxUpload: number; tmuxConf: string; scope?: FileScope }): Promise<boolean> {
   if (!url.pathname.startsWith('/api/files/')) return false;
   const route = url.pathname.slice('/api/files/'.length);
+  const scope = options.scope;
+  const check = async (value: unknown, mutation = false, deep = false) => {
+    const p = absolute(value);
+    if (scope) await checkFileScope(scope, p, mutation, deep);
+    return p;
+  };
+  const ownsJob = (id: string) => { const job = jobs.get(id); if (scope && job?.owner !== scope.owner) throw new FileError('任务未授权',403); };
   try {
+    if (scope) {
+      if (!scope.authorize() || (req.method === 'POST' && !scope.writable)) throw new FileError('文件操作权限已关闭或失效',403);
+      if (route === 'open-terminal') throw new FileError('分享无权创建终端',403);
+      if (url.searchParams.has('path')) await check(url.searchParams.get('path'), req.method === 'POST');
+      if (route === 'job') ownsJob(url.searchParams.get('id') || '');
+    }
     if ((req.method === 'GET' || req.method === 'HEAD') && route === 'content') { await content(req, res, absolute(url.searchParams.get('path')), url.searchParams.get('download') === '1' ? 'download' : 'inline'); return true; }
     if (req.method === 'GET' && route === 'list') {
       const p = absolute(url.searchParams.get('path')); await directory(p);
@@ -261,10 +276,24 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
       let text: string; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data); } catch { throw new FileError('文件不是 UTF-8 文本，请在终端转换编码后编辑', 415); }
       json(res, 200, { text, version }); return true;
     }
-    if (req.method === 'GET' && route === 'job') { const job = jobs.get(url.searchParams.get('id') || ''); if (!job) throw new FileError('任务不存在', 404); json(res, 200, { ...job, cancel: undefined }); return true; }
+    if (req.method === 'GET' && route === 'job') { const job = jobs.get(url.searchParams.get('id') || ''); if (!job) throw new FileError('任务不存在', 404); json(res, 200, { ...job, cancel: undefined, authorize:undefined, owner:undefined }); return true; }
     if (req.method !== 'POST') throw new FileError('不支持的请求方法', 405);
-    if (route === 'upload') { await upload(req, absolute(url.searchParams.get('path')), url.searchParams.get('name') || '', options.maxUpload); json(res, 200, { ok: true }); return true; }
+    if (route === 'upload') { if (scope) await check(path.join(absolute(url.searchParams.get('path')), basename(url.searchParams.get('name'))), true); await upload(req, absolute(url.searchParams.get('path')), url.searchParams.get('name') || '', options.maxUpload, scope); json(res, 200, { ok: true }); return true; }
     const obj = await body(req);
+    if (scope) {
+      if (obj.path !== undefined) await check(obj.path, true);
+      if (obj.directory !== undefined) await check(obj.directory, true);
+      if (obj.destination !== undefined) await check(obj.destination, true);
+      if (obj.paths !== undefined) for (const p of paths(obj.paths)) await check(p, true, true);
+      if (Array.isArray(obj.exclude)) for (const p of obj.exclude) await check(p);
+      if (['rename','remove','move','chmod'].includes(route)) {
+        const items = obj.path !== undefined ? [absolute(obj.path)] : paths(obj.paths);
+        if (items.some(p => p === path.resolve(scope.root))) throw new FileError('不能修改分享根目录',403);
+      }
+      if (route === 'cancel') ownsJob(String(obj.id));
+      if (route === 'create') await check(path.join(absolute(obj.directory), basename(obj.name)), true);
+      if (route === 'rename') await check(path.join(path.dirname(absolute(obj.path)),basename(obj.name)), true);
+    }
     if (route === 'write') { if (typeof obj.text !== 'string') throw new FileError('缺少文本'); await writeText(absolute(obj.path), obj.text, obj.version); json(res, 200, { ok: true }); }
     else if (route === 'create') { const dest = absolute(obj.directory); await directory(dest); const p = path.join(dest, basename(obj.name)); if (obj.kind === 'directory') await fsp.mkdir(p); else if (obj.kind === 'file') await fsp.writeFile(p, '', { flag: 'wx', mode: 0o644 }); else throw new FileError('无效类型'); json(res, 200, await fileEntry(p)); }
     else if (route === 'rename') { const source = absolute(obj.path); mutable(source); const dest = path.join(path.dirname(source), basename(obj.name)); await unused(dest); await fsp.rename(source, dest); json(res, 200, await fileEntry(dest)); }
@@ -291,36 +320,39 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
           const entries = await walk(inputs, exclusions, p => checkpoint(current, p));
           if (route === 'compression-plan') {
             const parent = compressionParent(inputs);
+            if (scope) await check(parent, true);
             for (const entry of entries) if (/[\r\n]/.test(entry.path)) throw new FileError('压缩暂不支持包含换行符的文件名');
             for (const [id, plan] of plans) if (plan.expires < Date.now()) plans.delete(id);
             if (plans.size >= 32) throw new FileError('压缩计划过多，请稍后再试', 429);
-            const id = crypto.randomUUID(); plans.set(id, { inputs, exclusions, entries, parent, expires: Date.now() + 600000 });
+            const id = crypto.randomUUID(); plans.set(id, { inputs, exclusions, entries, parent, owner:scope?.owner, expires: Date.now() + 600000 });
             return { planId: id, parent, included: entries.map(e => e.path), excluded: exclusions, files: entries.filter(e => !e.directory).length, directories: entries.filter(e => e.directory).length };
           }
           return { files: entries.filter(e => !e.directory).length, directories: entries.filter(e => e.directory).length, bytes: entries.filter(e => !e.directory).reduce((sum, e) => sum + e.size, 0), diskBytes: entries.reduce((sum, e) => sum + e.blocks * 512, 0), excluded: exclusions };
         }
         for (const input of inputs) {
           checkpoint(current, input);
+          if (scope) await check(input,true,true);
           try {
             if (route === 'remove') await fsp.rm(input, { recursive: true });
             else if (route === 'chmod') {
               const entries = obj.recursive === true ? await walk([input], [], p => checkpoint(current, p)) : [{ path: input, symlink: (await fsp.lstat(input)).isSymbolicLink() }];
               for (const entry of entries) { checkpoint(current, entry.path); if (entry.symlink) { current.failures.push({ path: entry.path, error: '跳过符号链接，避免修改链接目标' }); continue; } try { await fsp.chmod(entry.path, mode); } catch (error) { current.failures.push({ path: entry.path, error: message(error) }); } }
             } else {
-              const dest = path.join(destination, path.basename(input)); await unused(dest);
+              const dest = path.join(destination, path.basename(input)); if (scope) await check(dest,true); await unused(dest);
               if (route === 'copy') await fsp.cp(input, dest, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true, filter: async source => { checkpoint(current, source); const stat = await fsp.lstat(source); if (!stat.isDirectory() && !stat.isFile() && !stat.isSymbolicLink()) throw new FileError('不能复制特殊文件'); return true; } });
               else { try { await fsp.rename(input, dest); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error; await fsp.cp(input, dest, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true }); if (current.cancelled) throw new FileError('任务已取消，源文件保留'); await fsp.rm(input, { recursive: true }); } }
             }
           } catch (error) { if (current.cancelled) throw error; current.failures.push({ path: input, error: message(error) }); }
         }
         return { ok: !current.failures.length };
-      }); json(res, 202, { jobId: job.id });
+      }, scope); json(res, 202, { jobId: job.id });
     }
     else if (route === 'compress') {
       const id = String(obj.planId); const plan = plans.get(id); if (!plan || plan.expires < Date.now()) throw new FileError('压缩计划已过期，请重新确认', 409);
+      if (scope) { if (plan.owner !== scope.owner) throw new FileError('压缩计划未授权',403); for (const p of plan.inputs) await check(p,true,true); await check(plan.parent,true); }
       const name = basename(obj.name); if (!name.toLowerCase().endsWith('.zip')) throw new FileError('压缩文件名必须以 .zip 结尾');
       if (!plan.entries.length) throw new FileError('没有可压缩的条目');
-      const output = path.join(plan.parent, name); await unused(output);
+      const output = path.join(plan.parent, name); await check(output,true); await unused(output);
       const job = task('compress', async current => {
         const temporary = path.join(plan.parent, `.tw-archive-${crypto.randomUUID()}.zip`);
         // Entry names inside the zip always use "/", whatever the host's separator.
@@ -348,17 +380,19 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
             }
             current.count = plan.entries.length; current.current = output;
           });
+          checkpoint(current, output);
+          if (scope) await check(output,true);
           if (current.cancelled) throw new FileError('压缩已取消');
           await publish(temporary, output); return { path: output };
         } finally {
           current.cancel = undefined; await fsp.unlink(temporary).catch(() => {});
           if (manifest) await fsp.unlink(manifest).catch(() => {});
         }
-      }); plans.delete(id); json(res, 202, { jobId: job.id });
+      }, scope); plans.delete(id); json(res, 202, { jobId: job.id });
     }
     else throw new FileError('接口不存在', 404);
   } catch (error) {
-    if (!res.headersSent) json(res, error instanceof FileError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '') ? 403 : 400, { error: message(error) });
+    if (!res.headersSent) json(res, error instanceof FileScopeError ? 403 : error instanceof FileError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '') ? 403 : 400, { error: message(error) });
     else res.destroy();
   }
   return true;

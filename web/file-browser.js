@@ -15,6 +15,8 @@ const query = new URLSearchParams(location.search);
 const host = /^[a-z0-9]{1,16}$/.test(query.get('host') || '') ? query.get('host') : '';
 const hostBase = (isShare ? `${shareBase}app` : '') + (host ? `/remote/${host}` : '');
 let shareRoot = '', previewPrefix = '';
+let fileWritable = !isShare;
+const actionAllowed = label => !isShare || (label !== '立即打开对应终端目录' && (fileWritable || readActions.has(label)));
 const readActions = new Set(['进入', '预览', '源码', '浏览器打开', '下载', '详情', '复制路径', '更多']);
 const apiBase = `${hostBase}/api/files/`;
 let theme = query.get('theme');
@@ -60,7 +62,7 @@ function toast(text) {
   node.textContent = text; node.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => node.style.display = 'none', 3500);
 }
 async function request(route, data, params = {}) {
-  if (isShare) { if (data !== undefined) throw new Error('分享文件管理为只读'); params = { ...params, session }; }
+  if (isShare) { if (data !== undefined && !fileWritable) throw new Error('分享文件管理为只读'); params = { ...params, session }; }
   const url = apiBase + route + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '');
   const response = await fetch(url, data === undefined ? { credentials: 'same-origin', cache: 'no-store' } : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   if (response.status === 401) { window.parent.postMessage({ type: 'files-auth-expired' }, location.origin); throw new Error('登录已失效，请重新登录'); }
@@ -213,7 +215,7 @@ function footer() {
   if (selecting) actions = [['全选', () => { document.querySelectorAll('.row input').forEach(input => { input.checked = true; input.onchange(); }); }], ['压缩', () => menuAction('压缩', null)], ['更多', () => menu(null)]];
   else if (active?.path !== current) actions = active?.directory ? [['进入', () => navigate(active.path)], ['更多', () => menu(active)]] : [...(htmlExtensions.test(active.name) ? [['浏览器打开', () => openSite(active)], ['源码', () => viewSource(active)]] : [['预览', () => preview(active)]]), ['编辑', () => preview(active, true)], ['更多', () => menu(active)]];
   else actions = [['＋ 新建', () => createMenu(current)], ['↑ 上传', () => uploadInto(current)], ['更多', () => menu(active)]];
-  actions.filter(([text]) => !isShare || readActions.has(text)).forEach(([text, action]) => box.append(button(text, action, ['进入', '压缩', '↑ 上传'].includes(text) ? 'primary' : '')));
+  actions.filter(([text]) => actionAllowed(text)).forEach(([text, action]) => box.append(button(text, action, ['进入', '压缩', '↑ 上传'].includes(text) ? 'primary' : '')));
 }
 function menu(item) {
   if (!item && !selected.size) return toast('请先选择条目');
@@ -223,7 +225,7 @@ function menu(item) {
   if (item && !item.directory && htmlExtensions.test(item.name)) ops.unshift(['↗', '浏览器打开']);
   if (item) ops.push(['⧉', '复制路径'], ['✎', '重命名'], ['ⓘ', '详情']);
   ops.push(['▣', '复制'], ['↗', '移动'], ['▤', '压缩'], ...(windowsHost ? [] : [['⚿', '权限']]), ['∑', '统计'], ['×', '删除']);
-  ops.filter(([,label]) => !isShare || readActions.has(label)).forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
+  ops.filter(([,label]) => actionAllowed(label)).forEach(([icon, label]) => { const node = button(label, () => menuAction(label, item), label === '删除' ? 'danger' : ''); node.prepend(el('span', '', icon)); grid.append(node); }); body.append(grid);
 }
 function confirmation(title, fields, execute) {
   const body = sheet(title, '确认以下信息后执行');
@@ -240,7 +242,7 @@ function inputForm(title, subtitle, fields, submitText, callback) {
   return form;
 }
 function createMenu(directory) {
-  if (isShare) return;
+  if (!fileWritable) return;
   const body = sheet('新建', directory);
   ['directory', 'file'].forEach(kind => body.append(button(`＋ 新建${kind === 'directory' ? '文件夹' : '文件'}`, () => inputForm('新建', directory, [['name', '名称', kind === 'directory' ? '新文件夹' : 'untitled.txt']], '创建', async inputs => {
     await request('create', { directory, name: inputs.name.value, kind }); closeDialog($('#sheet')); await refresh(); toast('已创建');
@@ -273,7 +275,7 @@ async function startJob(route, data, onDone) {
   } finally { taskInProgress = false; $('#sheet .close').disabled = false; }
 }
 async function menuAction(label, item) {
-  if (isShare && !readActions.has(label)) return;
+  if (!actionAllowed(label)) return;
   const paths = currentSelection(item); if (!paths.length) return toast('请先选择条目');
   if (label === '进入') { closeDialog($('#sheet')); return navigate(item.path); }
   if (label === '立即打开对应终端目录') {
@@ -371,7 +373,7 @@ async function compression(paths) {
 }
 
 let uploadDirectory = '';
-function uploadInto(p) { if (isShare) return; uploadDirectory = p; $('#upload').click(); }
+function uploadInto(p) { if (!fileWritable) return; uploadDirectory = p; $('#upload').click(); }
 $('#upload').onchange = async event => {
   const files = [...event.target.files]; event.target.value = ''; if (!files.length) return;
   const body = sheet('上传文件', uploadDirectory), status = el('p'), progress = el('progress'), errors = el('p', 'task-errors'); progress.max = 100; progress.style.width = '100%'; body.append(status, progress, errors);
@@ -381,7 +383,7 @@ $('#upload').onchange = async event => {
     const file = files[index]; status.textContent = `${index + 1}/${files.length} · ${file.name}`;
     try {
       await new Promise((resolve, reject) => {
-        xhr = new XMLHttpRequest(); xhr.open('POST', `${apiBase}upload?${new URLSearchParams({ path: uploadDirectory, name: file.name })}`); xhr.withCredentials = true;
+        xhr = new XMLHttpRequest(); xhr.open('POST', `${apiBase}upload?${new URLSearchParams({ path: uploadDirectory, name: file.name, ...(isShare ? {session} : {}) })}`); xhr.withCredentials = true;
         xhr.upload.onprogress = event => { if (event.lengthComputable) progress.value = event.loaded / event.total * 100; };
         xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) resolve(); else { let text; try { text = JSON.parse(xhr.responseText).error; } catch { text = xhr.status === 401 ? '登录已失效' : `上传失败（${xhr.status}）`; } reject(new Error(text)); } };
         xhr.onerror = () => reject(new Error('网络错误')); xhr.onabort = () => reject(new Error('上传已取消')); xhr.send(file);
@@ -423,11 +425,11 @@ async function openSite(item) {
 function editingBaseline() { return originalText.replace(/\r\n?/g, '\n'); }
 function unsaved() { return !!$('#preview-content textarea') && $('#preview-content textarea').value !== editingBaseline(); }
 async function preview(item, edit = false) {
-  if (isShare) edit = false;
+  if (!fileWritable) edit = false;
   if (unsaved() && !window.confirm('当前文本尚未保存，是否放弃修改？')) return;
   const media = !edit && (imageExtensions.test(item.name) || videoExtensions.test(item.name) || audioExtensions.test(item.name) || /\.pdf$/i.test(item.name));
   const box = $('#preview-content'); box.classList.remove('editing'); box.replaceChildren(); $('#preview-title').textContent = item.name; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑'; $('#edit').hidden = $('#copy-content').hidden = !!media;
-  if (isShare) $('#edit').hidden = true;
+  if (!fileWritable) $('#edit').hidden = true;
   $('#open-site').hidden = !htmlExtensions.test(item.name); $('#render-toggle').hidden = true;
   previewItem = item; markdownView = !edit && markdownExtensions.test(item.name);
   if (media) {
@@ -467,7 +469,7 @@ function showText() {
   $('#editor-status').textContent = `${lines.length} 行 · 只读`; $('#preview-mode').textContent = '预览'; $('#edit').textContent = '编辑';
 }
 function startEditing() {
-  if (isShare) return;
+  if (!fileWritable) return;
   const box = $('#preview-content'); box.classList.add('editing'); $('#render-toggle').hidden = true;
   const wrapper = el('div', 'text-editor'), gutter = el('div', 'editor-gutter'), numbers = el('div', 'editor-numbers'), area = el('textarea', 'editor-input'); gutter.setAttribute('aria-hidden', 'true'); gutter.append(numbers);
   area.value = previewText; area.wrap = 'off'; area.spellcheck = false; area.setAttribute('autocapitalize', 'off'); area.setAttribute('autocomplete', 'off'); area.setAttribute('aria-label', '文本编辑');
@@ -516,7 +518,7 @@ click($('#sort'), () => { const body = sheet('排序', '每一级目录独立排
 async function requestSessionPath() {
   const response = await fetch(`${hostBase}/api/sessions/cwd?${new URLSearchParams({ session })}`, { cache: 'no-store' });
   if (!response.ok) throw new Error(response.status === 401 ? '登录已失效' : '无法取得当前终端目录，请刷新或返回终端重试');
-  const result = await response.json(); sessionPath = result.path; if (isShare) { shareRoot = result.path; previewPrefix = result.previewPrefix; } return sessionPath;
+  const result = await response.json(); sessionPath = result.path; if (isShare) { shareRoot = result.path; previewPrefix = result.previewPrefix; applyFilePermission(result.readOnly === false); } return sessionPath;
 }
 $('#tree').append(el('p', 'tree-error', '正在读取当前会话目录…'));
 $('#session-label').textContent = query.get('label') || session || '当前会话';
@@ -553,3 +555,23 @@ fetch(`${hostBase}/api/host-info`, { cache: 'no-store' }).then(r => r.ok ? r.jso
   if (active) render();
 }).catch(() => { /* keep the Unix menu */ });
 (async () => { try { const p = await requestSessionPath(); await navigate(p, false); } catch (error) { toast(error.message); $('#tree').append(el('p', 'tree-error', error.message)); } })();
+
+function applyFilePermission(enabled) {
+  if (!isShare) return;
+  const changed = fileWritable !== enabled; fileWritable = enabled;
+  $('#select').hidden = !enabled;
+  $('.demo-note').textContent = `分享文件管理 · ${enabled ? '可操作' : '只读'} · 仅限授权目录`;
+  if (!enabled) {
+    selecting = false; selected.clear();
+    const area = $('#preview-content textarea'); if (area) area.readOnly = true;
+    $('#edit').hidden = true;
+    if (changed && $('#sheet').open && !taskInProgress) closeDialog($('#sheet'));
+  } else { const area = $('#preview-content textarea'); if (area) area.readOnly = false; if (previewItem) $('#edit').hidden = false; }
+  if (cache.has(current)) render();
+}
+if (isShare) {
+  const permissions = new EventSource(shareBase + 'file-permissions');
+  permissions.onmessage = event => { try { applyFilePermission(JSON.parse(event.data).fileWrite === true); } catch {} };
+  permissions.onerror = () => applyFilePermission(false);
+  window.addEventListener('pagehide', () => permissions.close());
+}

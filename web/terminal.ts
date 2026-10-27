@@ -2502,7 +2502,13 @@ function connectAgentStatus(host: string): void {
   // events) and every remote's status (`remote` events).
   const source = new EventSource('/api/agent-status/events?health=1');
   agentSources.set(host, source);
-  source.addEventListener('viewer-state', () => { void readCursors.refresh(); });
+  source.addEventListener('viewer-state', (event: MessageEvent) => {
+    try {
+      const state = JSON.parse(event.data);
+      if (typeof state.revision === 'number') { readCursors.receive(state); return; }
+    } catch { /* An invalidation without a snapshot requests a full refresh. */ }
+    void readCursors.refresh();
+  });
   source.onopen = () => { void readCursors.refresh(); };
   source.onmessage = (event: MessageEvent) => {
     try {
@@ -5541,7 +5547,9 @@ function refreshStatusModeUI(): void {
   }
   const current = STATUS_MODES.find(m => m.mode === agentMode);
   statusModeHint.textContent = statusModeError ||
-    (current ? `${current.hint} 所有设备共用。` : '服务端未提供状态来源（需重启服务以启用），当前按原始方式显示。');
+    (isShare
+      ? `状态来源：${current?.label ?? '等待主机状态'} · 跟随当前主机，由管理员设置。`
+      : current ? `${current.hint} 所有设备共用。` : '服务端未提供状态来源（需重启服务以启用），当前按原始方式显示。');
 }
 async function setStatusMode(mode: string): Promise<void> {
   for (const button of statusModeButtons.values()) button.disabled = true;
@@ -6278,7 +6286,7 @@ sheet.append(
   }),
   sheetRow('↪', '退出登录', () => { closeSheet(); void logoutBrowser(); }),
 );
-if (isShare) for (const node of [uploadSheetButton, splitRow, statusModeRow, statusModeHint, colorRow, colorHint, remoteGroup]) node.style.display = 'none';
+if (isShare) for (const node of [uploadSheetButton, splitRow, statusModeRow, colorRow, colorHint, remoteGroup]) node.style.display = 'none';
 sheetOverlay.append(sheet);
 document.body.append(sheetOverlay);
 bindIntentionalClick(sheetOverlay, (e) => {
