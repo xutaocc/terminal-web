@@ -2352,7 +2352,8 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-recent-settings button { border: 1px solid var(--ui-border, #555); border-radius: 6px; background: var(--ui-raised, #333); color: inherit; font: inherit; font-size: 12px; min-height: 30px; padding: 4px 9px; cursor: pointer; touch-action: manipulation; }
 .ps-recent-presets button { flex: 1; }
 .ps-recent-settings button[aria-pressed="true"] { color: var(--ui-accent-text, #62b8ec); border-color: var(--ui-accent-border, #3984ad); background: var(--ui-selected, #263642); }
-.ps-recent-custom { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 12px; }
+/* Hide the custom count controls on all layouts; restore flex to re-enable. */
+.ps-recent-custom { display: none; align-items: center; gap: 8px; margin-top: 9px; font-size: 12px; }
 .ps-recent-custom input { min-width: 0; width: 64px; border: 1px solid var(--ui-border, #555); border-radius: 5px; background: var(--ui-surface, #252526); color: inherit; font: inherit; padding: 5px 7px; }
 .ps-recent-settings small { display: block; margin-top: 8px; font-size: 11px; color: var(--ui-muted, #aaa); }
 .ps-recent-settings :is(button,input):focus-visible { outline: 2px solid var(--ui-primary, #2472c8); outline-offset: 2px; }
