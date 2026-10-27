@@ -161,6 +161,7 @@ export class ProjectSidebar {
     hostBlock?: string;
   } | null = null;
   private menu: HTMLElement | null = null;
+  private dismissRecentPanel: (() => void) | null = null;
   private dismissMobileMenu: (() => void) | null = null;
   private readonly quickPills = new Map<QuickSessionKind, HTMLButtonElement>();
 
@@ -279,7 +280,7 @@ export class ProjectSidebar {
     this.applyWidth();
     document.addEventListener('pointerdown', e => {
       if (!this.dismissMobileMenu && this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
-      if (!this.recentWrap.contains(e.target as Node)) this.closeRecent();
+      if (!this.dismissRecentPanel && !this.recentWrap.contains(e.target as Node)) this.closeRecent();
     });
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
@@ -490,7 +491,26 @@ export class ProjectSidebar {
     });
   }
 
+  openRecentPanel(): void {
+    this.closeRecent();
+    this.updateRecent();
+    this.recentMenu.hidden = false;
+    this.recentMenu.classList.add('ps-menu');
+    const heading = document.createElement('div');
+    heading.className = 'ps-menu-title'; heading.textContent = '最近访问';
+    this.recentMenu.prepend(heading);
+    this.dismissRecentPanel = mountMobileActions(this.recentMenu, () => this.closeRecent());
+    this.recentToggle.setAttribute('aria-expanded', 'true');
+  }
+
   private closeRecent(): void {
+    if (this.dismissRecentPanel) {
+      this.recentWrap.append(this.recentMenu);
+      this.dismissRecentPanel();
+      this.dismissRecentPanel = null;
+    }
+    this.recentMenu.classList.remove('ps-menu');
+    this.recentMenu.querySelector('.ps-menu-title')?.remove();
     this.recentMenu.hidden = true;
     this.recentToggle.setAttribute('aria-expanded', 'false');
   }

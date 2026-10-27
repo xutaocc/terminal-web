@@ -5297,9 +5297,16 @@ const mMenuBadge = document.createElement('span');
 mMenuBadge.className = 'm-menu-badge';
 mMenuBadge.hidden = true;
 mMenuBtn.append(mMenuBadge);
-const mTitle = document.createElement('button');
+const mTitle = document.createElement('div');
 mTitle.className = 'm-title';
-mTitle.type = 'button';
+const mRecent = document.createElement('button');
+mRecent.type = 'button'; mRecent.className = 'm-title-recent';
+mRecent.setAttribute('aria-label', '切换到下一个最近访问会话');
+mRecent.title = '循环切换最近访问';
+const mSession = document.createElement('button');
+mSession.type = 'button'; mSession.className = 'm-title-session';
+mSession.setAttribute('aria-label', '打开最近访问');
+mSession.title = '最近访问';
 const mTitleDot = document.createElement('span');
 mTitleDot.className = 'tab-dot';
 const mTitleLabel = document.createElement('span');
@@ -5310,8 +5317,11 @@ mCaret.textContent = '▾';
 const mTitleHost = document.createElement('span');
 const mTitleIp = document.createElement('span');
 mTitleIp.className = 'm-title-ip';
-mTitle.append(mTitleDot, mTitleHost, mTitleLabel, mTitleIp, mCaret);
-bindIntentionalClick(mTitle, openDrawer);
+mRecent.append(mTitleDot, mTitleHost);
+mSession.append(mTitleLabel, mTitleIp, mCaret);
+mTitle.append(mRecent, mSession);
+bindIntentionalClick(mRecent, () => navigateRecentVisit());
+bindIntentionalClick(mSession, () => sidebar.openRecentPanel());
 
 // Built directly (not via mBtn) so it triggers on a real `click`: iOS refuses to
 // open a file picker from a preventDefaulted pointerdown.
@@ -6330,7 +6340,7 @@ function refreshMobileUI(): void {
   document.title = (attention ? `(${attention}) ` : '') +
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
   mTitleLabel.textContent = s ? s.displayName : '—';
-  mTitleHost.replaceChildren(...(s && remoteHosts.length ? [hostBadge(s.host)] : []));
+  mTitleHost.replaceChildren(...(s ? [hostBadge(s.host)] : []));
   mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));
   if (!sheetOverlay.classList.contains('hidden')) { refreshSettingsTarget(); refreshStatusModeUI(); renderAccessLink(); }
   mTitleDot.classList.toggle('connected', !!s?.connected);

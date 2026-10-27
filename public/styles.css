@@ -2400,3 +2400,15 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
   .drawer .ps-quick-pill .tab-dot { --st-size: 10px; }
   .drawer .ps-recent-toggle { min-width: 32px; }
 }
+
+/* Separate quick recent switching from the recent-visits panel on phones. */
+.m-title { padding: 0; gap: 0; cursor: default; }
+.m-title-recent, .m-title-session {
+  display: flex; align-items: center; gap: 6px; height: 100%; min-width: 0;
+  padding: 0 6px; border: 0; background: transparent; color: inherit;
+  font: inherit; cursor: pointer; touch-action: manipulation;
+}
+.m-title-recent { flex: none; border-right: 1px solid var(--ui-border, #505050); }
+.m-title-session { flex: 1; }
+.m-title-recent:active, .m-title-session:active { background: var(--ui-hover, #404040); }
+.m-title-recent:focus-visible, .m-title-session:focus-visible { outline: 2px solid #60b7ff; outline-offset: -2px; }
