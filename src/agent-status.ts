@@ -424,15 +424,15 @@ export class AgentStatusMonitor {
       return;
     }
     const revision = t.revision;
-    const hooked = this.mode === 'hooks' && now - t.hookAt < HOOK_FRESH_MS;
+    const hooked = this.mode === 'hooks' && t.hookAt > 0 && now - t.hookAt < HOOK_FRESH_MS;
     const busy = t.state === 'working' || t.state === 'waiting';
     // Read the screen only when something was drawn, or while a turn is open
     // (so its end is seen promptly). Idle sessions cost one list-panes line.
     // psmux never advances #{window_activity}; its screen is the activity signal.
     if (!this.windows && pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
-    // Windows has no activity timestamp: keep busy fallback responsive, but
-    // poll quiet screens at most every 5s. Hooks still update immediately.
-    if (this.windows && t.screen !== undefined && !busy && now - t.capturedAt < 5000) return;
+    // Only a recent, actually received hook lets us reduce idle Windows scans.
+    // Screen mode and unhooked/expired sessions still need the 1s fallback.
+    if (this.windows && hooked && t.screen !== undefined && !busy && now - t.capturedAt < 5000) return;
     t.activity = pane.activity;
     t.capturedAt = now;
     // psmux numbers panes per session (every session's first is %1), so a

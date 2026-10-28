@@ -224,7 +224,7 @@ test('completed/read hook turns ignore delayed tool results but allow new work',
   assert.equal(state().unread, true);
 });
 
-test('screen fallback preserves read completion through typing/redraws and still detects genuine new work', async t => {
+for (const windows of [false, true]) test(`screen fallback preserves read completion and detects new work (${windows ? 'Windows' : 'Unix'})`, async t => {
   const { AgentStatusMonitor } = await import('../src/agent-status.js');
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -236,7 +236,7 @@ test('screen fallback preserves read completion through typing/redraws and still
   let screen = '› 待输入\nGPT-6.1-Sol';
   let activity = 0;
   const monitor = new AgentStatusMonitor(file, async args => args[0] === 'list-panes'
-    ? `%1 task 11 ${activity} node ⠋ Old title` : screen);
+    ? `%1 task 11 ${activity} node ⠋ Old title` : screen, windows);
   const flush = () => new Promise(resolve => setImmediate(resolve));
   const tick = async () => { activity++; t.mock.timers.tick(1000); await flush(); };
   const state = () => monitor.snapshot().sessions.task;
@@ -300,7 +300,7 @@ test('standalone and boxed running footers remain valid without title inference'
   assert.equal(paneSignal('• Working (1s • esc to interrupt)\n› Draft while task runs', 'Task'), 'working');
 });
 
-test('Windows quiet panes reduce capture load while hooks and busy fallback stay responsive', async t => {
+test('only hooked Windows quiet panes reduce capture load; busy and expired hooks keep fallback', async t => {
   const { AgentStatusMonitor } = await import('../src/agent-status.js');
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -318,6 +318,7 @@ test('Windows quiet panes reduce capture load while hooks and busy fallback stay
   const flush = () => new Promise(resolve => setImmediate(resolve));
   try {
     await monitor.start(); await flush(); assert.equal(captures, 1);
+    await monitor.hook('%1','Stop','','','task');
     for (let i=0;i<4;i++) {t.mock.timers.tick(1000); await flush();}
     assert.equal(captures, 1);
     t.mock.timers.tick(1000); await flush(); assert.equal(captures, 2);
@@ -325,5 +326,41 @@ test('Windows quiet panes reduce capture load while hooks and busy fallback stay
     assert.equal(monitor.snapshot().sessions.task.state, 'working');
     t.mock.timers.tick(1000); await flush(); assert.equal(captures, 3);
     t.mock.timers.tick(1000); await flush(); assert.equal(captures, 4);
+    await monitor.hook('%1','Stop','','','task');
+    t.mock.timers.tick(30 * 60_000); await flush();
+    const afterExpiry = captures;
+    t.mock.timers.tick(1000); await flush();
+    assert.equal(captures, afterExpiry + 1);
+  } finally {monitor.stop(); await rm(dir, {recursive:true,force:true});}
+});
+
+
+test('Windows hooks mode without received hooks detects short tasks on the next poll', async t => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'tw-win-unhooked-'));
+  const file = join(dir, 'status.json');
+  await writeFile(file, JSON.stringify({mode:'hooks'}));
+  // Within HOOK_FRESH_MS of epoch: hookAt=0 must not count as a received hook.
+  t.mock.timers.enable({apis:['Date','setInterval'], now:100000});
+  let screen = '› 待输入\nGPT-6.1-Sol';
+  let captures = 0;
+  const monitor = new AgentStatusMonitor(file, async args => {
+    if (args[0] === 'list-panes') return '%1 task 11 0 node title';
+    if (args[0] === 'capture-pane') { captures++; return screen; }
+    return '';
+  }, true);
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    await monitor.start(); await flush();
+    screen = '• Working (1s • esc to interrupt)\n› \nGPT-6.1-Sol';
+    t.mock.timers.tick(1000); await flush();
+    assert.equal(captures, 2);
+    assert.equal(monitor.snapshot().sessions.task.state, 'working');
+    screen = '› 待输入\nGPT-6.1-Sol';
+    for (let i=0;i<3;i++) {t.mock.timers.tick(1000); await flush();}
+    assert.equal(monitor.snapshot().sessions.task.state, 'done');
   } finally {monitor.stop(); await rm(dir, {recursive:true,force:true});}
 });
