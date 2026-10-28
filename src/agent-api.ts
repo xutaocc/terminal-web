@@ -22,6 +22,7 @@ interface Session {
   id: string; name: string; label: string; cwd: string; generation: string;
   createdAt?: string; closedAt?: string; lastActivityAt?: string;
   historyClearedAt?: string;
+  historyCleanupPending?: boolean;
   ended?: boolean; requests: Record<string, RecordEntry>;
 }
 interface Runtime {
@@ -113,23 +114,25 @@ export class AgentApi {
   closedHistory() {
     this.journal.flush();
     const all = [...this.sessions.values()].filter(s => s.ended).map(s => ({
-      id: s.id, label: s.label, closedAt: s.closedAt,
+      id: s.id, label: s.label, closedAt: s.closedAt, cleanupPending: !!s.historyCleanupPending,
       bytes: (Object.keys(s.requests).length ? Buffer.byteLength(JSON.stringify(s.requests)) : 0) + this.journal.bytes(s.id),
-    })).filter(s => s.bytes > 0);
+    })).filter(s => s.bytes > 0 || s.cleanupPending);
     const sessions = all.slice(0, 200);
     return {total: all.length, count: sessions.length, bytes: sessions.reduce((n, s) => n + s.bytes, 0), sessions};
   }
   private purgeHistory(id: string): void {
     const s = this.sessions.get(id);
     if (!s || !s.ended) throw new ApiError(409, 'SESSION_NOT_CLOSED');
-    const previous = {requests: s.requests, historyClearedAt: s.historyClearedAt};
-    s.requests = {}; s.historyClearedAt ??= new Date().toISOString();
+    const previous = {requests: s.requests, historyClearedAt: s.historyClearedAt, historyCleanupPending: s.historyCleanupPending};
+    s.requests = {}; s.historyClearedAt ??= new Date().toISOString(); s.historyCleanupPending = true;
     try { this.save(); } catch (error) { Object.assign(s, previous); throw error; }
     // Fence delayed output and flush timers before unlinking. On partial failure,
     // the durable marker prevents recreation; remaining files can be retried.
     const r = this.runtimes.get(id);
     if (r) { r.events = []; r.bytes = 0; for (const wake of r.listeners) wake(); }
     this.journal.remove(id);
+    s.historyCleanupPending = false;
+    try { this.save(); } catch (error) { s.historyCleanupPending = true; throw error; }
   }
   purgeClosedHistory(ids: unknown) {
     if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new ApiError(400, 'INVALID_SESSION_IDS');
