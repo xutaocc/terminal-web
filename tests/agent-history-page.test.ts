@@ -22,8 +22,8 @@ test('navigation exists at both ends and return links stay on the controller ori
   assert.equal(historyTerminalHref(name,'@bad/agent_'+'b'.repeat(32)),'/?focus='+name);
   const html=renderAgentHistory({label:'test',records:[]},historyTerminalHref(name,remote));
   assert.equal((html.match(/← 返回终端/g)||[]).length,2);
-  assert.equal((html.match(/href="#history-top"/g)||[]).length,2);
-  assert.equal((html.match(/href="#history-bottom"/g)||[]).length,2);
+  assert.equal((html.match(/href="#history-top"/g)||[]).length,3);
+  assert.equal((html.match(/href="#history-bottom"/g)||[]).length,3);
   assert(html.includes('id="history-top"')); assert(html.includes('id="history-bottom"'));
   assert(!renderAgentHistory(null,'javascript:alert(1)').includes('javascript:'));
 });
