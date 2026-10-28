@@ -161,6 +161,10 @@ export class ProjectSidebar {
     /** A server's whole block, dragged by its header to another place among the servers. */
     hostBlock?: string;
   } | null = null;
+  private readonly shareCount = document.createElement('span');
+  private readonly mobileShareCount = document.createElement('span');
+  private sharedSessions = new Map<string, number>();
+  private sharingSignature = '';
   private menu: HTMLElement | null = null;
   private dismissRecentPanel: (() => void) | null = null;
   private dismissMobileMenu: (() => void) | null = null;
@@ -187,6 +191,9 @@ export class ProjectSidebar {
     const title = document.createElement('span');
     title.className = 'ps-title';
     title.textContent = '会话';
+    this.shareCount.className = 'ps-share-count';
+    this.shareCount.hidden = true;
+    title.append(this.shareCount);
     header.append(
       title,
       iconButton(ICONS.folderPlus, '新建文件夹', () => hooks.newFolder(hostOfKey(this.activeFolder()))),
@@ -255,6 +262,9 @@ export class ProjectSidebar {
     });
     this.recentWrap.append(this.recentButton, this.recentToggle, this.recentMenu);
     quick.append(this.recentWrap);
+    this.mobileShareCount.className = 'ps-share-count ps-share-count-mobile';
+    this.mobileShareCount.hidden = true;
+    quick.append(this.mobileShareCount);
     this.updateQuickCounts({ unread: 0, working: 0 });
     this.list.className = 'ps-list';
 
@@ -764,7 +774,16 @@ export class ProjectSidebar {
         const chipName = document.createElement('span');
         chipName.className = 'ps-chip-name';
         chipName.textContent = session.displayName;
-        chip.append(chipDot, chipName);
+        chip.append(chipDot);
+        const sharedCount = this.sharedSessions.get(session.name) ?? 0;
+        if (sharedCount) {
+          const lock = document.createElement('span'); lock.className = 'ps-share-lock';
+          lock.title = `分享中：${sharedCount} 个有效 Token 已授权此会话`;
+          lock.setAttribute('role', 'img'); lock.setAttribute('aria-label', lock.title);
+          lock.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3" y="7" width="10" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 7V4a3 3 0 0 1 6 0v3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="11" r="1" fill="currentColor"/></svg>';
+          chip.append(lock);
+        }
+        chip.append(chipName);
         if (session.pinned) {
           const pin = document.createElement('span');
           pin.className = 'pin-mark';
@@ -787,7 +806,20 @@ export class ProjectSidebar {
         });
         const wrap = document.createElement('span');
         wrap.className = 'ps-chip-wrap';
-        wrap.append(chip, iconButton('⋯', `管理会话：${session.displayName}`, () =>
+        wrap.append(chip);
+        if (!this.hooks.readOnly && this.hooks.canClose?.(session.name) !== false) {
+          const close = document.createElement('button');
+          close.type = 'button'; close.className = 'ps-icon-btn ps-chip-close';
+          close.textContent = '×';
+          close.title = `关闭会话：${session.displayName}`;
+          close.setAttribute('aria-label', close.title);
+          bindIntentionalClick(close, e => {
+            e.stopPropagation();
+            if (!mobileActions() && this.hooks.canClose?.(session.name) !== false) this.hooks.closeSessions([session.name]);
+          }, this.list);
+          wrap.append(close);
+        }
+        wrap.append(iconButton('⋯', `管理会话：${session.displayName}`, () =>
           this.openMenuAt(chip, [session.name], group.key, session.displayName, undefined, !!session.pinned)));
         chips.append(wrap);
       }
@@ -948,6 +980,19 @@ export class ProjectSidebar {
                      card?: { cwd: string; name: string }, pinned?: boolean): void {
     const rect = anchor.getBoundingClientRect();
     this.openMenu({ clientX: rect.left, clientY: rect.bottom } as MouseEvent, names, from, label, card, pinned);
+  }
+
+  updateSharing(count: number, shared: Map<string, number>): void {
+    const signature = JSON.stringify([count, [...shared].sort()]);
+    if (signature === this.sharingSignature) return;
+    this.sharingSignature = signature;
+    this.sharedSessions = shared;
+    for (const badge of [this.shareCount, this.mobileShareCount]) {
+      badge.hidden = count === 0;
+      badge.textContent = `分享中 ${count}`;
+      badge.title = `${count} 个有效分享 Token（不是会话数或在线设备数）`;
+    }
+    this.rerender();
   }
 
   actionContext(name: string, count = 1, directoryOnly = false): ActionContext | undefined {

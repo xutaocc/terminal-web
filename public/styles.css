@@ -2352,7 +2352,8 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .ps-recent-settings button { border: 1px solid var(--ui-border, #555); border-radius: 6px; background: var(--ui-raised, #333); color: inherit; font: inherit; font-size: 12px; min-height: 30px; padding: 4px 9px; cursor: pointer; touch-action: manipulation; }
 .ps-recent-presets button { flex: 1; }
 .ps-recent-settings button[aria-pressed="true"] { color: var(--ui-accent-text, #62b8ec); border-color: var(--ui-accent-border, #3984ad); background: var(--ui-selected, #263642); }
-.ps-recent-custom { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 12px; }
+/* Hide the custom count controls on all layouts; restore flex to re-enable. */
+.ps-recent-custom { display: none; align-items: center; gap: 8px; margin-top: 9px; font-size: 12px; }
 .ps-recent-custom input { min-width: 0; width: 64px; border: 1px solid var(--ui-border, #555); border-radius: 5px; background: var(--ui-surface, #252526); color: inherit; font: inherit; padding: 5px 7px; }
 .ps-recent-settings small { display: block; margin-top: 8px; font-size: 11px; color: var(--ui-muted, #aaa); }
 .ps-recent-settings :is(button,input):focus-visible { outline: 2px solid var(--ui-primary, #2472c8); outline-offset: 2px; }
@@ -2412,3 +2413,20 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .m-title-session { flex: 1; }
 .m-title-recent:active, .m-title-session:active { background: var(--ui-hover, #404040); }
 .m-title-recent:focus-visible, .m-title-session:focus-visible { outline: 2px solid #60b7ff; outline-offset: -2px; }
+.ps-share-lock { display: inline-flex; align-items: center; flex: none; color: #ef6666; margin-right: 3px; }
+.ps-share-count { display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 5px; background: #e0525218; color: var(--ui-danger-text, #ef8888); font-size: 11px; font-weight: 500; vertical-align: middle; white-space: nowrap; }
+.ps-share-count[hidden] { display: none; }
+.ps-share-count-mobile { display: none; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .drawer .ps-share-count-mobile:not([hidden]) { display: inline-flex; align-items: center; margin-left: 0; }
+}
+.m-share-count { flex: none; align-self: center; color: var(--ui-danger-text, #ef6666); font: 600 11px/1.2 system-ui, sans-serif; white-space: nowrap; padding: 0 3px; }
+.m-share-count[hidden], .m-shared-lock[hidden] { display: none; }
+.m-shared-lock { margin-right: 0; }
+
+/* Desktop-only close shortcut; the existing confirmation still handles termination. */
+.ps-chip-wrap > .ps-chip-close { width: 20px; height: 22px; font-size: 15px; color: var(--ui-muted, #999); }
+.ps-chip-wrap > .ps-chip-close:hover { color: var(--ui-danger-text, #f07878); background: #e0525218; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .ps-chip-wrap > .ps-chip-close { display: none; }
+}

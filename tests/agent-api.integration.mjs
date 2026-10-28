@@ -21,7 +21,8 @@ const host = {url:`${plain ? 'http' : 'https'}://127.0.0.1:${port}`,token,...(pl
 const env = {...process.env, HOST:'127.0.0.1', PORT:String(port), AUTH_TOKEN:token, TLS_CERT_FILE:cert, TLS_KEY_FILE:key, AGENT_ENABLED:'1', AGENT_STATUS_MODE:'hooks'};
 if (plain) { delete env.TLS_CERT_FILE; delete env.TLS_KEY_FILE; }
 for (const name of ['SESSIONS_FILE','SHARES_FILE','REMOTES_FILE','PREFS_FILE','AGENT_STATUS_FILE','VIEWER_STATE_FILE','PROJECTS_FILE','QUICK_COMMANDS_FILE','CLOSED_SESSIONS_FILE','AGENT_SESSIONS_FILE','AUTH_TOKEN_FILE']) env[name]=path.join(dir,name+'.json');
-let proc, log='', session, browser;
+let proc, log='', session, browser, ordinary;
+const ordinaryName='merge-test-'+randomBytes(8).toString('hex');
 const sleep = ms=>new Promise(r=>setTimeout(r,ms));
 async function start() {
   proc=spawn(process.execPath,['--import','tsx','src/server.ts'],{env,stdio:['ignore','pipe','pipe']});
@@ -82,9 +83,29 @@ try {
   const until = async (check, message) => { for(let i=0;i<50;i++){if(check())return;await sleep(100);}throw Error(message); };
   await input("1..200 | ForEach-Object { Write-Output ('HISTORY_' + $_) }\r");
   await until(()=>execFileSync(mux,['capture-pane','-p','-t',`=${session.name}:`],{encoding:'utf8'}).includes('HISTORY_200'),'history output must finish');
+  // Ordinary-session fixture exercises merged share lifecycle and close UI.
+  ordinary=new WebSocket(host.url.replace(/^http/,'ws')+`/ws?session=${ordinaryName}&create=1&dir=${encodeURIComponent(dir)}`,{rejectUnauthorized:false,headers:{Cookie:`tw_auth=${token}`}});
+  await once(ordinary,'open');
+  await until(()=>{try{execFileSync(mux,['has-session','-t',`=${ordinaryName}`],{stdio:'ignore'});return true;}catch{return false;}},'ordinary fixture');
+  await sleep(500);
+  const {default:http}=await import('node:http');
+  const admin=async (url,body,cookie=`tw_auth=${token}`)=>new Promise((resolve,reject)=>{
+    const r=(plain?http:https).request(host.url+url,{method:body?'POST':'GET',rejectUnauthorized:false,headers:{Cookie:cookie,'Content-Type':'application/json'}},res=>{
+      let text='';res.on('data',b=>text+=b);res.on('end',()=>{try{resolve({status:res.statusCode,body:JSON.parse(text)});}catch{resolve({status:res.statusCode});}});
+    });r.on('error',reject);r.end(body?JSON.stringify(body):undefined);
+  });
+  const created=await admin('/api/shares',{action:'create',name:'merge lifecycle',sessions:[{host:'',name:ordinaryName}],expiresAt:null});
+  assert.equal(created.status,200);const share=created.body;
+  assert.equal((await admin('/api/shares',{action:'revoke',id:share.share.id})).status,200);
+  const restored=await admin('/api/shares',{action:'restore',id:share.share.id,expiresAt:null});
+  assert.equal(restored.status,200);assert.equal(restored.body.share.status,'active');
+  assert.notEqual(restored.body.token,share.token);
+  assert.equal((await admin(`/share/${share.share.id}/login`,{token:share.token},'')).status,401);
+  assert.equal((await admin(`/share/${share.share.id}/login`,{token:restored.body.token},'')).status,200);
+  assert.equal((await admin('/api/shares',{action:'restore',id:share.share.id,expiresAt:null})).status,409);
   if(process.env.AGENT_BROWSER_TEST==='1') {
     const {verifyAgentViewer}=await import('./agent-browser-helper.mjs');
-    await verifyAgentViewer({base:host.url,token,session,mux,directory:dir,write:input});
+    await verifyAgentViewer({base:host.url,token,session,mux,directory:dir,write:input,ordinaryName});
   }
   assert.equal(controls.at(-1).agentReadOnly,true);
   assert.equal(controls.at(-1).readOnly,true);
@@ -97,7 +118,6 @@ try {
   browser.send(Buffer.from("$env:WATCHER_BAD='bad'\r"));await sleep(1500);
   assert.equal(paneMode(),originalMode);assert.equal(dimensions(),size);
   assert.equal(controls.at(-1).mine,false);
-  const {default:http}=await import('node:http');
   const killStatus=await new Promise((resolve,reject)=>{const r=(plain?http:https).request(host.url+'/api/sessions/kill',{method:'POST',rejectUnauthorized:false,headers:{Cookie:`tw_auth=${token}`,'Content-Type':'application/json'}},res=>{res.resume();resolve(res.statusCode);});r.on('error',reject);r.end(JSON.stringify({name:session.name}));});
   assert.equal(killStatus,403);
   await input("Write-Output ('WATCHER_BLOCKED=' + [string]::IsNullOrEmpty($env:WATCHER_BAD))\r");
@@ -127,7 +147,8 @@ try {
   assert.equal(received,0);await new Promise(r=>trap.close(r));
   console.log(`PASS ${plain ? 'HTTP + Token' : 'HTTPS + Token'}, CLI, authentication, persistence, dedupe, read-only browser isolation, restart, close; TLS pin protection`);
 } finally {
-  browser?.terminate();
+  browser?.terminate(); ordinary?.terminate();
+  try{execFileSync(path.resolve('.psmux/tmux.exe'),['kill-session','-t',`=${ordinaryName}`],{stdio:'ignore'});}catch{}
   if(session){try{execFileSync(path.resolve('.psmux/tmux.exe'),['kill-session','-t',`=${session.name}`],{stdio:'ignore'});}catch{}}
   await stop();
   // Keep the isolated test directory for diagnosing failures; it contains only generated test credentials.

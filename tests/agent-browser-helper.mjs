@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import WebSocket from 'ws';
 
-export async function verifyAgentViewer({ base, token, session, mux, directory, write }) {
+export async function verifyAgentViewer({ base, token, session, mux, directory, write, ordinaryName }) {
   const listener = net.createServer().listen(0, '127.0.0.1'); await once(listener, 'listening');
   const port = listener.address().port; await new Promise(r => listener.close(r));
   const chrome = spawn(process.env.BROWSER_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -33,6 +33,18 @@ export async function verifyAgentViewer({ base, token, session, mux, directory, 
     const viewport = "document.querySelector('.term-pane:not(.hidden) .agent-viewer-viewport')";
     await until(()=>evaluate(`${viewport}?.textContent.includes('HISTORY_200')`),'snapshot visible');
     assert.equal(await evaluate("document.querySelector('.terminal-control button') === null"),true);
+    const agentChip = `.ps-chip[data-control-session="${session.name}"]`;
+    const ordinaryChip = `.ps-chip[data-control-session="${ordinaryName}"]`;
+    await until(()=>evaluate(`!!document.querySelector(${JSON.stringify(ordinaryChip)})`),'ordinary fixture in sidebar');
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(agentChip)}).closest('.ps-chip-wrap').querySelector('.ps-chip-close') === null`),true,'Agent has no close button');
+    const closePoint=await evaluate(`(()=>{const b=document.querySelector(${JSON.stringify(ordinaryChip)}).closest('.ps-chip-wrap').querySelector('.ps-chip-close');b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...closePoint,button:'left',clickCount:1});
+    await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...closePoint,button:'left',clickCount:1});
+    await until(()=>evaluate("!!document.querySelector('.confirm-overlay')"),'ordinary close requires confirmation');
+    execFileSync(mux,['has-session','-t',`=${ordinaryName}`],{stdio:'ignore'});
+    await evaluate("[...document.querySelectorAll('.confirm-overlay button')].find(b=>b.textContent.includes('取消')).click()");
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.ps-recent-custom')).display"),'none');
+    console.log('PASS merged sidebar close confirmation, Agent protection, hidden custom recent controls; share restore with token rotation');
     const before=await evaluate(`${viewport}.scrollTop`), originalMode=mode();
     const point=await evaluate(`(()=>{const r=${viewport}.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:-400});

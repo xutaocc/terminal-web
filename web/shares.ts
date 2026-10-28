@@ -54,7 +54,9 @@ async function api(url: string, data?: unknown) {
   try {
     const r = await fetch(url, { cache:'no-store', signal:AbortSignal.timeout(45000), ...(data === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}) });
     if (!r.headers.get('content-type')?.includes('application/json')) throw new ApiError('登录已失效，请刷新页面重新登录', 401);
-    const result = await r.json(); if (!r.ok) throw new ApiError(result.error ?? '操作失败', r.status); return result;
+    const result = await r.json(); if (!r.ok) throw new ApiError(result.error ?? '操作失败', r.status);
+    if (data !== undefined && embedded) window.parent.postMessage({type:'share-state-changed'}, location.origin);
+    return result;
   } catch (error) {
     if (error instanceof Error && ['TimeoutError','AbortError'].includes(error.name)) throw new ApiError(data === undefined ? '加载超过 45 秒，请检查网络后重试。' : '等待超过 45 秒，操作可能已保存。创建分享可在此重试，不会重复创建；其他操作请先刷新列表确认结果。', 408);
     throw error;
@@ -72,8 +74,9 @@ function field(label: string, input: HTMLElement) { const l = el('label', '', 'f
 const date = (n: number | null | undefined) => n ? new Date(n).toLocaleString() : '—';
 const sessionKey = (s: Session) => `${s.host}/${s.name}`;
 async function copy(text: string) { try { await navigator.clipboard.writeText(text); notice('已复制'); } catch { const d = modal('请手动复制'); d.append(el('pre', text, 'token')); } }
-function credentials(s: Share, token: string) {
-  const d = modal('复制分享信息');
+function credentials(s: Share, token: string, restored = false) {
+  const d = modal(restored ? '分享已恢复' : '复制分享信息');
+  if (restored) d.append(el('p', '旧 Token 已失效。请将下方新 Token 发送给访客，使用新 Token 重新登录。', 'restore-notice'));
   const address = `${location.origin}/share/${s.id}/`;
   const text = el('textarea', '', 'share-info-text');
   text.rows = 8; text.spellcheck = false;
@@ -174,6 +177,27 @@ async function editShare(old?: Share, duplicate = false) {
     } finally { save.disabled = false; }
   }, 'primary', '正在保存…'); const actions = el('div', '', 'actions editor-footer'); actions.append(button('取消', () => d.close()), save); d.append(actions); name.focus();
 }
+function restoreShare(s: Share): void {
+  const d = modal('恢复分享');
+  d.append(el('p', '旧 Token 已失效。恢复后会生成新 Token，旧 Token 和旧登录状态不会恢复。', 'restore-notice'));
+  d.append(el('p', `将恢复「${s.name}」的原授权会话、目录和文件操作权限。`, 'muted'));
+  const expiry = el('input'); expiry.type = 'datetime-local';
+  if (s.expiresAt && s.expiresAt > Date.now()) {
+    const dt = new Date(s.expiresAt);
+    expiry.value = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+  d.append(field('到期时间（留空表示永不过期）', expiry));
+  if (s.expiresAt && s.expiresAt <= Date.now()) d.append(el('p', '原有效期已过，请重新设置；留空恢复为永不过期。', 'muted'));
+  const actions = el('div', '', 'actions');
+  actions.append(button('取消', () => d.close()), button('恢复并生成新 Token', async () => {
+    const expiresAt = expiry.value ? new Date(expiry.value).getTime() : null;
+    if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) { notice('有效期必须晚于当前时间'); return; }
+    const result = await api('/api/shares', {action:'restore', id:s.id, expiresAt});
+    d.close(); await admin(); credentials(result.share, result.token, true);
+  }, 'primary', '正在恢复…'));
+  d.append(actions);
+}
+
 async function admin() {
   const { shares }: { shares: Share[] } = await api('/api/shares');
   app.className = 'wrap'; app.replaceChildren();
@@ -220,6 +244,7 @@ async function admin() {
       toggle.title = '允许在授权目录内编辑、上传、新建、移动和删除文件'; actions.append(toggle);
     }
 
+    if (s.status === 'revoked') actions.append(button('恢复分享', () => restoreShare(s), 'primary'));
     if (s.status === 'revoked') actions.append(button('删除记录', async () => {
       if (!await confirmAction(`删除「${s.name}」的分享记录？仅删除已终止的分享记录，不会删除原会话或文件。`, '删除分享记录？', '删除记录')) return;
       await api('/api/shares', {action:'delete', id:s.id}); await admin(); notice('分享记录已删除');
