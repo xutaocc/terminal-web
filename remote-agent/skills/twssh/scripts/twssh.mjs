@@ -2,9 +2,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { runClient } from './client/twssh.mjs';
 
 const DEFAULT_CWD = 'C:/twsshProjecTemp';
 const fail = message => { console.error(message); process.exit(1); };
@@ -30,7 +29,6 @@ try { project = fs.realpathSync(project); if (!fs.statSync(project).isDirectory(
 catch { fail('控制端工作目录不存在。请检查 --project。'); }
 const home = path.join(project, '.twssh');
 const settings = path.join(home, 'connections.json');
-const client = fileURLToPath(new URL('./client/twssh.mjs', import.meta.url));
 if (args[0] === 'init') {
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   if (!fs.existsSync(settings)) fs.writeFileSync(settings, JSON.stringify({ version: 1, connections: [{
@@ -73,7 +71,6 @@ try {
 if (cfg.cwd != null && typeof cfg.cwd !== 'string') fail(`请在 ${settings} 将 cwd 设置为字符串。`);
 const endpoint = createHash('sha256').update(origin).digest('hex').slice(0, 16);
 const stateHome = path.join(home, 'state', `${cfg.name}-${endpoint}`);
-const env = { ...process.env, TWSSH_HOME: stateHome };
 const registryFile = path.join(stateHome, 'sessions.json');
 let registry = {};
 try { if (fs.existsSync(registryFile)) registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')); }
@@ -97,45 +94,42 @@ if (sid && !adopting && !inspecting && !Object.hasOwn(registry, sid)) fail(`该�
 if (typeof cfg.tokenFile !== 'string' || !cfg.tokenFile) fail(`请在 ${settings} 设置 tokenFile。`);
 const tokenFile = cfg.tokenFile.startsWith('~/') ? path.join(os.homedir(), cfg.tokenFile.slice(2)) : cfg.tokenFile;
 if (!path.isAbsolute(tokenFile) || !fs.existsSync(tokenFile)) fail(`tokenFile 必须指向已存在的控制端绝对路径文件。请修改 ${settings}；不要把 Token 发到对话中。`);
-function run(argv, capture = false) {
-  const result = spawnSync(process.execPath, [client, ...argv], {
-    env, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit', encoding: 'utf8'
-  });
-  if (result.error) fail(result.error.message);
-  if (result.status !== 0) {
-    if (capture) console.error(result.stderr?.trim());
-    console.error(`连接配置：${settings}；目标：${cfg.name}。检查地址、Token、网络和 AGENT_ENABLED=1。INVALID_DIRECTORY 表示远程目录不存在或不可访问；旧版服务需先创建 ${DEFAULT_CWD}。输入结果不明先查 result，不要重发。`);
-    process.exit(result.status || 1);
+async function run(argv, capture = false) {
+  let result = '';
+  try {
+    await runClient(argv, { home: stateHome, alias: cfg.name,
+      host: { url: origin, token: fs.readFileSync(tokenFile, 'utf8').trim(), pin: cfg.pin || undefined },
+      write: text => { if (capture) result += text; else process.stdout.write(text); } });
+  } catch (error) {
+    console.error(error.message);
+    fail(`连接配置：${settings}；目标：${cfg.name}。输入结果不明先查 result，不要重发。`);
   }
-  return result.stdout;
+  return result;
 }
-const add = ['host', 'add', cfg.name, '--url', origin, '--token-file', tokenFile];
-if (cfg.pin) add.push('--pin', cfg.pin);
-run(add, true);
 console.error(`工作目录：${project}；目标：${cfg.name}`);
 if (sid && registry[sid]) console.error(`会话：${cfg.name} → ${registry[sid].name || '未命名'} · #${sid.slice(0, 8)}（本地登记名称）；sessionId=${sid}`);
 if (args[0] === 'session' && args[1] === 'identity') {
   if (!sid) fail('session identity 需要 --session ID。');
-  const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));
+  const info = JSON.parse(await run(['status', cfg.name, '--session', sid], true));
   const displayName = info.label || registry[sid]?.name || info.name;
   if (registry[sid]) { registry[sid].name = displayName; saveRegistry(); }
   console.log(JSON.stringify({ target: cfg.name, displayName, shortId: sid.slice(0, 8), sessionId: sid, internalName: info.name, initialCwd: info.initialCwd ?? info.cwd, currentDirectory: info.currentDirectory ?? null, createdAt: info.createdAt ?? null, lastActivityAt: info.lastActivityAt ?? null, ended: info.ended ?? false }));
-} else if (!args.length || args[0] === 'doctor') run(['doctor', cfg.name]);
+} else if (!args.length || args[0] === 'doctor') await run(['doctor', cfg.name]);
 else if (adopting) {
-  const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));
+  const info = JSON.parse(await run(['status', cfg.name, '--session', sid], true));
   if (info.ended) fail('该远程会话已关闭，不能恢复。');
   registry[sid] = { name: info.label, initialCwd: info.cwd, lastUsed: new Date().toISOString() };
   saveRegistry(); console.log(JSON.stringify(info));
 } else if (args[0] === 'session' && args[1] === 'rename') {
   if (!sid) fail('session rename 需要 --session ID。');
-  const output = run(['session', 'rename', cfg.name, ...args.slice(2)], true);
+  const output = await run(['session', 'rename', cfg.name, ...args.slice(2)], true);
   const info = JSON.parse(output);
   registry[sid].name = info.label;
   saveRegistry(); process.stdout.write(output);
 } else if (args[0] === 'session' && args[1] === 'create') {
   const rest = args.slice(2);
   if (!rest.includes('--cwd')) rest.push('--cwd', cfg.cwd || DEFAULT_CWD);
-  const output = run(['session', 'create', cfg.name, ...rest], true);
+  const output = await run(['session', 'create', cfg.name, ...rest], true);
   const info = JSON.parse(output);
   if (info.sessionId) {
     registry[info.sessionId] = { name: rest.includes('--name') ? rest[rest.indexOf('--name') + 1] : 'agent', initialCwd: rest[rest.indexOf('--cwd') + 1], lastUsed: new Date().toISOString() };
@@ -143,8 +137,8 @@ else if (adopting) {
   }
   process.stdout.write(output);
 } else {
-  if (args[0] === 'session') run(['session', args[1], cfg.name, ...args.slice(2)]);
-  else run([args[0], cfg.name, ...args.slice(1)]);
+  if (args[0] === 'session') await run(['session', args[1], cfg.name, ...args.slice(2)]);
+  else await run([args[0], cfg.name, ...args.slice(1)]);
   if (sid && registry[sid]) {
     registry[sid].lastUsed = new Date().toISOString();
     if (args[0] === 'session' && args[1] === 'close') registry[sid].closed = true;

@@ -56,3 +56,21 @@ HTTP 不需要 `--pin`。可选 HTTPS 模式下，可信 CA 证书可以省略 `
 输入请求摘要和结果持久化到 `AGENT_SESSIONS_FILE`（默认 `~/.terminal-web/agent-sessions.json`），每会话最多 10000 项或约 8 MiB，满后明确拒绝新输入，避免悄悄失去去重记录。输出保留最多 8 MiB 内存；服务重启或缓冲过期返回 gap。输入记录默认包含命令文本；交互秘密用 `--sensitive`。同系统用户有读取/修改这些文件的权限，记录不具备防篡改保证。
 
 首版每服务最多 8 个未关闭的 Agent 会话；会话登记与 psmux 存活分开。已有 Shell 丢失时恢复会失败，不自动重建。发生 collector_closed 时需要检查原会话并重启服务重新附着；不要直接重复执行最后的命令。
+
+
+## 低往返读取（兼容现有 Agent API）
+
+`twssh exec HOST --session SID --command 'Get-Location' --wait 2` 在发送后自动读取；
+`twssh read HOST --session SID --wait 5 --collect` 自动收集多页事件。
+旧的 exec/read 默认行为不变。`--wait` 为 0–30 秒；聚合默认最多 8 次请求、256 KiB，
+可通过 `--max-batches`（1–32）、`--max-bytes`（1024–4194304）调整。
+字节阈值在完整响应页后检查，允许最多一页超出，防止确认游标后丢失内容。
+总等待预算不替代单次网络请求超时。HTTP 在同次 CLI 内复用连接，HTTPS 仍逐次校验证书。
+
+exec 返回发送回执和 observation。观察包含终端未读事件，不能当作该命令专属输出；
+quiet/deadline 不代表执行结束，completion 仍为 unknown。读取失败不会自动重发已发送的命令；
+observationError/readError 与 requestId 帮助继续读取或查询 result。只读分页出错保留已读内容与游标。
+
+项目 skill 与客户端在同一 Node 进程内运行，取消重复 /info 探测；doctor 仍可显式检查连接。
+Token 每次调用重新读取；控制权、请求去重、发送前持久化及目标隔离保持不变。
+独立结构化任务（确定退出码）和文件补丁 API 尚未提供，仍使用持久终端工作流。

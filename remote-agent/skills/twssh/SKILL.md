@@ -112,3 +112,15 @@ exec/result/history 默认只输出 compact 简短预览，避免原始 Base64 �
 ## 网页关闭与历史删除
 
 网页关闭远程会话时默认勾选删除操作记录及输出历史，可取消保留。CLI session close 未改变默认行为，仍保留历史。查询发现 historyClearedAt 时明确告知记录已删除，不能以缺失记录判断命令未执行或自动重发。主机标题行的「⌫」可由用户确认清理已关闭会话记录；不删除项目文件。
+
+
+## Agent 低往返操作
+
+客户端直接调用模块，不再为每条操作执行 host add 或预检 /info；每次仍读取所选目标的凭据文件，配置与 Token 修改立即生效。需要诊断时用 doctor。普通 exec/read 的返回格式保持不变。
+
+- 确认终端可接受命令后，可用 `exec --session SID --command '...' --wait 2` 一次发送并收集后续事件，减少工具往返；不改命令内容、不启动独立 Shell。原有 exec 不加 wait 仍立即返回发送回执。
+- 长任务继续 `read --session SID --wait 5 --collect`，客户端在预算内自动连续读取。不能重复 exec 来等待结果。
+- 聚合读取预算：wait 为 0–30 秒（每次服务端长轮询最多 5 秒）；默认最多 8 次读取、256 KiB，可用 `--max-batches 1..32`、`--max-bytes 1024..4194304` 调整。字节阈值在完整响应页接收后检查，最多多接收一页，避免截断已确认的事件。请求网络超时仍独立适用。
+- exec 的 `observation` 为终端流观察，不是该命令专属 stdout；其中可能包含之前尚未读取的输出。聚合结果的 collection 字段报告停止原因、请求次数、字节数、耗时及 mayHaveMore。quiet/deadline 都不代表执行完成，completion 始终 unknown；不猜退出码或自动回答交互提示。
+- 返回 observationError 表示输入已被接受但读取失败；保留 requestId，继续 read 或 result，绝不据此重发。分页途中失败会返回已读事件及 readError；gap、关闭或控制权变化时停止自动读取，先检查状态。
+- 读取不清洗、不改写原始终端事件；已有原始历史、敏感输入处理和控制权校验保持有效。新选项兼容现有服务端，无需重启远程电脑。

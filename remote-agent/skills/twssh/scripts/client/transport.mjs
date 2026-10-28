@@ -4,6 +4,9 @@ import http from 'node:http';
 import net from 'node:net';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
+let httpAgent;
+export function closeConnections() { httpAgent?.destroy(); httpAgent = undefined; }
+
 /** HTTP for trusted networks; HTTPS authenticates the peer before sending credentials. */
 export async function request(host, route, method = 'GET', body, client) {
   const url = new URL(host.url);
@@ -28,7 +31,7 @@ export async function request(host, route, method = 'GET', body, client) {
     });
   }) : undefined;
   const transport = secure ? https : http;
-  const agent = new transport.Agent({ keepAlive: false });
+  const agent = secure ? new transport.Agent({ keepAlive: false }) : (httpAgent ??= new http.Agent({ keepAlive: true, maxSockets: 4 }));
   if (socket) agent.createConnection = () => socket;
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
@@ -43,10 +46,10 @@ export async function request(host, route, method = 'GET', body, client) {
         try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (res.statusCode !== 200) { const error = Error(`${res.statusCode}: ${value.error ?? 'request rejected'}`); error.status = res.statusCode; throw error; }
           resolve(value);
-        } catch (e) { reject(e); } finally { agent.destroy(); }
+        } catch (e) { reject(e); } finally { if (secure) agent.destroy(); }
       });
     });
     req.setTimeout(15000, () => req.destroy(Error('Request timeout; query request ID before retrying')));
-    req.on('error', e => { agent.destroy(); reject(e); }); req.end(payload);
+    req.on('error', e => { if (secure) agent.destroy(); reject(e); }); req.end(payload);
   });
 }
