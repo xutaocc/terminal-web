@@ -260,7 +260,7 @@ session history --session UUID --kind output --after 0 --limit 50
 
 ### Base64 操作记录预览
 
-后端对完整的 PowerShell `-EncodedCommand`（UTF-16LE）、`node -e "eval(Buffer.from(...,'base64').toString())"`（UTF-8）及常用 UTF-8 ScriptBlock 包装自动生成 `decodedInput`、`decodedEncoding`、`decodedScope: "wrapper-body"`。原始 input 保留，发送内容和请求去重哈希不变；这些字段只是展示数据，不执行、不递归解码。网页“操作记录”和 CLI history 都会返回字段；旧记录读取时临时补充，不批量改写历史文件。
+后端对完整的 PowerShell `-EncodedCommand`（UTF-16LE）、`node -e "eval(Buffer.from(...,'base64').toString())"`（UTF-8）及常用 UTF-8 ScriptBlock 包装自动生成 `decodedInput`、`decodedEncoding`、`decodedScope: "wrapper-body"`。原始 input 保留，发送内容和请求去重哈希不变；这些字段只是展示数据，不执行。外壳中明确的 FromBase64String 或 Buffer.from Base64 字面量会再解一层 UTF-8，保存为 decodedParts，最多 8 个片段、合计 16 KiB；不无限递归，也不推断文件路径。失败片段标注原因。旧记录读取时临时补充，不批量改写历史文件。网页默认展示代码片段，原始命令和完整外壳折叠；附加 format=json 参数可读取原始 JSON。
 
 仅识别明确的完整包装，其他格式、非法 Base64/字符编码、二进制控制字符或超过 8192 字符的解码内容均跳过。没有预览字段不代表原命令不可执行。敏感输入继续只保存 `[sensitive input]`。可选预览不计入原有请求历史容量门槛，但会增加一定磁盘占用。不要为了得到预览而重复执行命令。
 
@@ -271,3 +271,7 @@ session history --session UUID --kind output --after 0 --limit 50
 浏览器统一使用「关闭远程会话」入口：终端仍在运行时结束终端并移除标签，终端已不存在时直接移除残留标签，两种情况均保留已有历史。未知的终端查询错误不视为已不存在。支持内部身份为 agent_ 加 32 位十六进制的遗留会话；未登记到 Agent API 的测试会话也可关闭，但不会补造缺失的历史。批量关闭跳过远程会话，需要逐个确认。
 
 浏览器管理员接口：`POST /api/sessions/close-agent`，JSON `{name, force?: boolean, cleanup?: boolean}`。使用现有网页登录和同源校验，可经控制端远程代理访问。name 必须是完整内部身份，不能传显示名称或短 ID。原有 Agent CLI close 协议保持兼容。cleanup 参数仅为旧客户端保留，当前浏览器不再提供独立清理入口。
+
+### 工具输出与 token
+
+CLI exec/result/history 默认 `--detail compact`，返回状态、目录和最多 240 字符的 inputPreview，不重复输出原始输入和解码全文。预览可能截断，不用于执行或判断完成。`--detail readable` 返回完整可读外壳及解码片段（不重复 Base64 表达式）；`--detail raw` 返回原始输入；`--detail full` 返回兼容旧版的完整记录。选项仅控制 CLI 标准输出，不改变服务端保存内容或 API 协议；read 的终端事件不裁剪。网页浏览和本地解码不调用模型；显式读取详细内容仍会消耗相应 token。

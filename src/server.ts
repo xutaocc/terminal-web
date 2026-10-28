@@ -1,3 +1,4 @@
+import { renderAgentHistory } from './agent-history-page.js';
 import { TerminalControl, type ControlClient, type ControlAction } from './terminal-control.js';
 import http from "node:http";
 import https from "node:https";
@@ -1571,8 +1572,11 @@ const server = createHttpServer((req, res) => {
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
       if (await shares.adminHttp(req, res, requestUrl)) return;
       if (requestUrl.pathname === '/api/agent-history' && method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(agentApi.history(requestUrl.searchParams.get('session') ?? ''), null, 2)); return;
+        const history = agentApi.history(requestUrl.searchParams.get('session') ?? '');
+        const raw = requestUrl.searchParams.get('format') === 'json';
+        res.writeHead(history ? 200 : 404, { 'Content-Type': raw ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" });
+        res.end(raw ? JSON.stringify(history, null, 2) : renderAgentHistory(history)); return;
       }
       if (requestUrl.pathname === '/api/viewer-state') {
         await viewerState.http(req, res, adminViewer, name => /^(?:@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(name)); return;

@@ -209,7 +209,7 @@ export class AgentApi {
     if (old) { if (old.hash !== hash) throw new ApiError(409, 'REQUEST_CONFLICT'); return old.result; }
     if (Object.keys(store).length >= 10000) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
     // Durable uncertainty BEFORE writing any terminal bytes. Never replay an ambiguous request.
-    if (Buffer.byteLength(JSON.stringify(store, (key, value) => ['decodedInput', 'decodedEncoding', 'decodedScope'].includes(key) ? undefined : value)) > 8 * 1024 * 1024) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
+    if (Buffer.byteLength(JSON.stringify(store, (key, value) => ['decodedInput', 'decodedEncoding', 'decodedScope', 'decodedParts'].includes(key) ? undefined : value)) > 8 * 1024 * 1024) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
     store[body.requestId] = { hash, result: { ...metadata, state: 'unknown', requestId: body.requestId, time: new Date().toISOString(),
       ...(typeof body.text === 'string' ? { input: body.sensitive ? '[sensitive input]' : body.text } : {}) } }; this.save();
     const result = action(); store[body.requestId].result = result; this.save(); return result;

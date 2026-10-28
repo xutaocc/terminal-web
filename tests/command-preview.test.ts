@@ -29,3 +29,20 @@ test('decodes one layer and never executes scripts', () => {
   const inner = node('throw new Error("never run")');
   assert.equal(decodeCommandPreview(node(inner))?.decodedInput, inner);
 });
+
+test('nested literal file content is readable, bounded and legacy-compatible', () => {
+  const code = 'print("你好")\n';
+  const body = `[IO.File]::WriteAllBytes('app.py',[Convert]::FromBase64String('${Buffer.from(code).toString('base64')}'))`;
+  const preview = decodeCommandPreview(ps(body))!;
+  assert.equal(preview.decodedParts?.[0].text, code);
+  assert.equal(preview.decodedInput, body);
+  const old = {input:ps(body), decodedInput:body};
+  assert.equal((withCommandPreview(old) as typeof preview).decodedParts?.[0].text, code);
+  assert.equal('decodedParts' in old, false);
+  const binary = decodeCommandPreview(ps("[Convert]::FromBase64String('AA==')"))!;
+  assert.equal(binary.decodedParts?.[0].status,'skipped');
+  const many = decodeCommandPreview(ps(Array(10).fill("[Convert]::FromBase64String('b2s=')").join(';')))!;
+  assert.equal(many.decodedParts?.length,9);
+  assert.equal(many.decodedParts?.[8].status,'skipped');
+  assert.equal(decodeCommandPreview(ps(body),true),null);
+});

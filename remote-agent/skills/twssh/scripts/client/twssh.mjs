@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import { outputView } from './output-view.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -20,8 +21,9 @@ function save() {
   const tmp = file + `.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), {mode: 0o600}); fs.renameSync(tmp, file);
 }
-const output = data => process.stdout.write(JSON.stringify(data) + '\n');
+const output = data => process.stdout.write(JSON.stringify(outputView(data, options.detail || 'compact')) + '\n');
 async function main() {
+  outputView(null, options.detail || 'compact'); // Validate before any remote mutation.
   if (positional[0] === 'host' && positional[1] === 'add') {
     const alias = positional[2];
     if (!alias || typeof options.url !== 'string' || typeof options['token-file'] !== 'string') throw Error('host add NAME --url http://HOST:PORT --token-file FILE [--pin SHA256:HEX]');
