@@ -114,3 +114,5 @@ root 必须为绝对目录，path 为目录内相对路径；拒绝越界及目�
 搜索为字面量，跳过 .git/node_modules/符号链接/不可读取或非文本文件，最多遍历 2000 项、返回 200 个匹配；截断和跳过数量显式返回。
 
 部署需要连续的维护通道时，可先单独启动 `node --import tsx scripts/agent-maintenance.ts`，显式设置 MAINTENANCE_HOST、MAINTENANCE_PORT、MAINTENANCE_STATE_DIR（绝对路径）。该临时进程沿用已有认证，只开放任务与文件 API，使用独立状态目录，不接管终端。默认 30 分钟自动退出（MAINTENANCE_SECONDS 可设 60–3600）。必须先验证通道的查询和执行，再重启主服务；验证主服务恢复后停止维护通道。它保障恢复操作仍可达，不保证主服务 WebSocket/HTTP 连接在重启瞬间不断开。
+
+Windows 上优先填写真实程序的绝对路径。ServBay 等工具提供的启动代理可能自行重新拼接参数，损坏 `>`、引号等字符；shell:false 只能保证本工具不经过 Shell，不能改变第三方代理行为。Node 可通过 `node -p process.execPath` 查询真实二进制路径；不要把代理造成的语法错误当作网络失败重发。
