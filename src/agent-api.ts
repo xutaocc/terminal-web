@@ -1,3 +1,4 @@
+import { AgentTasks, AgentFiles, WorkError } from './agent-work.js';
 import { decodeCommandPreview, withCommandPreview } from './command-preview.js';
 import { AgentJournal } from './agent-journal.js';
 import fs from 'node:fs';
@@ -44,6 +45,8 @@ export interface AgentBackend {
 /** Raw persistent terminal API. No completion claims are inferred from a quiet screen. */
 export class AgentApi {
   private journal: AgentJournal;
+  private tasks: AgentTasks;
+  private files: AgentFiles;
   private sessions = new Map<string, Session>();
   private runtimes = new Map<string, Runtime>();
   private opening = new Map<string, Promise<Runtime>>();
@@ -53,6 +56,8 @@ export class AgentApi {
   private creation: Promise<unknown> = Promise.resolve();
   constructor(private backend: AgentBackend) {
     this.journal = new AgentJournal(backend.file + '.history');
+    this.tasks = new AgentTasks(backend.file + '.tasks');
+    this.files = new AgentFiles(backend.file + '.file-requests.json');
     if (fs.existsSync(backend.file)) {
       const saved = JSON.parse(fs.readFileSync(backend.file, 'utf8'));
       for (const s of saved.sessions) { this.sessions.set(s.id, s); backend.control.setExplicit(s.name); if (s.historyClearedAt) this.journal.suppress(s.id); }
@@ -272,7 +277,28 @@ export class AgentApi {
       if (this.active >= 64) throw new ApiError(429, 'CONNECTION_LIMIT');
       this.active++; counted = true;
       const route = url.pathname.slice(PREFIX.length), method = req.method;
-      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe', 'rename', 'history', 'cwd-observation'], completion: false }); return true; }
+      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe', 'rename', 'history', 'cwd-observation', 'tasks-v1', 'files-v1'], completion: false }); return true; }
+      if (route === '/tasks' && method === 'GET') { reply(200,this.tasks.list()); return true; }
+      if (route === '/tasks' && method === 'POST') { reply(200,this.tasks.create(await this.body(req))); return true; }
+      const task = /^\/tasks\/([a-f0-9-]{36})(?:\/(logs|cancel))?$/.exec(route);
+      if (task) {
+        if (method === 'GET') reply(200,task[2]==='logs' ? this.tasks.logs(task[1],Number(url.searchParams.get('after')??0),Number(url.searchParams.get('limit')??100)) : this.tasks.get(task[1]));
+        else if (method === 'POST' && task[2]==='cancel') reply(200,this.tasks.cancel(task[1]));
+        else if (method === 'DELETE' && !task[2]) reply(200,this.tasks.remove(task[1],(await this.body(req)).forgetUnknown===true));
+        else throw new WorkError(405,'METHOD_NOT_ALLOWED');
+        return true;
+      }
+      if (route.startsWith('/files/')) {
+        if (route==='/files/result' && method==='GET') reply(200,this.files.result(url.searchParams.get('requestId')??''));
+        else if (method==='POST') {
+          const body=await this.body(req);
+          if(route==='/files/read') reply(200,this.files.read(body));
+          else if(route==='/files/search') reply(200,await this.files.search(body));
+          else if(route==='/files/write'||route==='/files/patch') reply(200,this.files.mutate(body,route.endsWith('/patch')));
+          else throw new WorkError(404,'NOT_FOUND');
+        } else throw new WorkError(405,'METHOD_NOT_ALLOWED');
+        return true;
+      }
       if (route === '/sessions' && method === 'GET') { const sessions = await Promise.all([...this.sessions.values()].map(s => this.describe(s))); reply(200, { total: sessions.length, open: sessions.filter(s => !s.ended).length, closed: sessions.filter(s => s.ended).length, sessions }); return true; }
       if (route === '/sessions' && method === 'POST') {
         const body = await this.body(req);
@@ -387,7 +413,7 @@ export class AgentApi {
         }, { ...preview, directoryBeforeInput: directory }); reply(200, result); return true;
       }
       throw new ApiError(404, 'NOT_FOUND');
-    } catch (e) { reply(e instanceof ApiError ? e.status : 500, { error: e instanceof ApiError ? e.message : 'INTERNAL_ERROR' }); }
+    } catch (e) { reply(e instanceof ApiError || e instanceof WorkError ? e.status : 500, { error: e instanceof ApiError || e instanceof WorkError ? e.message : 'INTERNAL_ERROR' }); }
     finally { if (counted) this.active--; }
     return true;
   }

@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { request, closeConnections } from './transport.mjs';
 import { pathToFileURL } from 'node:url';
+import { workCommand } from './work-commands.mjs';
 import { collectEvents, readOptions } from './collect-events.mjs';
 
 export async function runClient(args, runtime = {}) {
@@ -38,11 +39,14 @@ export async function runClient(args, runtime = {}) {
       const info = await request(host, '/info'); config.hosts[alias] = host; save(); output(info); return;
     }
     const command = positional[0];
-    const sessionCommand = command === 'session';
+    const sessionCommand = command === 'session' || command === 'task' || command === 'file';
     const action = sessionCommand ? positional[1] : command;
     const alias = positional[sessionCommand ? 2 : 1];
     const reading = readOptions(options, action); // Validate before control acquisition or input.
     const host = config.hosts[alias]; if (!host) throw Error('Unknown host. Use host add NAME --url http://HOST:PORT --token-file FILE [--pin SHA256:HEX]');
+    if (command === 'task' || command === 'file') {
+      output(await workCommand(command, action, options, (route, method, body) => request(host, route, method, body), config, alias, save)); return;
+    }
     if (action === 'doctor') { output(await request(host, '/info')); return; }
     if (action === 'list') { output(await request(host, '/sessions')); return; }
     if (action === 'history' || action === 'status') {
