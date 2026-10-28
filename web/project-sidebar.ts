@@ -805,7 +805,20 @@ export class ProjectSidebar {
         });
         const wrap = document.createElement('span');
         wrap.className = 'ps-chip-wrap';
-        wrap.append(chip, iconButton('⋯', `管理会话：${session.displayName}`, () =>
+        wrap.append(chip);
+        if (!this.hooks.readOnly) {
+          const close = document.createElement('button');
+          close.type = 'button'; close.className = 'ps-icon-btn ps-chip-close';
+          close.textContent = '×';
+          close.title = `关闭会话：${session.displayName}`;
+          close.setAttribute('aria-label', close.title);
+          bindIntentionalClick(close, e => {
+            e.stopPropagation();
+            if (!mobileActions()) this.hooks.closeSessions([session.name]);
+          }, this.list);
+          wrap.append(close);
+        }
+        wrap.append(iconButton('⋯', `管理会话：${session.displayName}`, () =>
           this.openMenuAt(chip, [session.name], group.key, session.displayName, undefined, !!session.pinned)));
         chips.append(wrap);
       }

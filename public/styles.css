@@ -2423,3 +2423,10 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 .m-share-count { flex: none; align-self: center; color: var(--ui-danger-text, #ef6666); font: 600 11px/1.2 system-ui, sans-serif; white-space: nowrap; padding: 0 3px; }
 .m-share-count[hidden], .m-shared-lock[hidden] { display: none; }
 .m-shared-lock { margin-right: 0; }
+
+/* Desktop-only close shortcut; the existing confirmation still handles termination. */
+.ps-chip-wrap > .ps-chip-close { width: 20px; height: 22px; font-size: 15px; color: var(--ui-muted, #999); }
+.ps-chip-wrap > .ps-chip-close:hover { color: var(--ui-danger-text, #f07878); background: #e0525218; }
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .ps-chip-wrap > .ps-chip-close { display: none; }
+}
