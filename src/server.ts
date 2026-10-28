@@ -1881,6 +1881,7 @@ const agentApi = new AgentApi({
       ['if-shell', '-F', '-t', target, '#{==:#{pane_mode},copy-mode}', `send-keys -t ${target} -X cancel`],
       {timeout: 3000}, error => error ? reject(error) : resolve()));
   },
+  cwd: sessionCwd,
   rename(name, label) {
     sessionStore.update({ name, displayName: label });
     setWebTabLabel(name, label);
@@ -2855,6 +2856,7 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`\n[server] received ${signal}, shutting down...`);
 
+  agentApi.flushHistory();
   clearInterval(heartbeat);
   remoteMonitor.stop();
 

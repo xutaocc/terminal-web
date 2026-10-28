@@ -24,11 +24,14 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-directory-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const spawned: string[] = [];
+  let currentCwd: string | null = dir;
+  const writes: string[] = [];
   const api = new AgentApi({
     enabled: true, token: 'test-token', file: path.join(dir, 'sessions.json'), control: new TerminalControl(),
+    cwd: async () => currentCwd,
     spawn: async (_name, cwd) => {
       spawned.push(cwd);
-      return { onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }) } as unknown as IPty;
+      return { write: (text: string) => writes.push(text), onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }) } as unknown as IPty;
     },
     prepareInput: async () => {}, register: () => {}, remove: async () => {}
   });
@@ -43,7 +46,8 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
     });
     return { status: response.status, body: await response.json() };
   };
-  return { dir, spawned, create, api, port };
+  t.after(() => api.flushHistory());
+  return { dir, spawned, create, api, port, writes, setCwd: (cwd: string | null) => { currentCwd = cwd; } };
 }
 test('explicit directories must exist; valid creates remain idempotent', async t => {
   const { dir, spawned, create } = await fixture(t);
@@ -94,4 +98,42 @@ test('rename API and browser path preserve identity and persist across restart',
     control: new TerminalControl(), spawn: async () => { throw Error('must not spawn'); },
     register() {}, prepareInput: async () => {}, remove: async () => {} });
   assert.equal((restored.history(created.name) as {label: string}).label, '浏览器标签');
+});
+
+test('history records input-time directory changes and inspection never sends input', async t => {
+  const { dir, create, port, setCwd, writes, api } = await fixture(t);
+  const session = (await create(dir)).body;
+  const base = `http://127.0.0.1:${port}/api/agent/v1`;
+  const call = async (route: string, method = 'GET', body?: unknown) => {
+    const response = await fetch(base + route, { method, headers: { Authorization: 'Bearer test-token',
+      'X-Terminal-Client': 'a'.repeat(48), 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    return { status: response.status, data: await response.json() };
+  };
+  const prefix = `/sessions/${session.sessionId}`;
+  const owner = (await call(prefix + '/control', 'POST', { generation: session.generation, action: 'acquire' })).data;
+  const send = (text: string, sensitive = false) => call(prefix + '/input', 'POST', {
+    generation: session.generation, controlEpoch: owner.epoch, requestId: randomUUID(), text, sensitive });
+  assert.equal((await send('pwd\r')).status, 200);
+  setCwd(path.join(dir, 'other'));
+  assert.equal((await send('secret\r', true)).status, 200);
+  const history = (await call(prefix + '/history?limit=1')).data;
+  assert.equal(history.records[0].directoryBeforeInput.cwd, dir);
+  assert.ok(history.records[0].directoryBeforeInput.observedAt);
+  assert.ok(history.records[0].time);
+  assert.equal(history.hasMore, true);
+  const second = (await call(prefix + '/history?after=1')).data.records[0];
+  assert.equal(second.directoryBeforeInput.cwd, path.join(dir, 'other'));
+  assert.equal(second.input, '[sensitive input]');
+  const list = (await call('/sessions')).data;
+  assert.equal(list.total, 1);
+  assert.equal(list.sessions[0].initialCwd, dir);
+  assert.equal(list.sessions[0].currentDirectory.cwd, path.join(dir, 'other'));
+  assert.ok(list.sessions[0].createdAt);
+  setCwd(null);
+  assert.equal((await call(prefix)).data.currentDirectory.cwd, null);
+  assert.equal((await call(prefix + '/history?limit=101')).status, 400);
+  assert.equal((await call(prefix + '/history?kind=invalid')).status, 400);
+  assert.equal(writes.length, 2);
+  api.flushHistory();
+  assert.equal(JSON.stringify((await call(prefix + '/history?kind=output')).data).includes('secret'), false);
 });

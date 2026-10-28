@@ -35,6 +35,7 @@ async function fixture(t) {
       value = { sessionId: randomUUID(), generation: randomUUID() };
       sessions.set(value.sessionId, { ...value, cwd: body.cwd, label: body.label });
     } else if (route === '/sessions') value = { sessions: [...sessions.values()] };
+    else if (route.split('?')[0].endsWith('/history')) value = { records: [], total: 0, nextCursor: 0, hasMore: false };
     else if (route.endsWith('/control')) value = { mine: true, epoch: 1 };
     else if (route.endsWith('/input')) value = { state: 'sent' };
     else if (route.startsWith('/sessions/')) {
@@ -150,4 +151,17 @@ test('rename updates registered label and identity without terminal input', asyn
   assert.equal(JSON.parse(identity.out).sessionId, created.sessionId);
   const local = JSON.parse((await run(script, ['session', 'local'], dir)).out);
   assert.equal(local.sessions[created.sessionId].name, '电脑维护');
+});
+
+test('inspect another remote session without adopting or taking control', async t => {
+  const { dir, sessions, script, requests } = await fixture(t);
+  const id = randomUUID();
+  sessions.set(id, { id, label: 'other', generation: randomUUID(), cwd: 'C:/' });
+  const history = await run(script, ['session', 'history', '--session', id], dir);
+  assert.equal(history.code, 0, history.err);
+  const identity = await run(script, ['session', 'identity', '--session', id], dir);
+  assert.equal(identity.code, 0, identity.err);
+  assert.equal(JSON.parse(identity.out).sessionId, id);
+  assert.deepEqual(JSON.parse((await run(script, ['session', 'local'], dir)).out).sessions, {});
+  assert.equal(requests.some(r => /control|input/.test(r.url)), false);
 });

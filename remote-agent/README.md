@@ -234,3 +234,22 @@ node tests/agent-api.integration.mjs
 服务端提供 `PATCH /api/agent/v1/sessions/:id`，Bearer 认证，请求体 `{ "generation": "当前会话 generation", "label": "电脑维护" }`。名称 trim 后 1–64 字符，禁止控制字符；会话已关闭返回 410，generation 不匹配返回 409。接口不会启动 Shell 或获取终端控制权。重复设置相同名称是幂等的；并发改名按服务端接收顺序最后一次成功更新为准。
 
 浏览器改名、备注编辑中的名称修改与 Agent API 共用持久化逻辑，保持内部 name、UUID、目录、终端进程和历史关联不变。新标签由现有会话列表同步机制更新；必要时刷新浏览器。旧版服务需升级后使用此命令。已有不一致名称不会自动猜测迁移，升级后显式改名一次即可统一。
+
+### 查询会话、目录和历史
+
+项目级命令（都带 `--project PROJECT --target 8845h`）：
+
+```text
+session list
+session identity --session UUID
+session history --session UUID --kind requests --after 0 --limit 50
+session history --session UUID --kind output --after 0 --limit 50
+```
+
+`list` 返回服务端仍保留的全部 Agent 会话（包括已关闭），以及 total/open/closed 计数、完整 ID、名称、createdAt/lastActivityAt/closedAt、initialCwd、currentDirectory 和 requestCount。它不是浏览器所有普通终端的列表，也不是全部网络连接次数；删除的服务端历史不能找回。旧会话缺少时间戳时返回 null，不用查询时间伪造创建时间。
+
+`history` 对应 `GET /api/agent/v1/sessions/:id/history?kind=requests|output&after=0&limit=50`，默认 requests，每页 1–100 条且请求记录页限制约 2 MiB。requests 游标是记录偏移，output 游标是独立持久化事件序号；按 nextCursor 翻页直到 hasMore=false。查询 metadata/history 不需要 adopt，不启动 Shell，不抢控制权；写入仍需项目登记和控制权校验。
+
+输入记录包含 UTC ISO 时间戳、requestId、原始输入、发送状态和 directoryBeforeInput。目录来自发送输入前的 `pane_current_path` 观测，带 observedAt/source；失败时 cwd=null。它可能受 mux/前台程序行为影响，不保证等于 PowerShell 的逻辑位置，也不能代表同一段多行输入内部每条命令的目录。连续命令改变目录后，下次输入重新采样；不向忙碌终端注入 Get-Location。sent 只表示发送，不代表执行成功或完成。旧请求没有目录字段时应显示未知。
+
+终端输出是原始 ANSI 流，不是模型聊天消息，也不能可靠逐条归属命令。每会话保存最近 512 KiB 或 2000 条（先达到者），truncated/gap 明确表示缺失。约 500ms 批量写盘，正常退出会 flush，异常断电可能损失最后一批；只覆盖采集器在线期间，旧输出不能追溯补齐。持久化文件位于 AGENT_SESSIONS_FILE 后缀 `.history/`。敏感输入存为 `[sensitive input]`，程序自身回显仍可能出现在输出中。请求去重记录独立保留，沿用既有每会话上限；超过上限拒绝新请求，不静默删除。

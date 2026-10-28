@@ -92,7 +92,8 @@ const sidIndex = args.indexOf('--session');
 const sid = sidIndex < 0 ? undefined : args[sidIndex + 1];
 const adopting = args[0] === 'session' && args[1] === 'adopt';
 if (adopting && (!sid || sid.startsWith('--'))) fail('session adopt 需要 --session ID。');
-if (sid && !adopting && !Object.hasOwn(registry, sid)) fail(`该会话未绑定到当前工作目录的 ${cfg.name}。请先 session list 核对，明确选择后用 session adopt --session ID 登记；不要跨目标沿用 ID。`);
+const inspecting = args[0] === 'status' || (args[0] === 'session' && ['identity', 'history'].includes(args[1]));
+if (sid && !adopting && !inspecting && !Object.hasOwn(registry, sid)) fail(`该会话未绑定到当前工作目录的 ${cfg.name}。请先 session list 核对，明确选择后用 session adopt --session ID 登记；不要跨目标沿用 ID。`);
 if (typeof cfg.tokenFile !== 'string' || !cfg.tokenFile) fail(`请在 ${settings} 设置 tokenFile。`);
 const tokenFile = cfg.tokenFile.startsWith('~/') ? path.join(os.homedir(), cfg.tokenFile.slice(2)) : cfg.tokenFile;
 if (!path.isAbsolute(tokenFile) || !fs.existsSync(tokenFile)) fail(`tokenFile 必须指向已存在的控制端绝对路径文件。请修改 ${settings}；不要把 Token 发到对话中。`);
@@ -116,10 +117,9 @@ if (sid && registry[sid]) console.error(`会话：${cfg.name} → ${registry[sid
 if (args[0] === 'session' && args[1] === 'identity') {
   if (!sid) fail('session identity 需要 --session ID。');
   const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));
-  const displayName = info.label || registry[sid].name || info.name;
-  registry[sid].name = displayName;
-  saveRegistry();
-  console.log(JSON.stringify({ target: cfg.name, displayName, shortId: sid.slice(0, 8), sessionId: sid, internalName: info.name, initialCwd: info.cwd, ended: info.ended ?? false }));
+  const displayName = info.label || registry[sid]?.name || info.name;
+  if (registry[sid]) { registry[sid].name = displayName; saveRegistry(); }
+  console.log(JSON.stringify({ target: cfg.name, displayName, shortId: sid.slice(0, 8), sessionId: sid, internalName: info.name, initialCwd: info.initialCwd ?? info.cwd, currentDirectory: info.currentDirectory ?? null, createdAt: info.createdAt ?? null, lastActivityAt: info.lastActivityAt ?? null, ended: info.ended ?? false }));
 } else if (!args.length || args[0] === 'doctor') run(['doctor', cfg.name]);
 else if (adopting) {
   const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));

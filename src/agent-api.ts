@@ -1,3 +1,4 @@
+import { AgentJournal } from './agent-journal.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -18,10 +19,11 @@ interface Event { seq: number; type: string; time: string; data: string }
 interface RecordEntry { hash: string; result: unknown }
 interface Session {
   id: string; name: string; label: string; cwd: string; generation: string;
+  createdAt?: string; closedAt?: string; lastActivityAt?: string;
   ended?: boolean; requests: Record<string, RecordEntry>;
 }
 interface Runtime {
-  proc: IPty; events: Event[]; bytes: number; seq: number; epoch: string;
+  sessionId: string; proc: IPty; events: Event[]; bytes: number; seq: number; epoch: string;
   clients: Map<string, { client: ControlClient; seen: number }>;
   listeners: Set<() => void>; alive: boolean;
 }
@@ -31,12 +33,14 @@ export interface AgentBackend {
   prepareInput(name: string, authorized: () => boolean): Promise<void>;
   output?(name: string): void;
   register(name: string, label: string, cwd: string): void;
+  cwd?(name: string): Promise<string | null>;
   rename?(name: string, label: string): void;
   remove(name: string): Promise<void>;
 }
 
 /** Raw persistent terminal API. No completion claims are inferred from a quiet screen. */
 export class AgentApi {
+  private journal: AgentJournal;
   private sessions = new Map<string, Session>();
   private runtimes = new Map<string, Runtime>();
   private opening = new Map<string, Promise<Runtime>>();
@@ -45,6 +49,7 @@ export class AgentApi {
   private active = 0;
   private creation: Promise<unknown> = Promise.resolve();
   constructor(private backend: AgentBackend) {
+    this.journal = new AgentJournal(backend.file + '.history');
     if (fs.existsSync(backend.file)) {
       const saved = JSON.parse(fs.readFileSync(backend.file, 'utf8'));
       for (const s of saved.sessions) { this.sessions.set(s.id, s); backend.control.setExplicit(s.name); }
@@ -57,6 +62,18 @@ export class AgentApi {
         }
       }
     }, 5000); timer.unref();
+  }
+  flushHistory(): void { this.journal.flush(); }
+  private async directory(s: Session) {
+    let cwd: string | null = null;
+    if (!s.ended) { try { cwd = await this.backend.cwd?.(s.name) ?? null; } catch { /* unknown */ } }
+    return { cwd, observedAt: new Date().toISOString(), source: cwd ? 'pane_current_path' : 'unavailable', semantics: 'observation, not guaranteed command execution directory' };
+  }
+  private async describe(s: Session) {
+    const { requests, ...info } = s;
+    return { ...info, initialCwd: s.cwd, currentDirectory: await this.directory(s), createdAt: s.createdAt ?? null,
+      lastActivityAt: s.lastActivityAt ?? null, closedAt: s.closedAt ?? null, requestCount: Object.keys(requests).length,
+      connected: this.runtimes.get(s.id)?.alive ?? false };
   }
   isAgent(name: string): boolean { return [...this.sessions.values()].some(s => s.name === name); }
   /** Update presentation only. Neither terminal identity nor control ownership changes. */
@@ -114,6 +131,7 @@ export class AgentApi {
     for (let offset = 0; offset < data.length || offset === 0; offset += 8192) {
       const part = data.slice(offset, offset + 8192);
       const e = { seq: ++r.seq, type, time: new Date().toISOString(), data: part };
+      this.journal.append(r.sessionId, type, part);
       r.events.push(e); r.bytes += Buffer.byteLength(part) + 128;
       while (r.bytes > 8 * 1024 * 1024 && r.events.length) {
         const removed = r.events.shift()!; r.bytes -= Buffer.byteLength(removed.data) + 128;
@@ -135,7 +153,7 @@ export class AgentApi {
         if ((error as Error).message === 'PTY_LIMIT') throw new ApiError(429, 'PTY_LIMIT');
         throw error;
       }
-      const r: Runtime = { proc, events: [], bytes: 0, seq: 0, epoch: crypto.randomUUID(), clients: new Map(), listeners: new Set(), alive: true };
+      const r: Runtime = { sessionId: s.id, proc, events: [], bytes: 0, seq: 0, epoch: crypto.randomUUID(), clients: new Map(), listeners: new Set(), alive: true };
       this.runtimes.set(s.id, r);
       this.event(r, create ? 'created' : 'output_gap', 'Terminal attached; output contains screen redraws.');
       proc.onData(data => { this.event(r, 'output', data); this.backend.output?.(s.name); });
@@ -165,7 +183,7 @@ export class AgentApi {
     entry.seen = Date.now(); this.backend.control.action(s.name, entry.client, 'heartbeat');
     return entry.client;
   }
-  private request(store: Record<string, RecordEntry>, body: any, action: () => unknown): unknown {
+  private request(store: Record<string, RecordEntry>, body: any, action: () => unknown, metadata: Record<string, unknown> = {}): unknown {
     if (!uuid(body.requestId)) throw new ApiError(400, 'REQUEST_ID_REQUIRED');
     const hash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
     const old = store[body.requestId];
@@ -173,7 +191,7 @@ export class AgentApi {
     if (Object.keys(store).length >= 10000) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
     // Durable uncertainty BEFORE writing any terminal bytes. Never replay an ambiguous request.
     if (Buffer.byteLength(JSON.stringify(store)) > 8 * 1024 * 1024) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
-    store[body.requestId] = { hash, result: { state: 'unknown', requestId: body.requestId, time: new Date().toISOString(),
+    store[body.requestId] = { hash, result: { ...metadata, state: 'unknown', requestId: body.requestId, time: new Date().toISOString(),
       ...(typeof body.text === 'string' ? { input: body.sensitive ? '[sensitive input]' : body.text } : {}) } }; this.save();
     const result = action(); store[body.requestId].result = result; this.save(); return result;
   }
@@ -186,8 +204,8 @@ export class AgentApi {
       if (this.active >= 64) throw new ApiError(429, 'CONNECTION_LIMIT');
       this.active++; counted = true;
       const route = url.pathname.slice(PREFIX.length), method = req.method;
-      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe'], completion: false }); return true; }
-      if (route === '/sessions' && method === 'GET') { reply(200, { sessions: [...this.sessions.values()].map(({requests, ...s}) => ({ ...s, connected: this.runtimes.get(s.id)?.alive ?? false })) }); return true; }
+      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe', 'rename', 'history', 'cwd-observation'], completion: false }); return true; }
+      if (route === '/sessions' && method === 'GET') { const sessions = await Promise.all([...this.sessions.values()].map(s => this.describe(s))); reply(200, { total: sessions.length, open: sessions.filter(s => !s.ended).length, closed: sessions.filter(s => s.ended).length, sessions }); return true; }
       if (route === '/sessions' && method === 'POST') {
         const body = await this.body(req);
         const run = async () => {
@@ -206,7 +224,7 @@ export class AgentApi {
           if (!directoryValid) throw new ApiError(400, 'INVALID_DIRECTORY');
           const result = this.request(this.creates, body, () => {
             const id = crypto.randomUUID();
-            const s: Session = { id, generation: crypto.randomUUID(), name: 'agent_' + id.replaceAll('-', ''), label: '🌐 ' + body.label, cwd: body.cwd, requests: {} };
+            const s: Session = { id, generation: crypto.randomUUID(), name: 'agent_' + id.replaceAll('-', ''), label: '🌐 ' + body.label, cwd: body.cwd, createdAt: new Date().toISOString(), requests: {} };
             this.sessions.set(id, s); this.backend.control.setExplicit(s.name); return { sessionId: id, generation: s.generation, name: s.name };
           }) as {sessionId?: string};
           if (result.sessionId) {
@@ -222,10 +240,28 @@ export class AgentApi {
         const pending = this.creation.then(run); this.creation = pending.catch(() => {});
         reply(200, await pending); return true;
       }
-      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(events|input|control|requests))?$/.exec(route);
+      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(events|input|control|requests|history))?$/.exec(route);
       const s = match && this.sessions.get(match[1]); if (!s) throw new ApiError(404, 'SESSION_NOT_FOUND');
       const action = match![2];
-      if (!action && method === 'GET') { const {requests, ...info} = s; reply(200, info); return true; }
+      if (!action && method === 'GET') { reply(200, await this.describe(s)); return true; }
+      if (action === 'history' && method === 'GET') {
+        const after = Number(url.searchParams.get('after') ?? 0), limit = Number(url.searchParams.get('limit') ?? 50);
+        if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, 'INVALID_PAGINATION');
+        const kind = url.searchParams.get('kind') ?? 'requests';
+        if (!['requests', 'output'].includes(kind)) throw new ApiError(400, 'INVALID_HISTORY_KIND');
+        const records = Object.values(s.requests).map(r => r.result);
+        const page: unknown[] = []; let bytes = 0;
+        for (const record of records.slice(after, after + limit)) {
+          const size = Buffer.byteLength(JSON.stringify(record));
+          if (page.length && bytes + size > 2 * 1024 * 1024) break;
+          page.push(record); bytes += size;
+        }
+        reply(200, { sessionId: s.id, label: s.label, initialCwd: s.cwd, kind,
+          ...(kind === 'output' ? this.journal.read(s.id, after, limit) : {
+            records: page, total: records.length,
+            nextCursor: Math.min(after + page.length, records.length), hasMore: after + page.length < records.length,
+            coverage: 'Agent API inputs only; legacy records may lack directory observations' }) }); return true;
+      }
       if (!action && method === 'PATCH') {
         const body = await this.body(req);
         if (body.generation !== s.generation) throw new ApiError(409, 'GENERATION_MISMATCH');
@@ -242,7 +278,7 @@ export class AgentApi {
           const client = this.client(req, s, current);
           if (!this.backend.control.owns(s.name, client)) throw new ApiError(409, 'CONTROL_LOST');
         }
-        await this.backend.remove(s.name); s.ended = true; this.save(); reply(200, { state: 'closed' }); return true;
+        await this.backend.remove(s.name); s.ended = true; s.closedAt = new Date().toISOString(); this.save(); this.journal.flush(); reply(200, { state: 'closed' }); return true;
       }
       const r = await this.runtime(s); const client = this.client(req, s, r);
       if (action === 'events' && method === 'GET') {
@@ -272,12 +308,14 @@ export class AgentApi {
         // Viewing scrollback puts the shared pane in copy-mode. Leave it before
         // keyboard input, just like browser input, so the next command reaches PowerShell.
         if (!s.requests[body.requestId] && isKeyboardInput(body.text)) await this.backend.prepareInput(s.name, authorized);
+        const directory = s.requests[body.requestId] ? null : await this.directory(s);
         if (!authorized()) throw new ApiError(409, 'CONTROL_LOST');
         const result = this.request(s.requests, body, () => {
+          s.lastActivityAt = new Date().toISOString();
           this.event(r, 'input', body.sensitive ? '[sensitive input]' : body.text);
           r.proc.write(body.text);
-          return { requestId: body.requestId, state: 'sent', completion: 'unknown', time: new Date().toISOString(), input: body.sensitive ? '[sensitive input]' : body.text };
-        }); reply(200, result); return true;
+          return { requestId: body.requestId, state: 'sent', completion: 'unknown', directoryBeforeInput: directory, time: new Date().toISOString(), input: body.sensitive ? '[sensitive input]' : body.text };
+        }, { directoryBeforeInput: directory }); reply(200, result); return true;
       }
       throw new ApiError(404, 'NOT_FOUND');
     } catch (e) { reply(e instanceof ApiError ? e.status : 500, { error: e instanceof ApiError ? e.message : 'INTERNAL_ERROR' }); }

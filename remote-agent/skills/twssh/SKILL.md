@@ -93,3 +93,12 @@ node "<skill>/scripts/install.mjs" dir /absolute/path/to/skills
 ## 修改会话标签
 
 用户要求改名时，先 identity 核对目标与完整 ID，再执行 `session rename --session SID --name "新名称"`，然后 identity 验证。名称为 1–64 个字符，不允许控制字符。只改显示名称，不创建终端、不发送 Shell 输入、不获取控制权。网页改名与此命令使用同一逻辑，名称持久化并在重连后保留。旧服务不支持 PATCH 时报告需升级服务，不直接修改状态文件。操作结果不明时先查询 identity，不盲目重试覆盖其他人的新名称。
+
+## 远程会话盘点与历史查询
+
+- 用户问某台电脑有多少会话：先 `session list`，报告服务端登记总数、未关闭/已关闭数量、label、完整 ID、创建时间及最近输入时间。旧服务没有 total 时按 sessions 计数；不得说成累计连接次数或全部普通终端数。
+- 用户查看其他会话时，可以直接 `session identity --session SID`、`session history --session SID --kind requests` 或 `--kind output`，无须 adopt。只有用户明确选择继续控制该会话时才 adopt。
+- 初始目录与 currentDirectory 分别报告；directoryBeforeInput 是输入发送前的 mux 目录观测，附 observedAt/source。缺失或无法查询时写“未知”，不拿初始目录代替。需要精确 PowerShell 当前目录时，必须先确认可接受输入，再执行 Get-Location；不要为查询历史擅自打断程序。
+- 历史使用 after/limit 翻页，沿用返回的 nextCursor；requests 与 output 的游标不可混用。保留时间戳、输入、发送状态及目录信息；敏感输入不得恢复或猜测。
+- output 是有容量上限的原始终端记录，可能含 ANSI、程序回显及缺失；不是用户和模型完整聊天记录。说明 truncated/gap 与未知执行完成状态，不把输出按时间临近强行归属某条命令。
+- 旧服务缺少 history 接口时说明需升级，不自动读取包含 Token 的客户端 config.json，也不自动换主机。

@@ -35,6 +35,11 @@ async function main() {
   const host = config.hosts[alias]; if (!host) throw Error('Unknown host. Use host add NAME --url http://HOST:PORT --token-file FILE [--pin SHA256:HEX]');
   if (action === 'doctor') { output(await request(host, '/info')); return; }
   if (action === 'list') { output(await request(host, '/sessions')); return; }
+  if (action === 'history' || action === 'status') {
+    if (typeof options.session !== 'string') throw Error('--session ID is required');
+    const suffix = action === 'history' ? '/history?' + new URLSearchParams({ kind: options.kind || 'requests', after: String(options.after ?? 0), limit: String(options.limit ?? 50) }) : '';
+    output(await request(host, `/sessions/${options.session}${suffix}`)); return;
+  }
   if (action === 'create') {
     const requestId = options['request-id'] || crypto.randomUUID();
     process.stderr.write(`requestId=${requestId}\n`);
@@ -112,6 +117,6 @@ async function main() {
     if (typeof options.text !== 'string') throw Error('--text TEXT is required');
     output(await send(options.text + (options.enter ? '\r' : ''))); return;
   }
-  throw Error('Commands: doctor, session create/list/rename/close, status, exec, input, interrupt, read, result, attach, detach');
+  throw Error('Commands: doctor, session create/list/history/rename/close, status, exec, input, interrupt, read, result, attach, detach');
 }
 main().catch(e => { process.stderr.write(String(e.message) + '\n'); process.exitCode = 1; });
