@@ -1,4 +1,4 @@
-import { agentSessionId, agentDisplayLabel } from './agent-identity.js';
+import { agentSessionId, renderAgentLabel } from './agent-identity.js';
 import { OutputSampler } from './output-sampler.js';
 import { summarizeShares, type ShareSummaryRecord } from './share-summary.js';
 import { mountMobileActions } from './mobile-actions.js';
@@ -3304,7 +3304,7 @@ function buildTab(s: Session): void {
   dot.className = 'tab-dot';
   const label = document.createElement('span');
   label.className = 'tab-label';
-  label.textContent = agentDisplayLabel(s.raw, s.displayName);
+  renderAgentLabel(label, s.raw, s.displayName);
   label.title = agentSessionId(s.raw) ?? s.displayName;
   const close = document.createElement('span');
   close.className = 'tab-close';
@@ -4118,7 +4118,7 @@ async function moveSessions(names: string[], folderId: string, card?: { cwd: str
 function setDisplayName(s: Session, displayName: string): void {
   s.displayName = displayName;
   if (s.tabLabel) {
-    s.tabLabel.textContent = agentDisplayLabel(s.raw, displayName);
+    renderAgentLabel(s.tabLabel, s.raw, displayName);
     s.tabLabel.title = agentSessionId(s.raw) ?? displayName;
   }
   refreshMobileUI();
@@ -6503,7 +6503,7 @@ function refreshMobileUI(): void {
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
-  mTitleLabel.textContent = s ? agentDisplayLabel(s.raw, s.displayName) : '—';
+  renderAgentLabel(mTitleLabel, s?.raw ?? '', s?.displayName ?? '—');
   paintMobileSharing();
   mTitleHost.replaceChildren(...(s ? [hostBadge(s.host)] : []));
   mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));

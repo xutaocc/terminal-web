@@ -253,3 +253,7 @@ session history --session UUID --kind output --after 0 --limit 50
 输入记录包含 UTC ISO 时间戳、requestId、原始输入、发送状态和 directoryBeforeInput。目录来自发送输入前的 `pane_current_path` 观测，带 observedAt/source；失败时 cwd=null。它可能受 mux/前台程序行为影响，不保证等于 PowerShell 的逻辑位置，也不能代表同一段多行输入内部每条命令的目录。连续命令改变目录后，下次输入重新采样；不向忙碌终端注入 Get-Location。sent 只表示发送，不代表执行成功或完成。旧请求没有目录字段时应显示未知。
 
 终端输出是原始 ANSI 流，不是模型聊天消息，也不能可靠逐条归属命令。每会话保存最近 512 KiB 或 2000 条（先达到者），truncated/gap 明确表示缺失。约 500ms 批量写盘，正常退出会 flush，异常断电可能损失最后一批；只覆盖采集器在线期间，旧输出不能追溯补齐。持久化文件位于 AGENT_SESSIONS_FILE 后缀 `.history/`。敏感输入存为 `[sensitive input]`，程序自身回显仍可能出现在输出中。请求去重记录独立保留，沿用既有每会话上限；超过上限拒绝新请求，不静默删除。
+
+### Agent 会话类型标识
+
+标签栏、侧边栏和移动端标题的 🌐 是前端根据内部 Agent 身份生成的独立标识，提示“远程 Agent 会话”，不会写回显示名称或随改名消失。旧名称开头已有的 🌐 仅在展示时去重；其他位置的 emoji 和普通会话名称保持原样。锁图标仍表示只读/分享状态，与 Agent 类型标识分开。

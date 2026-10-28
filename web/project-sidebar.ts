@@ -1,4 +1,4 @@
-import { agentDisplayLabel, agentSessionId } from './agent-identity.js';
+import { renderAgentLabel, agentSessionId } from './agent-identity.js';
 import { mobileActions, mountMobileActions, type ActionContext } from './mobile-actions.js';
 import { shareStorage as localStorage } from './share-context.js';
 import { sortRecentEntries } from './recent-tabs.js';
@@ -774,7 +774,7 @@ export class ProjectSidebar {
         chipDot.dataset.sessions = session.name;
         const chipName = document.createElement('span');
         chipName.className = 'ps-chip-name';
-        chipName.textContent = agentDisplayLabel(splitKey(session.name).raw, session.displayName);
+        renderAgentLabel(chipName, splitKey(session.name).raw, session.displayName);
         const agentId = agentSessionId(splitKey(session.name).raw);
         if (agentId) chip.title += ` · sessionId: ${agentId}`;
         chip.append(chipDot);

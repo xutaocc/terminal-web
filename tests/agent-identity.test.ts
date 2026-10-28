@@ -8,3 +8,11 @@ test('agent identity survives label changes and ordinary names are untouched', (
   assert.equal(agentSessionId('agent_other'), null);
   assert.equal(agentDisplayLabel('ordinary', '原名称'), '原名称');
 });
+
+test('legacy globe prefixes are removed only for Agent labels, custom emojis survive', () => {
+  const raw = 'agent_cf105e66e79f40279fd9451de3f1c161';
+  assert.equal(agentDisplayLabel(raw, '🌐 系统维护'), '系统维护 · #cf105e66');
+  assert.equal(agentDisplayLabel(raw, '🌐 🌐 系统维护'), '系统维护 · #cf105e66');
+  assert.equal(agentDisplayLabel(raw, '🛠️ 系统维护 🌐'), '🛠️ 系统维护 🌐 · #cf105e66');
+  assert.equal(agentDisplayLabel('ordinary', '🌐 自定义名称'), '🌐 自定义名称');
+});
