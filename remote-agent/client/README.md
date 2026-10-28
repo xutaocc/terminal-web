@@ -6,16 +6,17 @@
 
 ## Windows 服务端
 
-直接使用现有 HTTP 服务地址和 Token，无需证书及指纹。启用 Agent 接口后重启服务：
+直接使用现有 HTTP 服务地址和 Token，无需证书及指纹。Windows 默认启用 Agent 接口，更新后重启服务：
 
 ```powershell
+# 如果旧配置显式关闭了功能，可覆盖为开启
 $env:AGENT_ENABLED = '1'
 # 以前配置过 TLS 时，清除这两个变量以恢复 HTTP
 Remove-Item Env:TLS_CERT_FILE, Env:TLS_KEY_FILE -ErrorAction SilentlyContinue
 npm start
 ```
 
-默认关闭 Agent 接口。HTTP 会明文传输 Token、命令和输出，只在可信内网或 VPN 中使用；Token 校验不是加密。仍可按需配置 TLS_CERT_FILE / TLS_KEY_FILE 使用 HTTPS。
+Windows 未设置或留空 AGENT_ENABLED 时默认开启；显式 0 关闭、1 开启。macOS/Linux 服务端默认关闭。HTTP 会明文传输 Token、命令和输出，只在可信内网或 VPN 中使用；Token 校验不是加密。仍可按需配置 TLS_CERT_FILE / TLS_KEY_FILE 使用 HTTPS。
 
 需要持久配置时，在 Windows 项目根目录的 `.env` 中设置 `AGENT_ENABLED=1`，然后使用 `pwsh -NoProfile -File scripts/start-windows.ps1` 启动。该脚本读取 `.env`；直接 `npm start` 不会读取此文件。`.env` 是本机配置，不提交 Git，也不需要提供给远端 Agent。
 

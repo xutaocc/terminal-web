@@ -2,7 +2,7 @@ import { TerminalControl, type ControlClient, type ControlAction } from './termi
 import http from "node:http";
 import https from "node:https";
 import { AgentViewerHub } from './agent-viewer.js';
-import { AgentApi } from "./agent-api.js";
+import { AgentApi, isAgentApiEnabled } from "./agent-api.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -1852,7 +1852,7 @@ function noteAbnormalPtyExit(): void {
 const wss = new WebSocketServer({ noServer: true });
 const terminalControl = new TerminalControl();
 const agentApi = new AgentApi({
-  enabled: process.env.AGENT_ENABLED === '1', token: config.authToken,
+  enabled: isAgentApiEnabled(), token: config.authToken,
   file: process.env.AGENT_SESSIONS_FILE || path.join(os.homedir(), '.terminal-web', 'agent-sessions.json'),
   control: terminalControl,
   output: name => agentViewerHub.notifyOutput(name),

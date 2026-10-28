@@ -1,12 +1,66 @@
 # 远程 Agent 操作 Windows：部署与使用
 
-本功能让 Ubuntu/macOS 上的 Codex、Claude Code 通过 `twssh` 操作 Windows 上持续运行的 PowerShell。浏览器固定只读查看终端，滚动不会影响远端执行。当前协议为 HTTP + Token，HTTPS 可选；无需在 Windows 上安装被控制的 Codex。
+本功能让 macOS/Linux/Windows 上的 Codex、Claude Code 通过 `twssh` 操作 Windows 上持续运行的 PowerShell。浏览器固定只读查看终端，滚动不会影响远端执行。当前协议为 HTTP + Token，HTTPS 可选；无需在 Windows 上安装被控制的 Codex。
+
+## 快速入口：安装 twssh skill（macOS / Linux / Windows 控制端）
+
+推荐使用自包含的 [twssh skill](skills/twssh/SKILL.md)，内置客户端，不需要全局安装 CLI。控制端需要 Node.js 20+。以下命令在仓库根目录执行，Bash、zsh 和 PowerShell 均可使用：
+
+```text
+node remote-agent/skills/twssh/scripts/install.mjs codex
+# Claude Code 用户改用：
+node remote-agent/skills/twssh/scripts/install.mjs claude
+```
+
+也可把整个 `remote-agent/skills/twssh` 文件夹交给另一台电脑上的 AI，说：
+
+> 请读取这个 twssh 文件夹的 SKILL.md，运行内置 install.mjs 安装到你对应的 skills 目录。检查 Node.js 20+，初始化连接配置；缺少地址或 Token 文件路径时再问我，不要读取或展示 Token。
+
+重新加载技能或开启新对话后，在 Claude Code 使用 `/twssh`，在 Codex 使用 `$twssh` 或技能选择器。示例：
+
+- `/twssh`：检查连接；第一次提示填写配置。
+- `/twssh 把连接地址改为 http://192.168.1.20:8090，默认目录 C:\project`。
+- `/twssh 在远程 Windows 的 C:\project 目录检查 Git 状态`。
+
+连接配置放在**调用时的本地工作目录**下 `.twssh/connections.json`，不搜索父目录、不回退旧全局配置。在实际项目目录运行安装后的 `scripts/twssh.mjs init`，或让 AI 使用 `--project /本地项目目录` 指定项目。初始化不覆盖已有设置，并生成 `.twssh/.gitignore` 忽略连接配置和状态。
+
+```json
+{
+  "version": 1,
+  "connections": [
+    {
+      "name": "8845h",
+      "description": "8845H 开发机",
+      "url": "http://192.168.1.20:8090",
+      "tokenFile": "~/.config/twssh/tokens/8845h",
+      "cwd": "C:/twsshProjecTemp"
+    },
+    {
+      "name": "14700",
+      "description": "14700 测试机",
+      "url": "http://192.168.1.30:8090",
+      "tokenFile": "~/.config/twssh/tokens/14700",
+      "cwd": "C:/twsshProjecTemp"
+    }
+  ]
+}
+```
+
+只有一个连接时自动选中；多个连接必须说明名称，例如 `/twssh 使用 8845h 检查 Git 状态`。脚本使用 `--target 8845h`，目标缺失、名字不存在或重复时在联网前拒绝，不自动选第一个。Token 单独保存在控制端文件中；Windows 路径可写 `C:/Users/name/...`。可选 pin 用于 HTTPS 指纹。
+
+新会话目录优先级：本次 `--cwd` > 连接配置 cwd > `C:/twsshProjecTemp`。默认目录不存在时，新版 Windows 服务会尝试自动创建；因此**自动建目录需要更新被控端代码并重启**。旧服务可先手动执行 `New-Item -ItemType Directory -Force -Path 'C:/twsshProjecTemp'`。指定其他目录时必须已存在，权限不足或路径无效会报错，不自动切换目录。更改默认目录不会改变已存在 Shell 的当前位置。
+
+会话登记在 `.twssh/state/`，按当前项目、目标名称及服务地址隔离。`session local` 查看本地登记，`session list` 查看远端记录；明确选择远端已有会话后用 `session adopt --session ID` 登记。脚本拒绝直接操作未登记会话，改名或改服务地址需重新核对。连续任务复用会话，结束 detach；只有明确要求才 close。多个独立 Agent 不要并发写同一项目/目标的状态。
+
+安装更新会备份旧 skill，不覆盖项目连接信息。旧版 `~/.config/twssh/connection.json` 不自动迁移；需要时将字段 host 改为 name、放进 connections 数组，并在目标项目中初始化。普通 CLI 的 TWSSH_HOME 行为不变，但新 skill 使用 --project 选择配置，忽略外部 TWSSH_HOME。
+
+维护者修改 `remote-agent/client/{twssh,transport}.mjs` 时，须同步到 `skills/twssh/scripts/client/`；`node --test tests/twssh-skill.test.mjs` 检查内置副本一致性及独立安装、配置、请求路由。
 
 ## 1. 哪些机器需要更新
 
 | 角色 | 需要的文件 / 操作 |
 |---|---|
-| 被操作的 Windows | 更新本仓库，安装依赖、构建网页，配置 `AGENT_ENABLED=1` 并重启服务 |
+| 被操作的 Windows | 更新本仓库，安装依赖、构建网页，Agent API 默认开启，更新后重启服务 |
 | 打开聚合网页的 Mac/Linux 主机 | 同步更新本仓库、重新构建网页并重启；只做网页入口时不必启用 Agent API |
 | 发送命令的 Ubuntu/macOS Agent | 安装 `remote-agent/client` 客户端，让 Agent 阅读 `remote-agent/skills/terminal-web-remote/SKILL.md` |
 
@@ -26,15 +80,18 @@ npm run build
 
 ## 2. Windows 服务端
 
-需要 Node.js 20+、现有 psmux 和正常运行的 terminal-web。项目根目录 `.env` 为本机配置，不提交 Git。不存在时先复制 `.env.example`，然后设置：
+需要 Node.js 20+、现有 psmux 和正常运行的 terminal-web。Windows 上 Agent API 默认开启，无需额外设置开关。项目根目录 `.env` 为本机配置，不提交 Git。不存在时先复制 `.env.example`，然后设置：
 
 ```dotenv
 HOST=0.0.0.0
 PORT=8090
-AGENT_ENABLED=1
+# 仅在希望关闭远程 Agent 功能时取消下一行注释
+# AGENT_ENABLED=0
 TLS_CERT_FILE=
 TLS_KEY_FILE=
 ```
+
+未设置或留空 `AGENT_ENABLED` 时，Windows 默认开启，macOS/Linux 服务端默认关闭；显式 `1` 开启、`0` 关闭。**旧 `.env` 若已有 `AGENT_ENABLED=0`，仍会关闭功能，需要删除该项或改为 `1`。** Token 鉴权保持启用。
 
 `HOST` 也可以设置为指定局域网 IP。停止原 Web 服务后，从项目根目录启动：
 
@@ -54,7 +111,9 @@ HTTP 的 Token、输入和输出是明文，适用于可信内网或 VPN。持�
 
 浏览器强制刷新：Windows/Linux 使用 Ctrl+F5，Mac 使用 Cmd+Shift+R。也可以直接打开 `http://WINDOWS_IP:8090` 登录，绕过尚未更新的聚合页面。
 
-## 4. 远端 Agent 安装客户端
+## 4. 独立 CLI 安装（兼容旧用法）
+
+下面是直接使用 CLI 的部署方式。使用上面的新 twssh skill 时，无需单独安装 CLI，也不使用本节的全局主机配置。
 
 远端只需下面两部分及其文档：
 
@@ -94,7 +153,9 @@ twssh doctor win-dev
 
 替换 `WINDOWS_IP`。返回 `version: 1` 和 `persistent-session` 能力表示接入成功。HTTP 不需要指纹。旧 HTTPS 别名改成 HTTP 时，再执行 `host add` 并省略 `--pin` 即可。
 
-## 5. 给 Codex / Claude Code 的指令
+## 5. 独立 CLI 的旧版 Skill 指令
+
+新安装推荐使用本文开头的 `twssh` skill；本节保留 `terminal-web-remote` 搭配独立 CLI 的方式。
 
 将 Skill 文件夹安装到对应 Agent 支持的 skills 目录，或直接让 Agent 阅读该文件；无需把 Token 发进对话。例如：
 
@@ -147,7 +208,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 以后在该仓库内执行 `git pull --ff-only` 更新源码；如果安装路径或客户端包配置变化，再执行同样的安装命令。只复制文件而不使用 Git 的机器，需要重新同步整个 `remote-agent/` 目录。
 
-主机连接配置保存在 `~/.config/twssh/config.json`，与仓库分开，更新源码不会覆盖 Token 和会话记录。每个独立并发 Agent 使用独立 `TWSSH_HOME`，避免并发写同一个配置文件。Skill 若复制到了 Agent 的安装目录，也要同步更新该副本。
+独立 CLI 的主机连接配置保存在 `~/.config/twssh/config.json`，与仓库分开，更新源码不会覆盖 Token 和会话记录。独立 CLI 的并发 Agent 使用独立 `TWSSH_HOME`；新 twssh skill 使用项目 `.twssh/`，同一项目/目标的操作须串行。Skill 若复制到了 Agent 的安装目录，也要同步更新该副本。
 
 Windows 服务端和提供聚合网页的 Mac/Linux 主机需要完整仓库，不能只检出控制端目录；更新后分别构建并重启。
 

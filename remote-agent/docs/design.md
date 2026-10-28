@@ -130,7 +130,7 @@ Linux 客户端配置目录权限 0700、Token 文件 0600；Windows 服务端�
 
 首版发布带依赖的 Node.js 客户端包，选定并测试受支持的 Node LTS 基线；提供可校验的版本包，不要求远端安装浏览器或项目全仓库。每次 CLI 都能短连接调用 REST；交互 attach 使用长连接，后续按性能需要增加类似 ControlMaster 的本地连接复用进程。
 
-当前用 AGENT_ENABLED=1 启用服务，复制 HTTP 地址和 Token；HTTPS 可选，只有自签证书需要额外配置指纹。网页接入设置仍待实现。
+Windows 默认启用服务（AGENT_ENABLED 未设置或留空）；显式 0 关闭，1 开启，macOS/Linux 服务端默认关闭，复制 HTTP 地址和 Token；HTTPS 可选，只有自签证书需要额外配置指纹。网页接入设置仍待实现。
 
 ```bash
 # 首次配置：交互隐藏输入 Token；pin 仅自签部署需要

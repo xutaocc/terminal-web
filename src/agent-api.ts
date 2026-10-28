@@ -7,6 +7,11 @@ import { isKeyboardInput } from './history-input.js';
 import { TerminalControl, type ControlClient } from './terminal-control.js';
 
 const PREFIX = '/api/agent/v1';
+/** Windows enables remote control by default; an explicit setting overrides the default. */
+export function isAgentApiEnabled(value = process.env.AGENT_ENABLED, platform: NodeJS.Platform = process.platform): boolean {
+  const setting = value?.trim();
+  return setting ? setting === '1' : platform === 'win32';
+}
 const uuid = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9-]{36}$/.test(v);
 class ApiError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 interface Event { seq: number; type: string; time: string; data: string }
@@ -174,10 +179,18 @@ export class AgentApi {
         const body = await this.body(req);
         const run = async () => {
           if (!uuid(body.requestId) || typeof body.label !== 'string' || !body.label.trim() || body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label)) throw new ApiError(400, 'INVALID_CREATE');
-          let directoryValid = false;
-          try { directoryValid = typeof body.cwd === 'string' && path.isAbsolute(body.cwd) && fs.statSync(body.cwd).isDirectory(); } catch { /* invalid directory */ }
-          if (!directoryValid) throw new ApiError(400, 'INVALID_DIRECTORY');
           if (!this.creates[body.requestId] && [...this.sessions.values()].filter(s => !s.ended).length >= 8) throw new ApiError(429, 'SESSION_LIMIT');
+          let directoryValid = false;
+          try {
+            // Only the documented Windows scratch directory is automatically provisioned.
+            // Explicit project paths still have to exist; typos must not create directories.
+            if (process.platform === 'win32' && typeof body.cwd === 'string' &&
+                path.win32.normalize(body.cwd).replace(/[\\/]+$/, '').toLowerCase() === 'c:\\twsshprojectemp') {
+              fs.mkdirSync(body.cwd, { recursive: true });
+            }
+            directoryValid = typeof body.cwd === 'string' && path.isAbsolute(body.cwd) && fs.statSync(body.cwd).isDirectory();
+          } catch { /* invalid or inaccessible directory */ }
+          if (!directoryValid) throw new ApiError(400, 'INVALID_DIRECTORY');
           const result = this.request(this.creates, body, () => {
             const id = crypto.randomUUID();
             const s: Session = { id, generation: crypto.randomUUID(), name: 'agent_' + id.replaceAll('-', ''), label: '🌐 ' + body.label, cwd: body.cwd, requests: {} };
