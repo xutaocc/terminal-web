@@ -211,3 +211,16 @@ test('read limits preserve cursor and accepted sends survive observation failure
   assert.match(sent.nextAction,/do-not-resend/);
   assert.equal(f.requests.slice(before).filter(r=>r.url.endsWith('/input')).length,1);
 });
+
+
+test('project wrapper forwards task and file groups without converting them to session operations', async t => {
+  const {dir,script,requests}=await fixture(t);
+  const tasks=await run(script,['task','list'],dir);
+  assert.equal(tasks.code,0,tasks.err);assert.equal(requests.at(-1).url,'/api/agent/v1/tasks');
+  const read=await run(script,['file','read','--root','C:/project','--path','app.py'],dir);
+  assert.equal(read.code,0,read.err);assert.equal(requests.at(-1).url,'/api/agent/v1/files/read');
+  const spec=path.join(dir,'task.json');fs.writeFileSync(spec,JSON.stringify({cwd:'C:/project',executable:'node',args:['--version']}));
+  const create=await run(script,['task','create','--spec',spec],dir);
+  assert.equal(create.code,0,create.err);assert.equal(requests.at(-1).url,'/api/agent/v1/tasks');
+  assert.equal(requests.some(r=>r.url.startsWith('/api/agent/v1/sessions')),false);
+});

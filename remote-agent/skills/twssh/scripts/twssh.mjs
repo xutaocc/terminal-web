@@ -137,7 +137,7 @@ else if (adopting) {
   }
   process.stdout.write(output);
 } else {
-  if (['session','task','file'].includes(args[0])) await run(['session', args[1], cfg.name, ...args.slice(2)]);
+  if (['session','task','file'].includes(args[0])) await run([args[0], args[1], cfg.name, ...args.slice(2)]);
   else await run([args[0], cfg.name, ...args.slice(1)]);
   if (sid && registry[sid]) {
     registry[sid].lastUsed = new Date().toISOString();
