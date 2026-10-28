@@ -1,4 +1,4 @@
-import { renderAgentHistory } from './agent-history-page.js';
+import { renderAgentHistory, historyTerminalHref } from './agent-history-page.js';
 import { TerminalControl, type ControlClient, type ControlAction } from './terminal-control.js';
 import http from "node:http";
 import https from "node:https";
@@ -1577,7 +1577,7 @@ const server = createHttpServer((req, res) => {
         const raw = requestUrl.searchParams.get('format') === 'json';
         res.writeHead(history ? 200 : 404, { 'Content-Type': raw ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" });
-        res.end(raw ? JSON.stringify(history, null, 2) : renderAgentHistory(history)); return;
+        res.end(raw ? JSON.stringify(history, null, 2) : renderAgentHistory(history, historyTerminalHref(requestUrl.searchParams.get('session') ?? '', requestUrl.searchParams.get('returnSession')))); return;
       }
       if (requestUrl.pathname === '/api/viewer-state') {
         await viewerState.http(req, res, adminViewer, name => /^(?:@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(name)); return;
@@ -1589,6 +1589,12 @@ const server = createHttpServer((req, res) => {
         // A remote's remote list carries its own token; this page has no use for it.
         if (viaRemote.rest.startsWith('/api/remotes') || viaRemote.rest.startsWith('/api/access')) {
           sendJsonHttp(res, 404, { error: 'not available through a remote' }); return;
+        }
+        // Carry the controller's host identity into the history return link,
+        // including old bookmarks which predate return navigation.
+        if (viaRemote.rest === '/api/agent-history') {
+          const session = requestUrl.searchParams.get('session') ?? '';
+          if (/^agent_[a-f0-9]{32}$/.test(session)) requestUrl.searchParams.set('returnSession', `@${viaRemote.id}/${session}`);
         }
         proxyHttp(req, res, remote, viaRemote.rest, requestUrl.search, remoteMonitor);
         return;

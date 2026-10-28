@@ -11,3 +11,19 @@ test('history renders code as text and collapses raw commands', () => {
   assert(html.includes('内容片段 1，见下方'));
   assert(renderAgentHistory(null).includes('会话不存在'));
 });
+
+test('navigation exists at both ends and return links stay on the controller origin', async () => {
+  const {historyTerminalHref}=await import('../src/agent-history-page.js');
+  const name='agent_'+'a'.repeat(32);
+  const remote='@b1c4ab8d/'+name;
+  assert.equal(historyTerminalHref(name,remote),'/?focus='+encodeURIComponent(remote));
+  assert.equal(historyTerminalHref(name),'/?focus='+name);
+  assert.equal(historyTerminalHref('bad','https://evil.invalid'),'/');
+  assert.equal(historyTerminalHref(name,'@bad/agent_'+'b'.repeat(32)),'/?focus='+name);
+  const html=renderAgentHistory({label:'test',records:[]},historyTerminalHref(name,remote));
+  assert.equal((html.match(/← 返回终端/g)||[]).length,2);
+  assert.equal((html.match(/href="#history-top"/g)||[]).length,2);
+  assert.equal((html.match(/href="#history-bottom"/g)||[]).length,2);
+  assert(html.includes('id="history-top"')); assert(html.includes('id="history-bottom"'));
+  assert(!renderAgentHistory(null,'javascript:alert(1)').includes('javascript:'));
+});

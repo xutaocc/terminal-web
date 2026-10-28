@@ -6889,6 +6889,9 @@ termArea.addEventListener('drop', (e) => {
 // Init: restore tabs (or start one), restore prefs, activate.
 // ---------------------------------------------------------------------------
 const urlSession = sanitizeName(params.get('session'));
+// History return links select existing tabs without creating closed sessions.
+const focusParam = params.get('focus') ?? '';
+const focusSession = /^(?:@[a-z0-9]{1,16}\/)?agent_[a-f0-9]{32}$/.test(focusParam) ? focusParam : null;
 const cached = loadTabs(); // per-device cache: offline fallback + last focus
 // A sensible value from the first tick (used by closeSession / syncFromServer
 // before init resolves); init refines it once the tab list is known.
@@ -7000,7 +7003,7 @@ async function init(): Promise<void> {
 
   // This device's own last focus first, then what the server remembers for its
   // kind of device — which is what is left after a storage wipe.
-  const wanted = [urlSession, cached.active, prefs.activeTab].filter(
+  const wanted = [focusSession, urlSession, cached.active, prefs.activeTab].filter(
     (n): n is string => typeof n === 'string' && n.length > 0,
   );
   const active = wanted.map((n) => sessions.find((s) => s.name === n)).find(Boolean);
