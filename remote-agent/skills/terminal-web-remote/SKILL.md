@@ -3,7 +3,7 @@ name: terminal-web-remote
 description: Use the twssh CLI to operate a configured Windows terminal-web host through a persistent remote terminal, including reconnecting, reading output, and interacting with running programs.
 ---
 
-Use `twssh` for the Windows host requested by the user. This skill requires the separately installed CLI in `scripts/twssh` and a configured host alias. Credentials belong in the local CLI configuration, never in this file or a prompt.
+Use `twssh` for the Windows host requested by the user. This skill requires the separately installed CLI in `remote-agent/client` and a configured host alias. Credentials belong in the local CLI configuration, never in this file or a prompt.
 
 For a new host on a trusted network, configure HTTP using an existing local Token file:
 
@@ -14,7 +14,7 @@ twssh doctor win-dev
 
 HTTP needs no certificate or `--pin`. To migrate an alias previously configured for HTTPS, run `host add` again with its HTTP URL and Token file, omitting `--pin`; this replaces the saved connection settings. Use the address and file supplied by the user.
 
-For installation or a browser that lacks the takeover controls, consult [deployment guidance](../../docs/远程Agent-部署与使用.md) in the distribution/repository. The host serving the browser UI must also be updated and rebuilt; updating only the target Windows server does not update a Mac aggregation page. If this skill was copied alone, use the distribution's documentation or open the Windows web address directly.
+For installation or a browser that lacks the takeover controls, consult [deployment guidance](../../README.md) in the remote-agent directory. The host serving the browser UI must also be updated and rebuilt; updating only the target Windows server does not update a Mac aggregation page. If this skill was copied alone, use the repository's remote-agent documentation or open the Windows web address directly.
 
 1. Run `twssh doctor HOST` to inspect capabilities. The current release exposes raw terminal input, not reliable command completion or busy detection.
 2. Create a session with `twssh session create HOST --name NAME --cwd 'C:\path'`. Save its `sessionId`; reuse it for all commands that must share variables, functions or working directory. Use `twssh session list HOST` to find existing sessions.

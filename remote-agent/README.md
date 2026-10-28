@@ -8,7 +8,7 @@
 |---|---|
 | 被操作的 Windows | 更新本仓库，安装依赖、构建网页，配置 `AGENT_ENABLED=1` 并重启服务 |
 | 打开聚合网页的 Mac/Linux 主机 | 同步更新本仓库、重新构建网页并重启；只做网页入口时不必启用 Agent API |
-| 发送命令的 Ubuntu/macOS Agent | 安装 `scripts/twssh` 客户端，让 Agent 阅读 `skills/terminal-web-remote/SKILL.md` |
+| 发送命令的 Ubuntu/macOS Agent | 安装 `remote-agent/client` 客户端，让 Agent 阅读 `remote-agent/skills/terminal-web-remote/SKILL.md` |
 
 **浏览器加载哪个地址，就使用哪台主机提供的前端。** 在 Mac 的聚合页面打开 Windows 会话时，只升级 Windows 不够。旧页面可能缺少“接管”按钮，也无法发送新版观看滚动请求。更新提供网页的主机后，强制刷新浏览器。
 
@@ -59,19 +59,22 @@ HTTP 的 Token、输入和输出是明文，适用于可信内网或 VPN。持�
 远端只需下面两部分及其文档：
 
 ```text
-scripts/twssh/                  Node.js CLI，无第三方运行依赖
-skills/terminal-web-remote/     Agent 操作说明
+remote-agent/
+  README.md                       部署和使用入口
+  client/                         Node.js CLI，无第三方运行依赖
+  skills/terminal-web-remote/      Agent 操作说明
+  docs/design.md                  设计及协议说明
 ```
 
-可以从完整仓库复制，也可使用第 7 节的 ZIP。解压后，在包根目录执行：
+该目录直接以源码形式提交 Git，不提交 ZIP。可以从完整仓库复制整个 `remote-agent/`，或按第 7 节只检出此目录。在仓库根目录执行：
 
 ```bash
-cd scripts/twssh
+cd remote-agent/client
 npm install --global --prefix "$HOME/.local" .
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-把 PATH 设置加入远端实际启动 Agent 的环境。也可直接调用 `node /绝对路径/scripts/twssh/twssh.mjs`，避免全局安装。保留客户端目录，npm 的本地安装可能使用符号链接。
+把 PATH 设置加入远端实际启动 Agent 的环境。也可直接调用 `node /绝对路径/remote-agent/client/twssh.mjs`，避免全局安装。保留客户端目录，npm 的本地安装可能使用符号链接。
 
 创建 Token 文件并配置主机（以下为 Bash）：
 
@@ -95,7 +98,7 @@ twssh doctor win-dev
 
 将 Skill 文件夹安装到对应 Agent 支持的 skills 目录，或直接让 Agent 阅读该文件；无需把 Token 发进对话。例如：
 
-> 阅读 `/opt/terminal-web-remote/skills/terminal-web-remote/SKILL.md`。通过 `twssh` 操作已配置的 `win-dev`，任务目录为 `C:\project`。创建或复用一个专用会话，保存 sessionId，后续命令继续使用它。结束时 detach，保留环境。
+> 阅读 `/opt/terminal-web/remote-agent/skills/terminal-web-remote/SKILL.md`。通过 `twssh` 操作已配置的 `win-dev`，任务目录为 `C:\project`。创建或复用一个专用会话，保存 sessionId，后续命令继续使用它。结束时 detach，保留环境。
 
 客户端通过本地配置自动携带 Token。Codex 和 Claude Code 使用相同 CLI，不依赖专属 SDK、MCP 或模型协议。
 
@@ -112,7 +115,7 @@ twssh detach win-dev --session "$SID"
 
 `exec` 返回 `sent` 只表示输入已发送，不代表完成。当前版本不判断忙闲或退出码，必须先读取终端结果再决定下一步。前一个程序仍在运行时，新输入会进入那个程序。等待超时后继续 `read`；请求结果不明确时用 `result` 查询，不盲目重复执行。
 
-更多命令、游标和限制见 [CLI 使用说明](../scripts/twssh/README.md)。
+更多命令、游标和限制见 [CLI 使用说明](client/README.md)。
 
 ## 6. 网页观看、滚动与接管
 
@@ -125,17 +128,27 @@ twssh detach win-dev --session "$SID"
 
 没有“接管 / 操作记录”栏：优先确认提供当前网页的主机是否更新并重新构建，而不只是确认 Windows API 能访问。
 
-## 7. 打包、更新与验证
+## 7. 通过 Git 获取和更新
 
-在仓库根目录运行（需要 Python 3）：
+所有控制端文件统一维护在 `remote-agent/`，以可直接修改的源码提交。仓库不包含 ZIP、Token 或本机配置。
+
+远端只需要控制端文件时，可以稀疏检出（以下命令在尚未创建目标目录时执行）：
 
 ```bash
-python scripts/package-twssh.py --output /path/to/terminal-web-remote.zip
+git clone --filter=blob:none --sparse --branch winssh-f-fitshare-261028 \
+  git@github.com:xutaocc/terminal-web.git terminal-web
+cd terminal-web
+git sparse-checkout set remote-agent
+cd remote-agent/client
+npm install --global --prefix "$HOME/.local" .
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-脚本只打包固定清单中的客户端、Skill、文档，不打包 `.env`、Token、日志和 node_modules。同时生成 `.sha256` 校验文件。ZIP 不包含 Windows 服务端；服务端和聚合主机应通过 Git 更新。下载端口与终端端口是两个不同服务。
+以后在该仓库内执行 `git pull --ff-only` 更新源码；如果安装路径或客户端包配置变化，再执行同样的安装命令。只复制文件而不使用 Git 的机器，需要重新同步整个 `remote-agent/` 目录。
 
-更新客户端后重新安装同一目录；主机配置保存在 `~/.config/twssh/config.json`，不会因复制客户端而自动更新。每个独立并发 Agent 使用独立 `TWSSH_HOME`，避免并发写同一个配置文件。
+主机连接配置保存在 `~/.config/twssh/config.json`，与仓库分开，更新源码不会覆盖 Token 和会话记录。每个独立并发 Agent 使用独立 `TWSSH_HOME`，避免并发写同一个配置文件。Skill 若复制到了 Agent 的安装目录，也要同步更新该副本。
+
+Windows 服务端和提供聚合网页的 Mac/Linux 主机需要完整仓库，不能只检出控制端目录；更新后分别构建并重启。
 
 开发验证：
 

@@ -1,6 +1,6 @@
 # Windows 远程 Agent 持久终端设计
 
-状态：目标设计，已有 0.1 原始终端实现；具体可用能力以 `scripts/twssh/README.md` 为准。日期：2026-10-28。
+状态：目标设计，已有 0.1 原始终端实现；具体可用能力以 `remote-agent/client/README.md` 为准。日期：2026-10-28。
 工作分支：`winssh-f-fitshare-261028`。
 基线：`fit-status-f-share-multi-platform-261027`，提交 `9f22aa7ea7d4b3a04f696b657b0bab47c8e98b57`。
 文中未在使用说明列出的 API、客户端命令及配置仍为拟议接口。
@@ -183,7 +183,7 @@ Skill 随客户端发布，内容包括：主机别名、持久 sessionId、Wind
 - `src/agent-stream.ts`：常驻采集、缓冲、游标、背压和 WSS。
 - `src/agent-commands.ts`：执行状态、请求去重、崩溃不确定性处理。
 - `src/agent-audit.ts`：记录及轮转，认证数据过滤。
-- `scripts/twssh/`：远端 CLI 和使用说明；后续增加实际 Skill。
+- `remote-agent/client/`：远端 CLI 和使用说明；后续增加实际 Skill。
 - 网页增加接入设置、远程分组、状态徽标、操作记录及接管按钮。
 
 避免另一套锁：浏览器和 Agent 必须共用真实会话上的 TerminalControl，并新增显式控制策略。每次异步写入前重新核对 fence；切换控制权后清理旧队列。管理员网页的 restart/kill 同样经过统一策略。

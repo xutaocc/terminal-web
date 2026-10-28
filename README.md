@@ -1,6 +1,6 @@
 # terminal-web
 
-Windows 远程 Agent 接入（HTTP + Token、psmux 持久会话、网页观看和接管）：先看 [部署与使用指南](docs/远程Agent-部署与使用.md)，另有 [CLI 说明](scripts/twssh/README.md)、[Agent Skill](skills/terminal-web-remote/SKILL.md) 和 [设计文档](docs/winssh-远程Agent持久终端设计.md)。默认关闭，需设置 `AGENT_ENABLED=1`；HTTP 适用于可信内网或 VPN，HTTPS 可选。通过 Mac/Linux 聚合页面观看时，也需要更新并构建提供网页的主机。当前提供原始终端模式，不报告命令完成或退出码。
+Windows 远程 Agent 接入（HTTP + Token、psmux 持久会话、网页观看和接管）：先看 [部署与使用指南](remote-agent/README.md)，另有 [CLI 说明](remote-agent/client/README.md)、[Agent Skill](remote-agent/skills/terminal-web-remote/SKILL.md) 和 [设计文档](remote-agent/docs/design.md)。默认关闭，需设置 `AGENT_ENABLED=1`；HTTP 适用于可信内网或 VPN，HTTPS 可选。通过 Mac/Linux 聚合页面观看时，也需要更新并构建提供网页的主机。当前提供原始终端模式，不报告命令完成或退出码。
 
 A web-based terminal: open a browser tab, get a real shell. The shell runs
 inside a **tmux** session, so closing the window (or losing your network) just

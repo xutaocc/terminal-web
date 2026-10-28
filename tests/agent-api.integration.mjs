@@ -7,7 +7,7 @@ import net from 'node:net';
 import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID, X509Certificate } from 'node:crypto';
-import { request } from '../scripts/twssh/transport.mjs';
+import { request } from '../remote-agent/client/transport.mjs';
 import WebSocket from 'ws';
 
 const plain = process.env.TW_AGENT_TEST_HTTP === '1';
@@ -31,7 +31,7 @@ async function start() {
 }
 async function stop() {if(proc&&proc.exitCode===null){proc.kill();await once(proc,'exit');}}
 async function cli(...args) {
-  const child = spawn(process.execPath, ['scripts/twssh/twssh.mjs', ...args], {env: {...process.env, TWSSH_HOME: path.join(dir, 'client')}, stdio:['ignore','pipe','pipe']});
+  const child = spawn(process.execPath, ['remote-agent/client/twssh.mjs', ...args], {env: {...process.env, TWSSH_HOME: path.join(dir, 'client')}, stdio:['ignore','pipe','pipe']});
   let out='', err=''; child.stdout.on('data', b=>out+=b); child.stderr.on('data',b=>err+=b);
   const [code] = await once(child,'exit'); assert.equal(code,0,err); return JSON.parse(out);
 }

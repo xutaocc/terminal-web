@@ -1,6 +1,6 @@
 # twssh 0.1 — 持久终端客户端
 
-完整部署、Mac 聚合页面升级、远端 Agent 配置和打包步骤见 [部署与使用指南](../../docs/远程Agent-部署与使用.md)。
+完整部署、Mac 聚合页面升级、远端 Agent 配置和 Git 更新步骤见 [部署与使用指南](../README.md)。
 
 首版支持 HTTP + Token（可选 HTTPS）、原始终端输入、持续 Shell、输出游标、请求去重、网页观看与接管。尚未实现受管命令完成通知、WSS 推送、独立侧栏分组及接入设置页。标签通过 `🌐` 前缀识别。操作记录可在网页终端顶部打开。
 
@@ -21,10 +21,10 @@ npm start
 
 ## Ubuntu 客户端
 
-复制整个 `scripts/twssh` 文件夹到 Ubuntu；需要 Node.js 20+，无第三方运行依赖。
+复制整个 `remote-agent/client` 文件夹到 Ubuntu；需要 Node.js 20+，无第三方运行依赖。
 
 ```bash
-cd twssh
+cd remote-agent/client
 npm install --global --prefix "$HOME/.local" .
 export PATH="$HOME/.local/bin:$PATH"
 # 也可以直接 node /path/to/twssh.mjs ...
@@ -48,7 +48,7 @@ HTTP 不需要 `--pin`。可选 HTTPS 模式下，可信 CA 证书可以省略 `
 
 ## Agent 使用
 
-将 `skills/terminal-web-remote` 目录复制到 Agent 支持的 skills 目录，让 Codex/Claude Code 加载其中的 `SKILL.md`。Skill 使用标准 CLI，不需要专属 SDK 或 MCP。
+将 `remote-agent/skills/terminal-web-remote` 目录复制到 Agent 支持的 skills 目录，让 Codex/Claude Code 加载其中的 `SKILL.md`。Skill 使用标准 CLI，不需要专属 SDK 或 MCP。
 
 原始终端版本必须先读取输出再决定是否输入；服务端不判断前一个程序是否仍在运行。`exec` 返回 `sent`，不代表运行完成。长时间命令反复 `read`，不重复 `exec`。`result` 查询上次输入请求；`--request-id UUID` 可由调度器自行管理请求编号。数据发送到同一个 PowerShell，环境只在原 Shell 存活期间保留。
 
