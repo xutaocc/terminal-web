@@ -12,6 +12,7 @@ const forgotten=()=>{try{return JSON.parse(fs.readFileSync(stateFile,'utf8')).st
 const save=()=>{if(forgotten())return;state.heartbeatAt=new Date().toISOString();const tmp=stateFile+'.worker.tmp';fs.writeFileSync(tmp,JSON.stringify(state),{mode:0o600});fs.renameSync(tmp,stateFile);};
 state.workerPid=process.pid;save();
 let seq=0,bytes=0,stopping=false,finished=false,spawnError,stopReason;
+let termination=Promise.resolve(false);
 const log=(stream,data)=>{
   if(!data||state.outputTruncated||forgotten())return;
   const line=JSON.stringify({seq:seq+1,time:new Date().toISOString(),stream,data})+'\n';
@@ -31,21 +32,24 @@ const stop=reason=>{
   stopping=true;stopReason=reason;state.status='cancelling';save();
   // Only the still-owned live child is addressed; never kill from a persisted PID.
   if(process.platform==='win32') {
-    const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
-    const failed=()=>{if(!finished){state.cancelError='PROCESS_TREE_TERMINATION_FAILED';save();stopping=false;}};
-    killer.on('error',failed);killer.on('exit',code=>{if(code!==0)failed();});
+    termination=new Promise(resolve=>{
+      const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore',timeout:10000});
+      const result=ok=>{if(!ok){state.cancelError='PROCESS_TREE_TERMINATION_FAILED';save();stopping=false;}resolve(ok);};
+      killer.on('error',()=>result(false));killer.on('exit',code=>result(code===0));
+    });
   } else {
-    try {process.kill(-child.pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH'){state.cancelError=error.message;save();stopping=false;}}
+    try {process.kill(-child.pid,'SIGKILL');termination=Promise.resolve(true);}catch(error){state.cancelError=error.message;save();stopping=false;termination=Promise.resolve(false);}
   }
 };
 const timer=setInterval(()=>{
   if(fs.existsSync(path.join(dir,'cancel.json')))stop('cancelled');
   if(spec.timeoutMs&&state.startedAt&&Date.now()-Date.parse(state.startedAt)>=spec.timeoutMs)stop('timed_out');
-  save();
+  if(Date.now()-Date.parse(state.heartbeatAt)>=1000)save();
 },250);
-child.on('close',(code,signal)=>{
+child.on('close',async(code,signal)=>{
   finished=true;clearInterval(timer);
-  state.status=spawnError?'start_failed':stopReason??(code===0?'succeeded':'failed');
+  const terminated=await termination;
+  state.status=spawnError?'start_failed':terminated?stopReason:(code===0?'succeeded':'failed');
   state.exitCode=code;state.signal=signal;state.finishedAt=new Date().toISOString();
   if(spawnError)state.error=spawnError;
   save();
