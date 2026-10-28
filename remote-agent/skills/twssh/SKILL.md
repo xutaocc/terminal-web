@@ -81,3 +81,11 @@ node "<skill>/scripts/install.mjs" dir /absolute/path/to/skills
 ```
 
 安装备份旧 skill，不修改项目连接配置。完成后提示重新加载技能或开启新对话；Claude Code 可用 /twssh，Codex 可用 $twssh 或技能选择器。安装完毕如需初始化，回到用户实际项目执行 init，不在 skill 安装目录初始化。
+
+## 会话身份与汇报
+
+- 开始远程任务时，对已登记会话调用 `session identity --session SID`，核对服务端 label 和完整 sessionId。此查询不发送 Shell 输入。
+- 面向用户统一使用 `目标 → 显示名称 · #短ID`，结束时附完整 sessionId。短 ID 仅用于展示，所有操作仍传完整 ID。
+- `name` 是内部终端标识，不能用展示名称替换。API label 与网页 displayName 当前分别存储；发现不一致应说明，不自动改写任何一个。
+- 常规命令 stderr 展示本地登记名称，可能过期；需要最新名称时使用 identity。禁止仅凭短 ID 选择会话。
+- PowerShell 命令通过多层 shell 时必须正确保留引号；复杂命令优先使用 UTF-8 文件或 EncodedCommand。命令返回 sent 不等于完成；读取并确认实际结果。

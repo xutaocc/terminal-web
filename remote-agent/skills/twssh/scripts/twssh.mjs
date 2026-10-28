@@ -112,7 +112,15 @@ const add = ['host', 'add', cfg.name, '--url', origin, '--token-file', tokenFile
 if (cfg.pin) add.push('--pin', cfg.pin);
 run(add, true);
 console.error(`工作目录：${project}；目标：${cfg.name}`);
-if (!args.length || args[0] === 'doctor') run(['doctor', cfg.name]);
+if (sid && registry[sid]) console.error(`会话：${cfg.name} → ${registry[sid].name || '未命名'} · #${sid.slice(0, 8)}（本地登记名称）；sessionId=${sid}`);
+if (args[0] === 'session' && args[1] === 'identity') {
+  if (!sid) fail('session identity 需要 --session ID。');
+  const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));
+  const displayName = info.label || registry[sid].name || info.name;
+  registry[sid].name = displayName;
+  saveRegistry();
+  console.log(JSON.stringify({ target: cfg.name, displayName, shortId: sid.slice(0, 8), sessionId: sid, internalName: info.name, initialCwd: info.cwd, ended: info.ended ?? false }));
+} else if (!args.length || args[0] === 'doctor') run(['doctor', cfg.name]);
 else if (adopting) {
   const info = JSON.parse(run(['status', cfg.name, '--session', sid], true));
   if (info.ended) fail('该远程会话已关闭，不能恢复。');

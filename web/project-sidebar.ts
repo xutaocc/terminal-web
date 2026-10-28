@@ -1,3 +1,4 @@
+import { agentDisplayLabel, agentSessionId } from './agent-identity.js';
 import { mobileActions, mountMobileActions, type ActionContext } from './mobile-actions.js';
 import { shareStorage as localStorage } from './share-context.js';
 import { sortRecentEntries } from './recent-tabs.js';
@@ -5,7 +6,7 @@ import type { QuickSessionKind } from './quick-session-nav.js';
 import { type FolderGroup, groupByDirectory, orderBy, orderCards, reorderCards, shortCwd } from './project-groups.js';
 import { bindIntentionalClick } from './intentional-click.js';
 import { brandMark } from './brand-mark.js';
-import { hostOfKey, labelBadge } from './hosts.js';
+import { hostOfKey, labelBadge, splitKey } from './hosts.js';
 
 /** What a card needs to know about a session. */
 export interface SidebarSession { name: string; displayName: string; cwd: string | null; pinned?: boolean }
@@ -773,7 +774,9 @@ export class ProjectSidebar {
         chipDot.dataset.sessions = session.name;
         const chipName = document.createElement('span');
         chipName.className = 'ps-chip-name';
-        chipName.textContent = session.displayName;
+        chipName.textContent = agentDisplayLabel(splitKey(session.name).raw, session.displayName);
+        const agentId = agentSessionId(splitKey(session.name).raw);
+        if (agentId) chip.title += ` · sessionId: ${agentId}`;
         chip.append(chipDot);
         const sharedCount = this.sharedSessions.get(session.name) ?? 0;
         if (sharedCount) {

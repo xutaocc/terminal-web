@@ -1,3 +1,4 @@
+import { agentSessionId, agentDisplayLabel } from './agent-identity.js';
 import { OutputSampler } from './output-sampler.js';
 import { summarizeShares, type ShareSummaryRecord } from './share-summary.js';
 import { mountMobileActions } from './mobile-actions.js';
@@ -3014,6 +3015,15 @@ function openTabMenu(s: Session, x: number, y: number): void {
   title.className = 'ps-menu-title';
   title.textContent = remoteHosts.length ? `${s.displayName} · ${hostTitle(s.host)}` : s.displayName;
   menu.append(title);
+  const agentId = agentSessionId(s.raw);
+  if (agentId) {
+    const identity = document.createElement('div');
+    identity.className = 'ps-menu-title';
+    identity.textContent = `sessionId: ${agentId}`;
+    identity.style.userSelect = 'text';
+    identity.style.overflowWrap = 'anywhere';
+    menu.append(identity);
+  }
   if (s.readOnly) {
     const status = document.createElement('div'); status.className = 'ps-menu-title';
     status.textContent = s.agentReadOnly ? '远程 Agent · 只读，滚动不影响远程执行' : '已分享 · 只读，可滚动查看，不能输入'; menu.append(status);
@@ -3294,7 +3304,8 @@ function buildTab(s: Session): void {
   dot.className = 'tab-dot';
   const label = document.createElement('span');
   label.className = 'tab-label';
-  label.textContent = s.displayName;
+  label.textContent = agentDisplayLabel(s.raw, s.displayName);
+  label.title = agentSessionId(s.raw) ?? s.displayName;
   const close = document.createElement('span');
   close.className = 'tab-close';
   if (isShare || s.agentReadOnly) close.style.display = 'none';
@@ -4107,8 +4118,8 @@ async function moveSessions(names: string[], folderId: string, card?: { cwd: str
 function setDisplayName(s: Session, displayName: string): void {
   s.displayName = displayName;
   if (s.tabLabel) {
-    s.tabLabel.textContent = displayName;
-    s.tabLabel.removeAttribute('title');
+    s.tabLabel.textContent = agentDisplayLabel(s.raw, displayName);
+    s.tabLabel.title = agentSessionId(s.raw) ?? displayName;
   }
   refreshMobileUI();
 }
@@ -6492,7 +6503,7 @@ function refreshMobileUI(): void {
   const attention = attentionCount();
   document.title = (attention ? `(${attention}) ` : '') +
     (fileBrowserOpen ? `文件管理 · ${s?.displayName || ''}` : s?.displayName || 'WebTerminal xutaocc');
-  mTitleLabel.textContent = s ? s.displayName : '—';
+  mTitleLabel.textContent = s ? agentDisplayLabel(s.raw, s.displayName) : '—';
   paintMobileSharing();
   mTitleHost.replaceChildren(...(s ? [hostBadge(s.host)] : []));
   mTitleIp.replaceChildren(...(s && remoteHosts.length ? [ipSuffix(s.host)] : []));
