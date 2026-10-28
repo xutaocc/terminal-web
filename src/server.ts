@@ -15,7 +15,7 @@ import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
 import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors } from './terminal-env.js';
-import { hasWheelInput, isKeyboardInput } from './history-input.js';
+import { hasWheelInput, isKeyboardInput, HistoryInputCheck } from './history-input.js';
 import {
   TMUX,
   psmuxEnv,
@@ -741,7 +741,10 @@ async function handleScrollSession(
   }
   sendJsonHttp(res, 403, { error: '请通过当前拥有操作权的终端连接翻页' });
 }
+// Shared invalidation also covers scrolling from another attached browser.
+let historyInputRevision = 0;
 async function scrollControlledSession(obj: {name: string; action: string}, authorized: () => boolean): Promise<void> {
+  historyInputRevision++;
   const target = `=${obj.name}:`;
   const run = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
     if (!authorized()) { reject(new Error('operation right changed')); return; }
@@ -779,6 +782,8 @@ async function scrollControlledSession(obj: {name: string; action: string}, auth
 
   } catch {
     throw new Error('session unavailable or operation right changed');
+  } finally {
+    historyInputRevision++;
   }
 }
 
@@ -2194,6 +2199,7 @@ async function attachSession(
   // Keep keyboard and wheel bytes ordered while leaving tmux copy-mode.
   // Coalesce keystrokes arriving during the command so pasted text stays intact.
   const inputQueue: { data: string; fence: number }[] = [];
+  const historyInputCheck = new HistoryInputCheck();
   let preparingInput = false;
   const drainInput = (): void => {
     if (preparingInput || closed) return;
@@ -2206,6 +2212,8 @@ async function attachSession(
     const canWrite = () => canInput() && terminalControl.accepts(controlKey, controlClient!, entry.fence);
     if (!canWrite()) { drainInput(); return; }
     if (!isKeyboardInput(input)) {
+      // Mouse gestures can enter history, including legacy mouse reports.
+      if (/\x1b\[(?:<|M)/.test(input)) historyInputRevision++;
       // psmux takes a wheel from its client for copy-mode even over a program
       // that reads the mouse itself (Claude Code, vim) — tmux has a binding
       // for that (web.tmux.conf), psmux has no bindings — and keeps every
@@ -2217,6 +2225,7 @@ async function attachSession(
         preparingInput = true;
         const target = `=${session}:`;
         const done = (): void => {
+          historyInputRevision++;
           preparingInput = false;
           if (closed) { inputQueue.length = 0; return; }
           drainInput();
@@ -2246,6 +2255,16 @@ async function attachSession(
       drainInput();
       return;
     }
+    if (historyInputCheck.allows(input, historyInputRevision, performance.now())) {
+      if (canWrite()) proc.write(input);
+      drainInput();
+      return;
+    }
+    historyInputCheck.invalidate();
+    // A mux prefix/control sequence may change modes after it is delivered.
+    const printable = !/[\x00-\x1f\x7f]/.test(input);
+    if (!printable) historyInputRevision++;
+    const checkedRevision = historyInputRevision;
     preparingInput = true;
     const target = `=${session}:`;
     execFile(TMUX, ['if-shell', '-F', '-t', target,
@@ -2254,6 +2273,7 @@ async function attachSession(
       preparingInput = false;
       if (closed) { inputQueue.length = 0; return; }
       if (error) console.error('[ws] could not leave history mode:', error.message);
+      if (!error && printable && canWrite()) historyInputCheck.checked(checkedRevision, performance.now());
       if (canWrite()) proc.write(input);
       drainInput();
     });
@@ -2275,7 +2295,7 @@ async function attachSession(
         const fence = terminalControl.fence(controlKey, controlClient!);
         if (fence === undefined) return;
         // Clear bytes from a previous lease before accepting a new one.
-        if (operationFence !== fence) { inputQueue.length = 0; operationFence = fence; }
+        if (operationFence !== fence) { inputQueue.length = 0; historyInputCheck.invalidate(); operationFence = fence; }
         // Raw user input bytes -> pty.
         const buf = Array.isArray(data)
           ? Buffer.concat(data.map((d) => Buffer.from(d)))
@@ -2320,6 +2340,7 @@ async function attachSession(
         if (!Number.isInteger(wheel.ticks) || !wheel.ticks || Math.abs(wheel.ticks!) > 100 || !Number.isInteger(wheel.col) || !Number.isInteger(wheel.row)) return;
         const col = Math.max(1, Math.min(cols, wheel.col!));
         const row = Math.max(1, Math.min(rows, wheel.row!));
+        historyInputRevision++;
         proc.write(`\x1b[<${wheel.ticks! > 0 ? 64 : 65};${col};${row}M`.repeat(Math.abs(wheel.ticks!)));
         return;
       }

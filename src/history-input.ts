@@ -10,3 +10,24 @@ export function isKeyboardInput(input: string): boolean {
 export function hasWheelInput(input: string): boolean {
   return /\x1b\[<6[45];\d+;\d+M/.test(input);
 }
+
+/** A bounded fast path for printable typing, never for Enter/prefix/paste controls.
+ * Expiry is measured from the check, not the last key: native mux clients can
+ * change modes without passing through this server.
+ */
+export class HistoryInputCheck {
+  private revision = -1;
+  private until = 0;
+
+  allows(input: string, revision: number, now: number): boolean {
+    return !!input && !/[\x00-\x1f\x7f]/.test(input) &&
+      revision === this.revision && now < this.until;
+  }
+
+  checked(revision: number, now: number): void {
+    this.revision = revision;
+    this.until = now + 250;
+  }
+
+  invalidate(): void { this.until = 0; }
+}

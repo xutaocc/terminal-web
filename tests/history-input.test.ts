@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { hasWheelInput, isKeyboardInput } from '../src/history-input.js';
+import { hasWheelInput, isKeyboardInput, HistoryInputCheck } from '../src/history-input.js';
+
+test('printable typing reuses a check for at most 250ms, without extending expiry', () => {
+  const check = new HistoryInputCheck();
+  assert.equal(check.allows('a', 1, 10), false);
+  check.checked(1, 20);
+  for (const now of [21, 50, 100, 200, 269]) {
+    assert.equal(check.allows('中文abc', 1, now), true);
+  }
+  assert.equal(check.allows('a', 1, 270), false);
+});
+
+test('scrolling, control transfer and a stale completed check cannot reuse cached state', () => {
+  const check = new HistoryInputCheck();
+  check.checked(1, 20);
+  assert.equal(check.allows('a', 2, 21), false);
+  check.checked(1, 22); // old async check finished after scrolling started
+  assert.equal(check.allows('a', 2, 23), false);
+  check.checked(2, 24);
+  check.invalidate();
+  assert.equal(check.allows('a', 2, 25), false);
+});
+
+test('Enter, mux prefix, paste delimiters and mouse reports never use the fast path', () => {
+  const check = new HistoryInputCheck();
+  check.checked(1, 20);
+  for (const input of ['', '\r', '\x02[', '\x7f', '\x1b[A',
+    '\x1b[200~hello\x1b[201~', '\x1b[<64;2;3M', 'echo hi\r']) {
+    assert.equal(check.allows(input, 1, 21), false, JSON.stringify(input));
+  }
+});
 
 test('mouse events and terminal replies preserve browsing mode', () => {
   for (const input of ['\x1b[<64;2;3M'.repeat(4), '\x1b[<65;2;3M',
