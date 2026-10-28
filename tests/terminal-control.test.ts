@@ -33,3 +33,19 @@ test('reconnect reservation is scoped to principal and one transport; revocation
   const back=join();assert(locks.owns('s',back));valid=false;locks.sweep();assert(!locks.owns('s',back));
   valid=true;locks.action('s',wrong,'acquire');assert(locks.owns('s',wrong));locks.leave('s',wrong);now=15001;locks.sweep();locks.action('s',duplicate,'acquire');assert(locks.owns('s',duplicate));
 });
+
+test('close reserves the room, protects reconnect grace and fences old input', () => {
+  const locks = new TerminalControl();
+  const join = () => locks.join('s', {resume:'r', principal:'p', label:'test', admin:true, valid:()=>true, send:()=>{}}, undefined, true);
+  const a = join(), fence = locks.fence('s', a);
+  locks.leave('s', a);
+  assert.equal(locks.beginClose('s'), null);
+  const unlock = locks.beginClose('s', true)!;
+  assert.equal(typeof unlock, 'function');
+  assert.equal(locks.beginClose('s', true), null);
+  const b = join(); locks.action('s', b, 'takeover');
+  assert.equal(locks.owns('s', b), false);
+  assert.equal(locks.accepts('s', a, fence), false);
+  unlock(); locks.action('s', b, 'acquire');
+  assert.equal(locks.owns('s', b), true);
+});

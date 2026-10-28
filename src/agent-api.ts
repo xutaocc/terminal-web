@@ -36,7 +36,7 @@ export interface AgentBackend {
   register(name: string, label: string, cwd: string): void;
   cwd?(name: string): Promise<string | null>;
   rename?(name: string, label: string): void;
-  remove(name: string): Promise<void>;
+  remove(name: string, cleanupOnly?: boolean): Promise<void>;
 }
 
 /** Raw persistent terminal API. No completion claims are inferred from a quiet screen. */
@@ -77,6 +77,23 @@ export class AgentApi {
       connected: this.runtimes.get(s.id)?.alive ?? false };
   }
   isAgent(name: string): boolean { return [...this.sessions.values()].some(s => s.name === name); }
+  /** Browser administrator closure; retain identity, commands and output history. */
+  async closeFromBrowser(name: string, force = false, cleanup = false): Promise<void> {
+    if (!/^agent_[a-f0-9]{32}$/.test(name)) throw new ApiError(400, 'INVALID_AGENT_SESSION');
+    const unlock = this.backend.control.beginClose(name, force);
+    if (!unlock) throw new ApiError(409, 'SESSION_BUSY');
+    try {
+      const s = [...this.sessions.values()].find(s => s.name === name);
+      if (s) await this.opening.get(s.id);
+      await this.backend.remove(name, cleanup);
+      if (s) {
+        s.ended = true; s.closedAt ??= new Date().toISOString(); this.save();
+        const r = this.runtimes.get(s.id);
+        if (r) { r.alive = false; this.event(r, 'closed', 'Closed by browser administrator'); }
+      }
+      this.journal.flush();
+    } finally { unlock(); }
+  }
   /** Update presentation only. Neither terminal identity nor control ownership changes. */
   rename(name: string, label: string): boolean {
     const s = [...this.sessions.values()].find(s => s.name === name);
@@ -141,6 +158,7 @@ export class AgentApi {
     for (const wake of r.listeners) wake();
   }
   private runtime(s: Session, create = false): Promise<Runtime> {
+    if (this.backend.control.isClosing(s.name)) return Promise.reject(new ApiError(409, 'SESSION_CLOSING'));
     if (s.ended) return Promise.reject(new ApiError(410, 'SESSION_GONE'));
     const current = this.runtimes.get(s.id);
     if (current) { if (!current.alive) return Promise.reject(new ApiError(410, 'SESSION_GONE')); return Promise.resolve(current); }

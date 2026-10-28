@@ -10,6 +10,17 @@ interface Room { explicit?: boolean; clients: Map<string, ControlClient>; owner?
 /** One arbiter on the machine that owns the real tmux session, across all entry points. */
 export class TerminalControl {
   private rooms = new Map<string, Room>();
+  private closing = new Set<string>();
+  /** Fence input and acquisitions throughout asynchronous terminal removal. */
+  beginClose(key: string, force = false): (() => void) | null {
+    if (this.closing.has(key)) return null;
+    const room = this.rooms.get(key);
+    if (room) { this.expire(room); if (room.owner && !force) return null; }
+    this.closing.add(key);
+    if (room) { room.owner = undefined; this.publish(room); }
+    return () => { this.closing.delete(key); };
+  }
+  isClosing(key: string): boolean { return this.closing.has(key); }
   private explicit = new Set<string>();
   setExplicit(key: string): void { this.explicit.add(key); }
   constructor(private readonly now = Date.now, readonly graceMs = 15000) {}
@@ -22,16 +33,17 @@ export class TerminalControl {
     this.expire(room);
     room.clients.set(client.id, client);
     const owner = room.owner;
-    if (owner && !owner.connected && owner.client.resume === client.resume && owner.client.principal === client.principal && client.valid() && !client.readOnly?.()) {
+    if (!this.closing.has(key) && owner && !owner.connected && owner.client.resume === client.resume && owner.client.principal === client.principal && client.valid() && !client.readOnly?.()) {
       room.owner = { client, connected: true, seen: this.now() };
     }
     // Choose the default atomically with joining; never steal an existing lease.
-    if (!room.owner && autoAcquire && client.valid() && !client.readOnly?.()) {
+    if (!this.closing.has(key) && !room.owner && autoAcquire && client.valid() && !client.readOnly?.()) {
       room.owner = { client, connected: true, seen: this.now() };
     }
     this.publish(room); return client;
   }
   owns(key: string, client: ControlClient): boolean {
+    if (this.closing.has(key)) return false;
     const room = this.rooms.get(key); if (!room) return false;
     if (this.expire(room)) this.publish(room);
     return room.owner?.connected === true && room.owner.client === client && client.valid() && !client.readOnly?.();
@@ -44,6 +56,7 @@ export class TerminalControl {
     return fence !== undefined && this.owns(key, client) && this.rooms.get(key)!.epoch === fence;
   }
   action(key: string, client: ControlClient, action: ControlAction, target?: string): void {
+    if (this.closing.has(key)) return;
     const room = this.rooms.get(key); if (!room || room.clients.get(client.id) !== client || !client.valid()) return;
     if (this.expire(room)) this.publish(room);
     if (client.readOnly?.()) { this.send(room, client); return; }

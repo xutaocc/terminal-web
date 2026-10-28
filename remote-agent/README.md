@@ -263,3 +263,11 @@ session history --session UUID --kind output --after 0 --limit 50
 后端对完整的 PowerShell `-EncodedCommand`（UTF-16LE）、`node -e "eval(Buffer.from(...,'base64').toString())"`（UTF-8）及常用 UTF-8 ScriptBlock 包装自动生成 `decodedInput`、`decodedEncoding`、`decodedScope: "wrapper-body"`。原始 input 保留，发送内容和请求去重哈希不变；这些字段只是展示数据，不执行、不递归解码。网页“操作记录”和 CLI history 都会返回字段；旧记录读取时临时补充，不批量改写历史文件。
 
 仅识别明确的完整包装，其他格式、非法 Base64/字符编码、二进制控制字符或超过 8192 字符的解码内容均跳过。没有预览字段不代表原命令不可执行。敏感输入继续只保存 `[sensitive input]`。可选预览不计入原有请求历史容量门槛，但会增加一定磁盘占用。不要为了得到预览而重复执行命令。
+
+### 在浏览器关闭和清理远程会话
+
+管理员可在远程标签的 × 或菜单中选择「关闭远程会话」。确认框展示主机、显示名称和完整会话 ID；关闭终端可能中断任务，但保留 Agent 会话身份、输入记录和已有输出历史。被其他控制端占用时普通关闭返回 SESSION_BUSY；只有再次明确确认才能强制关闭。关闭期间阻止新控制权和延迟输入，失败不主动移除标签。分享页无此管理权限。
+
+「清理失效记录」仅接受已不存在的终端；仍在运行则拒绝，不会自动升级为终止。未知的终端查询错误不视为已不存在。支持内部身份为 agent_ 加 32 位十六进制的遗留会话；未登记到 Agent API 的测试会话也可关闭，但不会补造缺失的历史。批量关闭跳过远程会话，需要逐个确认。
+
+浏览器管理员接口：`POST /api/sessions/close-agent`，JSON `{name, force?: boolean, cleanup?: boolean}`。使用现有网页登录和同源校验，可经控制端远程代理访问。name 必须是完整内部身份，不能传显示名称或短 ID。原有 Agent CLI close 协议保持兼容。

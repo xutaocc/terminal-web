@@ -893,6 +893,25 @@ async function handleAdoptSessions(
  * they drop the tab rather than reconnecting into a session `new-session -A`
  * would recreate.
  */
+async function handleCloseAgent(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let body: any;
+  try { body = JSON.parse((await readBody(req, 4096)).toString('utf8')); }
+  catch { sendJsonHttp(res, 400, {error: 'INVALID_BODY'}); return; }
+  if (!body || typeof body.name !== 'string' || !/^agent_[a-f0-9]{32}$/.test(body.name) ||
+      (body.force !== undefined && typeof body.force !== 'boolean') ||
+      (body.cleanup !== undefined && typeof body.cleanup !== 'boolean')) {
+    sendJsonHttp(res, 400, {error: 'INVALID_AGENT_SESSION'}); return;
+  }
+  try {
+    await agentApi.closeFromBrowser(body.name, body.force === true, body.cleanup === true);
+    console.log(`[api] agent closed ${body.name} force=${body.force === true} cleanup=${body.cleanup === true}`);
+    sendJsonHttp(res, 200, {ok: true});
+  } catch (error) {
+    const e = error as Error & {status?: number};
+    sendJsonHttp(res, e.status ?? (e.message === 'SESSION_STILL_RUNNING' ? 409 : 503), {error: e.message});
+  }
+}
+
 async function handleKillSession(
   req: http.IncomingMessage,
   res: http.ServerResponse
@@ -910,7 +929,7 @@ async function handleKillSession(
     return;
   }
   const name = sanitizeSession(obj.name);
-  if (agentApi.isAgent(name.replace(/__b$/, ""))) { sendJsonHttp(res, 403, {error: "AGENT_READ_ONLY"}); return; }
+  if (/^agent_[a-f0-9]{32}$/.test(name.replace(/__b$/, "")) || agentApi.isAgent(name.replace(/__b$/, ""))) { sendJsonHttp(res, 403, {error: "AGENT_READ_ONLY"}); return; }
   // A tab is up to two sessions — its own and, if it was ever split, the one
   // named after it. Closing the tab closes both; nothing else is touched, and
   // the second name is derived here rather than taken from the request, so a
@@ -1664,6 +1683,9 @@ const server = createHttpServer((req, res) => {
         return;
       }
 
+      if (method === 'POST' && requestUrl.pathname === '/api/sessions/close-agent') {
+        await handleCloseAgent(req, res); return;
+      }
       if (method === "POST" && requestUrl.pathname === "/api/sessions/kill") {
         await handleKillSession(req, res);
         return;
@@ -1891,8 +1913,22 @@ const agentApi = new AgentApi({
     tagWebSession(name); setWebTabLabel(name, label);
     execFile(TMUX, ['set-option', '-w', '-t', `=${name}:`, 'window-size', 'manual'], {timeout: 3000}, () => {});
   },
-  async remove(name) {
-    const exists = await new Promise<boolean>(resolve => execFile(TMUX, ['has-session', '-t', `=${name}`], {timeout: 3000}, error => resolve(!error)));
+  async remove(name, cleanupOnly = false) {
+    const exists = await new Promise<boolean>((resolve, reject) => execFile(TMUX, ['has-session', '-t', `=${name}`], {timeout: 3000}, (error, _stdout, stderr) => {
+      if (!error) resolve(true);
+      else if (!error.killed && /can't find session|session not found|no server running|no sessions/i.test(stderr)) resolve(false);
+      else if (!error.killed && error.code === 1) {
+        // psmux has-session returns 1 with empty stderr for a missing session.
+        // Only a successful full listing can distinguish absence from failure.
+        execFile(TMUX, ['list-sessions', '-F', '#{session_name}'], {timeout: 3000}, (listError, stdout) => {
+          if (listError) reject(new Error('TERMINAL_STATUS_UNAVAILABLE'));
+          else resolve(stdout.split(/\r?\n/).includes(name));
+        });
+      } else reject(new Error('TERMINAL_STATUS_UNAVAILABLE'));
+    }));
+    if (!exists && !agentApi.isAgent(name) && !sessionStore.get(name)) throw new Error('UNKNOWN_SESSION');
+    if (exists && cleanupOnly) throw new Error('SESSION_STILL_RUNNING');
+    if (exists) await snapshotBeforeKill(name);
     if (exists) await new Promise<void>((resolve, reject) => execFile(TMUX, ['kill-session', '-t', `=${name}`], {timeout: 3000}, error => error ? reject(error) : resolve()));
     markClosed([name]); broadcastClosed(name); liveSessions.delete(name);
   },
