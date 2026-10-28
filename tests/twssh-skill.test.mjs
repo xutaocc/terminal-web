@@ -127,8 +127,11 @@ test('workspaces and changed endpoints cannot silently inherit sessions or paren
   assert.equal(requests.length, before);
 });
 test('bundled client matches canonical CLI', () => {
+  // Git may check out identical sources with CRLF or LF on different platforms.
+  const normalizeEol = text => text.replace(/\r\n/g, '\n');
   for (const file of ['twssh.mjs', 'transport.mjs']) {
-    assert.equal(fs.readFileSync(path.join(root, 'scripts/client', file), 'utf8'),
-      fs.readFileSync(new URL(`../remote-agent/client/${file}`, import.meta.url), 'utf8'));
+    assert.equal(normalizeEol(fs.readFileSync(path.join(root, 'scripts/client', file), 'utf8')),
+      normalizeEol(fs.readFileSync(new URL(`../remote-agent/client/${file}`, import.meta.url), 'utf8')),
+      `${file}: bundled client must match canonical CLI apart from CRLF/LF line endings`);
   }
 });
