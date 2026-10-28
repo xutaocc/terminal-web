@@ -2,7 +2,7 @@ import './confirm-dialog.css';
 
 let pending: Promise<boolean> | undefined;
 /** A modal in the top layer, including above existing dialogs within an iframe. */
-export function confirmAction(message: string, title = '确认操作', accept = '确认'): Promise<boolean> {
+export function confirmAction(message: string, title = '确认操作', accept = '确认', option?: {label: string; checked: boolean}): Promise<boolean> {
   // Ignore repeated triggers while the current decision is pending.
   if (pending) return Promise.resolve(false);
   pending = new Promise<boolean>(resolve => {
@@ -33,7 +33,14 @@ export function confirmAction(message: string, title = '确认操作', accept = 
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
       resolve(accepted);
     }, { once: true });
-    actions.append(cancel, ok); dialog.append(heading, body, actions);
+    actions.append(cancel, ok); dialog.append(heading, body);
+    if (option) {
+      const label = document.createElement('label'); label.className = 'app-confirm-option';
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = option.checked;
+      checkbox.addEventListener('change', () => { option.checked = checkbox.checked; });
+      label.append(checkbox, document.createTextNode(option.label)); dialog.append(label);
+    }
+    dialog.append(actions);
     document.body.append(dialog); dialog.showModal(); cancel.focus();
   });
   return pending;

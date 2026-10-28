@@ -13,3 +13,6 @@ dialog.app-confirm .app-confirm-actions { display: flex; justify-content: flex-e
 dialog.app-confirm button { min-height: 40px; min-width: 76px; padding: 8px 16px; border: 1px solid var(--ui-border, #555); border-radius: 8px; background: var(--ui-raised, #333); color: inherit; font: inherit; cursor: pointer; }
 dialog.app-confirm button.app-confirm-accept { background: #2472c8; border-color: #2472c8; color: white; }
 dialog.app-confirm button:focus-visible { outline: 2px solid #60b7ff; outline-offset: 3px; }
+
+.app-confirm-option { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; line-height: 1.6; font-size: 14px; }
+.app-confirm-option input { flex: 0 0 auto; margin-top: 5px; width: 16px; height: 16px; }

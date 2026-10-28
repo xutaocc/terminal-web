@@ -65,6 +65,7 @@ export interface SidebarHooks {
   /** Pin a session to the top of its directory card, or unpin it. */
   pinSession(name: string, pinned: boolean): void;
   /** Close these sessions (their tmux sessions end); the page asks first. */
+  cleanupHistory?(host: string): void;
   canClose?(name: string): boolean;
   isRemoteAgent?(name: string): boolean;
   closeSessions(names: string[]): void;
@@ -433,6 +434,7 @@ export class ProjectSidebar {
       iconButton(ICONS.plus, `在「${section.title}」新建会话`, () =>
         this.hooks.newSession(section.groups.find(g => !g.folder)?.key ?? (section.host ? `@${section.host}/` : ''), '')),
     );
+    if (!this.hooks.readOnly && this.hooks.cleanupHistory) actions.append(iconButton('⌫', `清理「${section.title}」已关闭会话记录`, () => this.hooks.cleanupHistory?.(section.host)));
     head.append(chevron, badge, attention, name, ip, state, count, actions);
     bindIntentionalClick(head, () => {
       if (this.folded.has(key)) this.folded.delete(key);

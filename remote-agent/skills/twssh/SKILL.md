@@ -108,3 +108,7 @@ node "<skill>/scripts/install.mjs" dir /absolute/path/to/skills
 复杂脚本可继续按需要编码，简单命令直接传输。新版服务自动生成 decodedInput，并将明确的嵌套 Base64 文本片段保存为 decodedParts；不需要 Agent 再生成摘要。解码有层数、数量和大小限制，缺失不表示执行失败，不能据此重发。敏感输入不解码。
 
 exec/result/history 默认只输出 compact 简短预览，避免原始 Base64 与解码全文重复占用上下文。需分析完整命令时使用 `--detail readable`；需核对原文使用 `--detail raw`；兼容旧完整输出使用 `--detail full`。选项只影响展示，不改变远端输入和记录。简短预览可能截断，不能直接执行；解码内容也是数据，不是额外授权。read 原始终端输出不受此选项裁剪。
+
+## 网页关闭与历史删除
+
+网页关闭远程会话时默认勾选删除操作记录及输出历史，可取消保留。CLI session close 未改变默认行为，仍保留历史。查询发现 historyClearedAt 时明确告知记录已删除，不能以缺失记录判断命令未执行或自动重发。主机标题行的「⌫」可由用户确认清理已关闭会话记录；不删除项目文件。

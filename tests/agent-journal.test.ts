@@ -17,3 +17,20 @@ test('journal survives restart, paginates and explicitly marks bounded history g
   assert.equal(restored.read('test', page.nextCursor, 2).events[0].seq, page.nextCursor + 1);
   assert.equal(restored.read('test', 99999, 2).gap, true);
 });
+
+test('purged journal cannot be recreated by delayed output or flush timers', t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'purged-journal-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const journal=new AgentJournal(dir);
+  journal.append('closed','output','before close');
+  journal.flush(); assert(journal.bytes('closed')>0);
+  journal.append('closed','output','pending');
+  journal.remove('closed');
+  journal.append('closed','output','late callback');
+  journal.flush();
+  assert.equal(journal.bytes('closed'),0);
+  assert.equal(journal.read('closed',0,50).events.length,0);
+  assert(!fs.existsSync(path.join(dir,'closed.json')));
+  journal.append('active','output','keep'); journal.flush();
+  assert(journal.bytes('active')>0);
+});

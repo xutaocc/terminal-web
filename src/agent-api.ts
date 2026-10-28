@@ -21,6 +21,7 @@ interface RecordEntry { hash: string; result: unknown }
 interface Session {
   id: string; name: string; label: string; cwd: string; generation: string;
   createdAt?: string; closedAt?: string; lastActivityAt?: string;
+  historyClearedAt?: string;
   ended?: boolean; requests: Record<string, RecordEntry>;
 }
 interface Runtime {
@@ -53,7 +54,7 @@ export class AgentApi {
     this.journal = new AgentJournal(backend.file + '.history');
     if (fs.existsSync(backend.file)) {
       const saved = JSON.parse(fs.readFileSync(backend.file, 'utf8'));
-      for (const s of saved.sessions) { this.sessions.set(s.id, s); backend.control.setExplicit(s.name); }
+      for (const s of saved.sessions) { this.sessions.set(s.id, s); backend.control.setExplicit(s.name); if (s.historyClearedAt) this.journal.suppress(s.id); }
       this.creates = saved.creates ?? {};
     }
     const timer = setInterval(() => {
@@ -77,22 +78,66 @@ export class AgentApi {
       connected: this.runtimes.get(s.id)?.alive ?? false };
   }
   isAgent(name: string): boolean { return [...this.sessions.values()].some(s => s.name === name); }
-  /** Browser administrator closure; retain identity, commands and output history. */
-  async closeFromBrowser(name: string, force = false, cleanup = false): Promise<void> {
+  /** Browser administrator closure; optionally erase history after confirmed termination. */
+  async closeFromBrowser(name: string, force = false, cleanup = false, deleteHistory = false): Promise<{closed: true; historyDeleted: boolean; cleanupError?: string}> {
     if (!/^agent_[a-f0-9]{32}$/.test(name)) throw new ApiError(400, 'INVALID_AGENT_SESSION');
     const unlock = this.backend.control.beginClose(name, force);
     if (!unlock) throw new ApiError(409, 'SESSION_BUSY');
     try {
-      const s = [...this.sessions.values()].find(s => s.name === name);
+      let s = [...this.sessions.values()].find(s => s.name === name);
       if (s) await this.opening.get(s.id);
       await this.backend.remove(name, cleanup);
+      if (!s) {
+        // Legacy terminals may have no API registry entry. Keep a minimal closed
+        // identity so partial cleanup remains discoverable and retryable.
+        const id = name.slice(6).replace(/^(........)(....)(....)(....)(............)$/, '$1-$2-$3-$4-$5');
+        s = {id, name, label: name, cwd: '', generation: crypto.randomUUID(), requests: {}};
+        this.sessions.set(id, s); this.backend.control.setExplicit(name);
+      }
       if (s) {
         s.ended = true; s.closedAt ??= new Date().toISOString(); this.save();
         const r = this.runtimes.get(s.id);
         if (r) { r.alive = false; this.event(r, 'closed', 'Closed by browser administrator'); }
       }
+      if (deleteHistory) {
+        try {
+          this.purgeHistory(s.id);
+          return {closed: true, historyDeleted: true};
+        } catch { return {closed: true, historyDeleted: false, cleanupError: 'HISTORY_CLEANUP_FAILED'}; }
+      }
       this.journal.flush();
+      return {closed: true, historyDeleted: false};
     } finally { unlock(); }
+  }
+  /** Only explicit ended records are eligible; collector disconnection is not closure. */
+  closedHistory() {
+    this.journal.flush();
+    const all = [...this.sessions.values()].filter(s => s.ended).map(s => ({
+      id: s.id, label: s.label, closedAt: s.closedAt,
+      bytes: (Object.keys(s.requests).length ? Buffer.byteLength(JSON.stringify(s.requests)) : 0) + this.journal.bytes(s.id),
+    })).filter(s => s.bytes > 0);
+    const sessions = all.slice(0, 200);
+    return {total: all.length, count: sessions.length, bytes: sessions.reduce((n, s) => n + s.bytes, 0), sessions};
+  }
+  private purgeHistory(id: string): void {
+    const s = this.sessions.get(id);
+    if (!s || !s.ended) throw new ApiError(409, 'SESSION_NOT_CLOSED');
+    const previous = {requests: s.requests, historyClearedAt: s.historyClearedAt};
+    s.requests = {}; s.historyClearedAt ??= new Date().toISOString();
+    try { this.save(); } catch (error) { Object.assign(s, previous); throw error; }
+    // Fence delayed output and flush timers before unlinking. On partial failure,
+    // the durable marker prevents recreation; remaining files can be retried.
+    const r = this.runtimes.get(id);
+    if (r) { r.events = []; r.bytes = 0; for (const wake of r.listeners) wake(); }
+    this.journal.remove(id);
+  }
+  purgeClosedHistory(ids: unknown) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new ApiError(400, 'INVALID_SESSION_IDS');
+    // Validate the entire batch before deleting any data.
+    for (const id of ids) if (!this.sessions.get(id)?.ended) throw new ApiError(409, 'SESSION_NOT_CLOSED');
+    const deleted: string[] = [], failed: string[] = [];
+    for (const id of ids) { try { this.purgeHistory(id); deleted.push(id); } catch { failed.push(id); } }
+    return {deleted, failed};
   }
   /** Update presentation only. Neither terminal identity nor control ownership changes. */
   rename(name: string, label: string): boolean {
@@ -108,7 +153,7 @@ export class AgentApi {
   }
   history(name: string): unknown {
     const s = [...this.sessions.values()].find(s => s.name === name);
-    return s ? { label: s.label, records: Object.values(s.requests).map(r => withCommandPreview(r.result)) } : null;
+    return s ? { label: s.label, historyClearedAt: s.historyClearedAt, records: Object.values(s.requests).map(r => withCommandPreview(r.result)) } : null;
   }
   private save(): void {
     fs.mkdirSync(path.dirname(this.backend.file), { recursive: true });
@@ -145,6 +190,7 @@ export class AgentApi {
     } catch { throw new ApiError(400, 'INVALID_JSON'); }
   }
   private event(r: Runtime, type: string, data: string): void {
+    if (this.sessions.get(r.sessionId)?.historyClearedAt) return;
     // Bound even a single giant pty chunk; sequence is a terminal stream, not a command log.
     for (let offset = 0; offset < data.length || offset === 0; offset += 8192) {
       const part = data.slice(offset, offset + 8192);
@@ -275,7 +321,7 @@ export class AgentApi {
           if (page.length && bytes + size > 2 * 1024 * 1024) break;
           page.push(record); bytes += size;
         }
-        reply(200, { sessionId: s.id, label: s.label, initialCwd: s.cwd, kind,
+        reply(200, { sessionId: s.id, label: s.label, initialCwd: s.cwd, historyClearedAt: s.historyClearedAt, kind,
           ...(kind === 'output' ? this.journal.read(s.id, after, limit) : {
             records: page, total: records.length,
             nextCursor: Math.min(after + page.length, records.length), hasMore: after + page.length < records.length,

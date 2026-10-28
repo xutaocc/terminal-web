@@ -900,13 +900,14 @@ async function handleCloseAgent(req: http.IncomingMessage, res: http.ServerRespo
   catch { sendJsonHttp(res, 400, {error: 'INVALID_BODY'}); return; }
   if (!body || typeof body.name !== 'string' || !/^agent_[a-f0-9]{32}$/.test(body.name) ||
       (body.force !== undefined && typeof body.force !== 'boolean') ||
-      (body.cleanup !== undefined && typeof body.cleanup !== 'boolean')) {
+      (body.cleanup !== undefined && typeof body.cleanup !== 'boolean') ||
+      (body.deleteHistory !== undefined && typeof body.deleteHistory !== 'boolean')) {
     sendJsonHttp(res, 400, {error: 'INVALID_AGENT_SESSION'}); return;
   }
   try {
-    await agentApi.closeFromBrowser(body.name, body.force === true, body.cleanup === true);
+    const result = await agentApi.closeFromBrowser(body.name, body.force === true, body.cleanup === true, body.deleteHistory === true);
     console.log(`[api] agent closed ${body.name} force=${body.force === true} cleanup=${body.cleanup === true}`);
-    sendJsonHttp(res, 200, {ok: true});
+    sendJsonHttp(res, 200, {ok: true, ...result});
   } catch (error) {
     const e = error as Error & {status?: number};
     sendJsonHttp(res, e.status ?? (e.message === 'SESSION_STILL_RUNNING' ? 409 : 503), {error: e.message});
@@ -1687,6 +1688,20 @@ const server = createHttpServer((req, res) => {
         return;
       }
 
+      if (requestUrl.pathname === '/api/sessions/closed-history' && (method === 'GET' || method === 'POST')) {
+        try {
+          if (method === 'GET') sendJsonHttp(res, 200, agentApi.closedHistory());
+          else {
+            let body: any;
+            try { body = JSON.parse((await readBody(req, 16384)).toString('utf8')); }
+            catch { sendJsonHttp(res, 400, {error: 'INVALID_BODY'}); return; }
+            sendJsonHttp(res, 200, agentApi.purgeClosedHistory(body?.ids));
+          }
+        } catch (error) {
+          sendJsonHttp(res, (error as {status?: number}).status ?? 503, {error: 'HISTORY_CLEANUP_FAILED'});
+        }
+        return;
+      }
       if (method === 'POST' && requestUrl.pathname === '/api/sessions/close-agent') {
         await handleCloseAgent(req, res); return;
       }

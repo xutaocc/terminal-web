@@ -668,6 +668,7 @@ function ipSuffix(host: string, full = false): HTMLElement {
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   readOnly: isShare,
+  cleanupHistory: host => { closeDrawer(); void cleanupClosedHistory(host); },
   canClose: () => true,
   isRemoteAgent: name => !!sessions.find(s => s.name === name)?.agentReadOnly,
   recentEntries: () => recentVisitEntries(),
@@ -3553,13 +3554,31 @@ function activateSession(s: Session): void {
 // Ask before killing a session: closing a tab terminates its tmux session and
 // any programs running in it, so make the user confirm first.
 /** Ask, then close each of `list` (their tmux sessions end, and what runs in them). */
+async function cleanupClosedHistory(host: string): Promise<void> {
+  if (isShare) return;
+  try {
+    const url = hostUrl(host, '/api/sessions/closed-history');
+    const response = await fetch(url, {cache: 'no-store'});
+    if (!response.ok) throw Error('无法查询记录，请检查主机连接和版本。');
+    const stats = await response.json();
+    if (!stats.count) { flashStatus('没有可清理的已关闭会话记录', 4000); return; }
+    const size = stats.bytes >= 1048576 ? (stats.bytes / 1048576).toFixed(2) + ' MB' : (stats.bytes / 1024).toFixed(1) + ' KB';
+    if (!await confirmAction(`${hostTitle(host)}\n本次清理 ${stats.count} 个已关闭会话，预计释放约 ${size}。${stats.total > stats.count ? `共 ${stats.total} 个，剩余记录可再次清理。` : ''}\n将永久删除输入命令、解码预览及输出历史。保留少量关闭标记，不删除项目文件，不影响运行中的会话。`, '清理已关闭会话记录', '永久删除记录')) return;
+    const result = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: stats.sessions.map((s: {id: string}) => s.id)})});
+    if (!result.ok) throw Error('清理未完成，请重新查询后重试。');
+    const data = await result.json();
+    flashStatus(`已清理 ${data.deleted.length} 个会话记录${data.failed.length ? `，${data.failed.length} 个失败，可再次点击重试` : ''}`, 7000);
+  } catch (error) { flashStatus((error as Error).message, 7000); }
+}
+
 async function closeAgentSession(s: Session): Promise<void> {
   if (isShare) return;
   const identity = `${hostTitle(s.host)} · ${s.displayName}\n会话 ID：${agentSessionId(s.raw) ?? s.raw}`;
   const title = '关闭远程会话';
-  if (!await confirmAction(`${identity}\n这是远程控制会话。如果终端仍在运行，关闭可能中断正在执行的任务；如果终端已不存在，将移除残留标签。已有操作历史保留。`, title, '确认关闭')) return;
+  const deletion = {label: '同时删除操作记录和终端输出历史（不可恢复，不删除项目文件）', checked: true};
+  if (!await confirmAction(`${identity}\n这是远程控制会话。如果终端仍在运行，关闭可能中断正在执行的任务；如果终端已不存在，将移除残留标签。项目文件不受影响。`, title, '确认关闭', deletion)) return;
   const send = (force: boolean) => fetch(hostUrl(s.host, '/api/sessions/close-agent'), {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: s.raw, force}),
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: s.raw, force, deleteHistory: deletion.checked}),
   });
   try {
     let response = await send(false);
@@ -3570,7 +3589,8 @@ async function closeAgentSession(s: Session): Promise<void> {
     }
     if (!response.ok) throw new Error(result.error === 'SESSION_BUSY' ? '会话仍被占用或正在关闭，请稍后再试。' : '无法确认远端关闭成功，请检查连接后重试。');
     closeSessionBatch([s], true);
-    flashStatus('远程会话标签已移除，已有操作历史保留', 4000);
+    if (result.cleanupError) flashStatus('会话已关闭，但记录清理失败。请在该电脑的“清理已关闭会话记录”中重试。', 10000);
+    else flashStatus(result.historyDeleted ? '远程会话已关闭，操作记录及输出历史已删除' : '远程会话已关闭，已有操作历史保留', 5000);
   } catch (error) { flashStatus((error as Error).message, 6000); }
 }
 
