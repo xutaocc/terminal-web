@@ -221,7 +221,7 @@ export class AgentStatusMonitor {
   private readonly legacyTimers = new Map<string, NodeJS.Timeout>();
 
   /** `file` keeps the mode chosen in settings across restarts. */
-  constructor(private readonly file: string, private readonly command = run) {}
+  constructor(private readonly file: string, private readonly command = run, private readonly windows = IS_PSMUX) {}
 
   async start(): Promise<void> {
     try {
@@ -289,7 +289,7 @@ export class AgentStatusMonitor {
     const signal = hookSignal(event, tool, kind);
     if (!signal) return false;
     if (named && await this.command(['has-session', '-t', `=${named}`]) === null) named = undefined;
-    if (IS_PSMUX && !named) return false;
+    if (this.windows && !named) return false;
     let session = named ?? this.paneSessions.get(pane);
     if (!session) {
       session = (await this.command(['display-message', '-p', '-t', pane, '#{session_name}']))?.trim() || undefined;
@@ -428,19 +428,21 @@ export class AgentStatusMonitor {
     const busy = t.state === 'working' || t.state === 'waiting';
     // Read the screen only when something was drawn, or while a turn is open
     // (so its end is seen promptly). Idle sessions cost one list-panes line.
-    // psmux never advances #{window_activity}, so there every agent pane is
-    // read each poll and "something was drawn" is told by the screen itself.
-    if (!IS_PSMUX && pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
+    // psmux never advances #{window_activity}; its screen is the activity signal.
+    if (!this.windows && pane.activity === t.activity && !(busy && now - t.capturedAt >= POLL_MS)) return;
+    // Windows has no activity timestamp: keep busy fallback responsive, but
+    // poll quiet screens at most every 5s. Hooks still update immediately.
+    if (this.windows && t.screen !== undefined && !busy && now - t.capturedAt < 5000) return;
     t.activity = pane.activity;
     t.capturedAt = now;
     // psmux numbers panes per session (every session's first is %1), so a
     // bare pane id names some other session's pane there; the session does not.
-    const target = IS_PSMUX ? `=${pane.session}:` : pane.id;
+    const target = this.windows ? `=${pane.session}:` : pane.id;
     const screen = await this.command(['capture-pane', '-p', '-t', target]);
     // A hook or mode change can land while capture-pane is in flight. Its
     // newer state wins over the screen captured before that event.
     if (screen === null || this.tracked.get(pane.session) !== t || t.revision !== revision || this.mode === 'legacy') return;
-    if (IS_PSMUX) {
+    if (this.windows) {
       if (screen === t.screen && !busy) return;
       t.screen = screen;
     }

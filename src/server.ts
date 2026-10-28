@@ -16,7 +16,8 @@ import * as pty from "node-pty";
 
 import { loadConfig } from "./config.js";
 import { terminalEnvironment, configureColorPolicy, getTerminalColors, setTerminalColors } from './terminal-env.js';
-import { hasWheelInput, isKeyboardInput, HistoryInputCheck } from './history-input.js';
+import { hasWheelInput, isKeyboardInput, HistoryInputCheck, cacheableHistoryInput } from './history-input.js';
+import { withoutMouseHover } from './mouse-input.js';
 import {
   TMUX,
   psmuxEnv,
@@ -1854,6 +1855,7 @@ const agentApi = new AgentApi({
   enabled: process.env.AGENT_ENABLED === '1', token: config.authToken,
   file: process.env.AGENT_SESSIONS_FILE || path.join(os.homedir(), '.terminal-web', 'agent-sessions.json'),
   control: terminalControl,
+  output: name => agentViewerHub.notifyOutput(name),
   async spawn(name, cwd, create) {
     if (livePtys.size >= config.maxPtys) throw new Error('PTY_LIMIT');
     if (!create) await new Promise<void>((resolve, reject) => execFile(TMUX, ['has-session', '-t', `=${name}`], {timeout: 3000}, error => error ? reject(new Error('SESSION_GONE')) : resolve()));
@@ -2280,8 +2282,8 @@ async function attachSession(
     }
     historyInputCheck.invalidate();
     // A mux prefix/control sequence may change modes after it is delivered.
-    const printable = !/[\x00-\x1f\x7f]/.test(input);
-    if (!printable) historyInputRevision++;
+    const cacheable = cacheableHistoryInput(input);
+    if (!cacheable) historyInputRevision++;
     const checkedRevision = historyInputRevision;
     preparingInput = true;
     const target = `=${session}:`;
@@ -2291,7 +2293,7 @@ async function attachSession(
       preparingInput = false;
       if (closed) { inputQueue.length = 0; return; }
       if (error) console.error('[ws] could not leave history mode:', error.message);
-      if (!error && printable && canWrite()) historyInputCheck.checked(checkedRevision, performance.now());
+      if (!error && cacheable && canWrite()) historyInputCheck.checked(checkedRevision, performance.now());
       if (canWrite()) proc.write(input);
       drainInput();
     });
@@ -2318,7 +2320,8 @@ async function attachSession(
         const buf = Array.isArray(data)
           ? Buffer.concat(data.map((d) => Buffer.from(d)))
           : Buffer.from(data as ArrayBuffer);
-        const input = filterDaReplies(buf.toString("utf8"));
+        const decoded = filterDaReplies(buf.toString("utf8"));
+        const input = IS_PSMUX ? withoutMouseHover(decoded) : decoded;
         if (/[\r\n]/.test(input) && !input.includes('\x1b[200~')) submitted = true;
         if (input && shareGuard) {
           shareInput = shareInput.then(async () => {

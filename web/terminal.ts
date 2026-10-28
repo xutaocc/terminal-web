@@ -1,3 +1,4 @@
+import { OutputSampler } from './output-sampler.js';
 import { summarizeShares, type ShareSummaryRecord } from './share-summary.js';
 import { mountMobileActions } from './mobile-actions.js';
 import { confirmAction } from './confirm-dialog.js';
@@ -19,6 +20,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { TouchScrollMotion } from './touch-scroll.js';
 import { mouseWheelReports } from './mouse-wheel.js';
+import { withoutMouseHover } from '../src/mouse-input.js';
 import { bindIntentionalClick } from './intentional-click.js';
 import { nameStart, newSessionName, newSessionId } from './session-name.js';
 import { NoteHover, NoteDismiss } from './note-hover.js';
@@ -1568,6 +1570,10 @@ class Session {
     }
 
     this.term.onData((data: string) => {
+      // Filter before send() and activity tracking; the Windows server also
+      // guards older browser bundles whose mouse mode still emits hover.
+      if (hostPlatforms.get(this.host) === 'win32') data = withoutMouseHover(data);
+      if (!data) return;
       if (activeSession === this) pager.setPagedUp(false); // typing goes back to the live screen
       this.debug('onData', data);
       // xterm emits just one mouse report per wheel event, regardless of
@@ -2229,7 +2235,7 @@ class Session {
     if (!this.outputActive) {
       this.outputActive = true;
     }
-    updateOutputActivity();
+    scheduleOutputActivity();
     this.outputActivityTimer = setTimeout(() => this.clearOutputActivity(), 60_000);
   }
 
@@ -2322,6 +2328,18 @@ class Session {
     socket.binaryType = 'arraybuffer';
     this.ws = socket;
     let outputTracker: OutputActivityTracker | null = null;
+    const outputSampler = new OutputSampler(() => {
+      if (this.disposed || this.ws !== socket || !outputTracker) return;
+      const firstRender = !this.hasRenderedOutput;
+      this.hasRenderedOutput = true;
+      if (firstRender) updateOutputActivity();
+      const buffer = this.term.buffer.active;
+      const lines: string[] = [];
+      for (let i = buffer.baseY; i < buffer.baseY + this.term.rows; i++) {
+        lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+      }
+      if (outputTracker.observe(lines.join('\n'), performance.now())) this.markOutputActivity();
+    });
 
     socket.onopen = () => {
       this.schedulePrefillCommand();
@@ -2375,16 +2393,7 @@ class Session {
       this.lastHeard = performance.now();
       if (ev.data instanceof ArrayBuffer) {
         this.term.write(new Uint8Array(ev.data), () => {
-          if (this.disposed || this.ws !== socket || !outputTracker) return;
-          const firstRender = !this.hasRenderedOutput;
-          this.hasRenderedOutput = true;
-          if (firstRender) updateOutputActivity();
-          const buffer = this.term.buffer.active;
-          const lines: string[] = [];
-          for (let i = buffer.baseY; i < buffer.baseY + this.term.rows; i++) {
-            lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
-          }
-          if (outputTracker.observe(lines.join('\n'), performance.now())) this.markOutputActivity();
+          outputSampler.schedule();
         });
         return;
       }
@@ -2421,6 +2430,7 @@ class Session {
     };
 
     socket.onclose = (event: CloseEvent) => {
+      outputSampler.dispose();
       if (event.code === 4001) { void logoutBrowser(); return; }
       this.stopTouchScroll();
       this.stopPing();
@@ -2668,6 +2678,9 @@ function statusesOf(s: Session): (AgentStatus | undefined)[] {
 function attentionCount(): number {
   return sessions.filter(s => serverStatusActive(s.host) && wantsAttention(combineStatus(statusesOf(s)))).length;
 }
+
+const activityPainter = new OutputSampler(() => updateOutputActivity(), 100);
+function scheduleOutputActivity(): void { activityPainter.schedule(); }
 
 function updateOutputActivity(): void {
   reportViewed(); // before painting, so what is on screen never shows as unread

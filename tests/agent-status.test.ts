@@ -299,3 +299,31 @@ test('standalone and boxed running footers remain valid without title inference'
   assert.equal(screenSignal('│ > draft\n╰──────────────╯\nPress Esc again to interrupt'), 'working');
   assert.equal(paneSignal('• Working (1s • esc to interrupt)\n› Draft while task runs', 'Task'), 'working');
 });
+
+test('Windows quiet panes reduce capture load while hooks and busy fallback stay responsive', async t => {
+  const { AgentStatusMonitor } = await import('../src/agent-status.js');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'tw-win-poll-'));
+  const file = join(dir, 'status.json');
+  await writeFile(file, JSON.stringify({mode:'hooks'}));
+  t.mock.timers.enable({apis:['Date','setInterval'], now:100000});
+  let captures = 0;
+  const monitor = new AgentStatusMonitor(file, async args => {
+    if (args[0] === 'list-panes') return '%1 task 11 0 node title';
+    if (args[0] === 'capture-pane') { captures++; return '› 待输入\nGPT-6.1-Sol'; }
+    return '';
+  }, true);
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    await monitor.start(); await flush(); assert.equal(captures, 1);
+    for (let i=0;i<4;i++) {t.mock.timers.tick(1000); await flush();}
+    assert.equal(captures, 1);
+    t.mock.timers.tick(1000); await flush(); assert.equal(captures, 2);
+    await monitor.hook('%1','UserPromptSubmit','','','task');
+    assert.equal(monitor.snapshot().sessions.task.state, 'working');
+    t.mock.timers.tick(1000); await flush(); assert.equal(captures, 3);
+    t.mock.timers.tick(1000); await flush(); assert.equal(captures, 4);
+  } finally {monitor.stop(); await rm(dir, {recursive:true,force:true});}
+});

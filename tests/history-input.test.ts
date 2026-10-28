@@ -23,11 +23,11 @@ test('scrolling, control transfer and a stale completed check cannot reuse cache
   assert.equal(check.allows('a', 2, 25), false);
 });
 
-test('Enter, mux prefix, paste delimiters and mouse reports never use the fast path', () => {
+test('mux prefix, paste delimiters and mouse reports never use the fast path', () => {
   const check = new HistoryInputCheck();
   check.checked(1, 20);
-  for (const input of ['', '\r', '\x02[', '\x7f', '\x1b[A',
-    '\x1b[200~hello\x1b[201~', '\x1b[<64;2;3M', 'echo hi\r']) {
+  for (const input of ['', '\x02[', '\x03', '\x1b',
+    '\x1b[200~hello\x1b[201~', '\x1b[<64;2;3M']) {
     assert.equal(check.allows(input, 1, 21), false, JSON.stringify(input));
   }
 });
@@ -53,4 +53,15 @@ test('wheel reports are told apart from other mouse input', () => {
   assert.equal(hasWheelInput('\x1b[<0;10;5M'), false, 'a click');
   assert.equal(hasWheelInput('\x1b[<32;10;5M'), false, 'a drag');
   assert.equal(hasWheelInput('ls\r'), false);
+});
+
+
+test('editing and submission reuse a recent check without sliding expiry', () => {
+  const check = new HistoryInputCheck();
+  check.checked(1, 20);
+  for (const key of ['\r', '\x7f', '\x08', '\x1b[A', '\x1bOD', 'echo hi\r']) {
+    assert.equal(check.allows(key, 1, 269), true);
+    assert.equal(check.allows(key, 1, 270), false);
+    assert.equal(check.allows(key, 2, 21), false);
+  }
 });

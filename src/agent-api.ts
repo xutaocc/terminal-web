@@ -24,6 +24,7 @@ export interface AgentBackend {
   token: string; file: string; enabled: boolean; control: TerminalControl;
   spawn(name: string, cwd: string, create: boolean): Promise<IPty>;
   prepareInput(name: string, authorized: () => boolean): Promise<void>;
+  output?(name: string): void;
   register(name: string, label: string, cwd: string): void;
   remove(name: string): Promise<void>;
 }
@@ -119,7 +120,7 @@ export class AgentApi {
       const r: Runtime = { proc, events: [], bytes: 0, seq: 0, epoch: crypto.randomUUID(), clients: new Map(), listeners: new Set(), alive: true };
       this.runtimes.set(s.id, r);
       this.event(r, create ? 'created' : 'output_gap', 'Terminal attached; output contains screen redraws.');
-      proc.onData(data => this.event(r, 'output', data));
+      proc.onData(data => { this.event(r, 'output', data); this.backend.output?.(s.name); });
       proc.onExit(() => {
         r.alive = false;
         // Collector loss is not proof the underlying shell died. A later service restart may attach.
