@@ -862,11 +862,14 @@ class Session {
 
   private readonly fitAddon = new FitAddon();
   private ws: WebSocket | null = null;
-  private readonly controlBar = new ControlBar((action, target) => this.controlAction(action, target));
+  private readonly controlBar = new ControlBar((action, target) => this.controlAction(action, target), url => hostUrl(this.host, url));
   private controlHeartbeat: ReturnType<typeof setInterval> | null = null;
   get readOnly(): boolean { return this.controlBar.state?.readOnly === true; }
   get canOperate(): boolean { return this.connected && this.controlBar.state?.mine === true; }
-  get canInteract(): boolean { return this.connected && this.controlBar.state?.readOnly === false; }
+  // Explicit Agent sessions remain watchers until the user clicks Take over.
+  // Watching may browse history, but must not send keyboard/mouse input as an operator.
+  get canViewHistory(): boolean { return this.connected && (this.readOnly || (this.controlBar.state?.explicit === true && !this.canOperate)); }
+  get canInteract(): boolean { return this.connected && this.controlBar.state?.readOnly === false && (this.controlBar.state?.explicit !== true || this.canOperate); }
   interact(): void { if (this.canInteract) this.controlAction('interact'); }
   releaseControl(): void { this.controlAction('release'); }
   private controlAction(action: string, target?: string): void {
@@ -1065,7 +1068,7 @@ class Session {
     // belonging to a composition shuts both off. e.isComposing is per-event, so
     // it cannot latch on if a compositionend is ever missed.
     this.term.attachCustomKeyEventHandler((e) => {
-      if (this.readOnly && e.type === 'keydown' && !e.altKey && !e.metaKey) {
+      if (this.canViewHistory && e.type === 'keydown' && !e.altKey && !e.metaKey) {
         const action = e.key === 'PageUp' ? 'up' : e.key === 'PageDown' ? 'down' : e.ctrlKey && e.key === 'Home' ? 'top' : e.ctrlKey && e.key === 'End' ? 'bottom' : null;
         if (action) { e.preventDefault(); void this.scrollHistory(action); return false; }
       }
@@ -1618,7 +1621,7 @@ class Session {
       // ⌘ / Ctrl + wheel, and a trackpad pinch (sent as a Ctrl wheel): font
       // size, not scrolling. The page-level listener stops the browser zoom.
       if (zoomShortcutsEnabled && (event.ctrlKey || event.metaKey)) return false;
-      if (this.readOnly && event.deltaY) {
+      if (this.canViewHistory && event.deltaY) {
         event.preventDefault();
         this.sendWheel(-Math.sign(event.deltaY) * mouseWheelReports(event.deltaY, event.deltaMode, this.term.rows), Math.ceil(this.term.cols / 2), Math.ceil(this.term.rows / 2));
         return false;
@@ -1912,7 +1915,7 @@ class Session {
 
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).
   private sendWheel(ticks: number, col: number, row: number): void {
-    if (this.readOnly && this.connected) {
+    if (this.canViewHistory) {
       this.ws?.send(JSON.stringify({type:'view-scroll', ticks, col, row}));
       return;
     }
@@ -1930,7 +1933,7 @@ class Session {
   async scrollHistory(action: 'up' | 'down' | 'top' | 'bottom'): Promise<void> {
     this.stopTouchScroll();
     if (action === 'bottom' && activeSession === this) pager.setPagedUp(false);
-    if (!this.canInteract && !this.readOnly) {
+    if (!this.canInteract && !this.canViewHistory) {
       if (action === 'top') this.term.scrollToTop(); else if (action === 'bottom') this.term.scrollToBottom(); else this.term.scrollPages(action === 'up' ? -1 : 1);
       return;
     }

@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TerminalControl } from '../src/terminal-control.js';
+
+test('agent sessions require explicit takeover and fence delayed writes', () => {
+  const locks = new TerminalControl(); locks.setExplicit('agent');
+  const join = (admin: boolean) => locks.join('agent', { resume: String(admin), principal: String(admin), label: 'test', admin, valid: () => true, send: () => {} });
+  const agent = join(false), browser = join(true);
+  locks.action('agent', agent, 'acquire'); const epoch = locks.fence('agent', agent);
+  locks.action('agent', browser, 'interact'); assert(locks.owns('agent', agent));
+  locks.action('agent', browser, 'takeover'); assert(!locks.accepts('agent', agent, epoch));
+  locks.action('agent', agent, 'interact'); assert(locks.owns('agent', browser));
+  locks.action('agent', agent, 'acquire'); assert(locks.owns('agent', browser));
+  locks.action('agent', browser, 'release'); locks.action('agent', agent, 'acquire'); assert(locks.owns('agent', agent));
+});
 test('single operator, approved handover, admin takeover and stale input fencing', () => {
   let now = 0; const locks = new TerminalControl(() => now); const messages: any[] = [];
   const join = (admin = false, resume = 'secret') => locks.join('session', { resume, principal: admin ? 'admin' : 'share', label: admin ? '管理员' : '访客', admin, valid: () => true, send: m => messages.push(m) });

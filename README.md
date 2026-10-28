@@ -1,5 +1,7 @@
 # terminal-web
 
+Windows 远程 Agent 接入（HTTP + Token、psmux 持久会话、网页观看和接管）：先看 [部署与使用指南](docs/远程Agent-部署与使用.md)，另有 [CLI 说明](scripts/twssh/README.md)、[Agent Skill](skills/terminal-web-remote/SKILL.md) 和 [设计文档](docs/winssh-远程Agent持久终端设计.md)。默认关闭，需设置 `AGENT_ENABLED=1`；HTTP 适用于可信内网或 VPN，HTTPS 可选。通过 Mac/Linux 聚合页面观看时，也需要更新并构建提供网页的主机。当前提供原始终端模式，不报告命令完成或退出码。
+
 A web-based terminal: open a browser tab, get a real shell. The shell runs
 inside a **tmux** session, so closing the window (or losing your network) just
 detaches — your programs keep running and reattach when you come back. Open it
@@ -551,7 +553,7 @@ On first start, the server generates a random 32-byte token and saves it to
 An empty or unreadable token file causes startup to fail. `AUTH_TOKEN_FILE`
 overrides the path; a nonempty `AUTH_TOKEN` overrides the generated token.
 
-Every startup prints the current Token and the plain address of every non-loopback
+Every startup prints the Token file location (or notes AUTH_TOKEN configuration) and the address of every non-loopback
 IPv4 interface (no token in them). Links for addresses outside the configured listening host are
 marked as not listening; set `HOST=0.0.0.0` to listen on all IPv4 interfaces.
 With systemd, this output is available through `journalctl --user -u terminal-web`.

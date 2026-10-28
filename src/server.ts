@@ -1,5 +1,7 @@
 import { TerminalControl, type ControlClient, type ControlAction } from './terminal-control.js';
 import http from "node:http";
+import https from "node:https";
+import { AgentApi } from "./agent-api.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -1494,11 +1496,17 @@ const shares = new ShareService(new ShareStore(process.env.SHARES_FILE || path.j
   },
   revokeControl: grant => terminalControl.revoke(`share:${grant}`),
   info: hostInfo, folders: () => folders.get(), self: async () => ({ ...hostInfo(), label: await selfLabel() }), status: () => agentStatus.snapshot(), remoteStatuses: () => remoteStatus.snapshot(), health: () => remoteMonitor.snapshot(),
-  collect: collectSavedSessions, get: name => sessionStore.get(name), cwd: sessionCwd, closed: isClosed,
+  collect: async () => (await collectSavedSessions()).filter(s => !s.name.startsWith('agent_')), get: name => sessionStore.get(name), cwd: sessionCwd, closed: isClosed,
 });
 const sharedSockets = new WeakMap<WebSocket, ShareScope>();
 
-const server = http.createServer((req, res) => {
+const tlsCert = process.env.TLS_CERT_FILE;
+const tlsKey = process.env.TLS_KEY_FILE;
+if (!!tlsCert !== !!tlsKey) throw new Error('TLS_CERT_FILE and TLS_KEY_FILE must be set together');
+const createHttpServer: (handler: http.RequestListener) => http.Server = tlsCert
+  ? ((handler: http.RequestListener) => https.createServer({ cert: fs.readFileSync(tlsCert), key: fs.readFileSync(tlsKey!) }, handler))
+  : http.createServer;
+const server = createHttpServer((req, res) => {
   // Wrap in a try/catch so a single bad request never takes down the process.
   void (async () => {
     try {
@@ -1509,6 +1517,7 @@ const server = http.createServer((req, res) => {
       const requestUrl = new URL(req.url, "http://localhost");
       const method = req.method ?? "GET";
 
+      if (await agentApi.http(req, res, requestUrl)) return;
       if (await shares.publicHttp(req, res, requestUrl)) return;
 
       // Mandatory token gate. Handles the login page and
@@ -1527,6 +1536,10 @@ const server = http.createServer((req, res) => {
       }
       if (await gateHttp(req, res, requestUrl, config.authToken)) return;
       if (await shares.adminHttp(req, res, requestUrl)) return;
+      if (requestUrl.pathname === '/api/agent-history' && method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(agentApi.history(requestUrl.searchParams.get('session') ?? ''), null, 2)); return;
+      }
       if (requestUrl.pathname === '/api/viewer-state') {
         await viewerState.http(req, res, adminViewer, name => /^(?:@[a-z0-9]{1,16}\/)?[A-Za-z0-9_-]{1,64}$/.test(name)); return;
       }
@@ -1757,7 +1770,7 @@ function parseDim(raw: string | null, fallback: number, max: number): number {
 // This server's own configuration env vars. They must NOT leak into the user's
 // shell: e.g. zsh's `%m` prompt escape reads $HOST, so an exported HOST (the
 // bind address) would make the prompt show "100" instead of the real hostname.
-const SERVER_ENV_VARS = ["HOST", "PORT", "DEFAULT_SESSION"];
+const SERVER_ENV_VARS = ["HOST", "PORT", "DEFAULT_SESSION", "AUTH_TOKEN", "TLS_KEY_FILE", "TLS_CERT_FILE"];
 
 function hasUtf8(value: string | undefined): boolean {
   return typeof value === "string" && /utf-?8/i.test(value);
@@ -1830,6 +1843,40 @@ function noteAbnormalPtyExit(): void {
 
 const wss = new WebSocketServer({ noServer: true });
 const terminalControl = new TerminalControl();
+const agentApi = new AgentApi({
+  enabled: process.env.AGENT_ENABLED === '1', token: config.authToken,
+  file: process.env.AGENT_SESSIONS_FILE || path.join(os.homedir(), '.terminal-web', 'agent-sessions.json'),
+  control: terminalControl,
+  async spawn(name, cwd, create) {
+    if (livePtys.size >= config.maxPtys) throw new Error('PTY_LIMIT');
+    if (!create) await new Promise<void>((resolve, reject) => execFile(TMUX, ['has-session', '-t', `=${name}`], {timeout: 3000}, error => error ? reject(new Error('SESSION_GONE')) : resolve()));
+    if (livePtys.size >= config.maxPtys) throw new Error('PTY_LIMIT');
+    const proc = pty.spawn(TMUX, create ? tmuxArgs(name, config.tmuxConfPath, cwd)
+      : ['-u', '-f', config.tmuxConfPath, 'attach-session', '-t', `=${name}`], {
+      name: 'xterm-256color', cols: 120, rows: 35, cwd: os.homedir(),
+      env: { ...buildChildEnv(), ...psmuxEnv(config.tmuxConfPath) }, useConptyDll: IS_PSMUX,
+    });
+    livePtys.add(proc); proc.onExit(() => livePtys.delete(proc)); return proc;
+  },
+  async prepareInput(name, authorized) {
+    if (!authorized()) throw new Error('CONTROL_LOST');
+    const target = `=${name}:`;
+    await new Promise<void>((resolve, reject) => execFile(TMUX,
+      ['if-shell', '-F', '-t', target, '#{==:#{pane_mode},copy-mode}', `send-keys -t ${target} -X cancel`],
+      {timeout: 3000}, error => error ? reject(error) : resolve()));
+  },
+  register(name, label, cwd) {
+    sessionStore.update({name, displayName: label, cwd}); liveSessions.add(name);
+    tagWebSession(name); setWebTabLabel(name, label);
+    execFile(TMUX, ['set-option', '-w', '-t', `=${name}:`, 'window-size', 'manual'], {timeout: 3000}, () => {});
+  },
+  async remove(name) {
+    const exists = await new Promise<boolean>(resolve => execFile(TMUX, ['has-session', '-t', `=${name}`], {timeout: 3000}, error => resolve(!error)));
+    if (exists) await new Promise<void>((resolve, reject) => execFile(TMUX, ['kill-session', '-t', `=${name}`], {timeout: 3000}, error => error ? reject(error) : resolve()));
+    markClosed([name]); broadcastClosed(name); liveSessions.delete(name);
+  },
+});
+agentApi.markRecovered();
 const controlTimer = setInterval(() => terminalControl.sweep(), 500); controlTimer.unref();
 const controlMetadata = new WeakMap<WebSocket, { resume: string; principal: string; label: string; admin: boolean }>();
 const socketBrowsers = new WeakMap<WebSocket, string>();
@@ -1959,7 +2006,7 @@ async function attachSession(
   if (ws.readyState !== WebSocket.OPEN) return;
   let proc: pty.IPty;
   try {
-    proc = pty.spawn(TMUX, sharedSockets.has(ws)
+    proc = pty.spawn(TMUX, sharedSockets.has(ws) || agentApi.isAgent(session)
       ? ['-u', '-f', config.tmuxConfPath, 'attach-session', '-t', `=${session}`]
       : tmuxArgs(session, config.tmuxConfPath, startDir), {
       name: "xterm-256color",
@@ -2011,11 +2058,12 @@ async function attachSession(
   let controlClient: ControlClient | undefined;
   let operationFence: number | undefined;
   const validAccess = () => !scope || shares.validScope(scope);
+  const canViewHistory = () => !scope && validAccess() && (!!controlClient?.readOnly?.() || (agentApi.isAgent(session) && !!controlClient && !terminalControl.owns(controlKey, controlClient)));
   const canInput = () => !!controlClient && terminalControl.accepts(controlKey, controlClient, operationFence) && validAccess() && !closed && ws.readyState === WebSocket.OPEN;
   const meta = controlMetadata.get(ws)!;
   controlClient = terminalControl.join(controlKey, { ...meta, readOnly: () => !scope && shares.isSessionShared('', session), valid: validAccess, send: value => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
-  } }, initialSize ?? {cols, rows}, !!scope || !shares.isSessionShared('', session));
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(agentApi.isAgent(session) ? { ...(value as object), historyUrl: '/api/agent-history?session=' + encodeURIComponent(session) } : value));
+  } }, initialSize ?? {cols, rows}, !!scope || (!agentApi.isAgent(session) && !shares.isSessionShared('', session)));
   const leasePing = setInterval(() => { if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch { /* closing */ } } }, 4000);
   leasePing.unref(); ws.once('close', () => clearInterval(leasePing));
   ws.once('close', (code) => terminalControl.leave(controlKey, controlClient!, code === 4001 || !validAccess()));
@@ -2267,7 +2315,7 @@ async function attachSession(
 
       // Read-only admins may scroll, but never send arbitrary terminal bytes.
       if (parsed && typeof parsed === 'object' && (parsed as {type?:string}).type === 'view-scroll') {
-        if (scope || !controlClient?.readOnly?.() || !validAccess()) return;
+        if (!canViewHistory()) return;
         const wheel = parsed as {ticks?:number; col?:number; row?:number};
         if (!Number.isInteger(wheel.ticks) || !wheel.ticks || Math.abs(wheel.ticks!) > 100 || !Number.isInteger(wheel.col) || !Number.isInteger(wheel.row)) return;
         const col = Math.max(1, Math.min(cols, wheel.col!));
@@ -2280,7 +2328,7 @@ async function attachSession(
         const action = (parsed as {action?:string}).action;
         terminalControl.action(controlKey, controlClient!, 'interact');
         const fence = terminalControl.fence(controlKey, controlClient!);
-        const mayView = () => !scope && !!controlClient?.readOnly?.() && validAccess();
+        const mayView = canViewHistory;
         if ((fence !== undefined || mayView()) && ['up','down','top','bottom'].includes(action ?? '')) {
           void scrollControlledSession({ name: session, action: action! }, () => mayView() || (terminalControl.accepts(controlKey, controlClient!, fence) && validAccess())).catch(() => {});
         }
@@ -2288,7 +2336,7 @@ async function attachSession(
       }
       if (parsed && typeof parsed === 'object' && (parsed as {type?:string}).type === 'control') {
         const message = parsed as { action?: string; target?: string };
-        if (['interact','release','heartbeat'].includes(message.action ?? '')) {
+        if (['interact','release','heartbeat', ...(agentApi.isAgent(session) && !scope ? ['takeover','acquire'] : [])].includes(message.action ?? '')) {
           terminalControl.action(controlKey, controlClient!, message.action as ControlAction, typeof message.target === 'string' ? message.target : undefined);
         }
         return;
@@ -2675,14 +2723,15 @@ function logStartup(): void {
   // Addresses only: a token in a link ends up in history and logs. Open one,
   // and paste the token printed above it into the login page.
   const accessUrl = (host: string): string =>
-    `http://${host.includes(":") ? `[${host}]` : host}:${port}/`;
+    `${tlsCert ? "https" : "http"}://${host.includes(":") ? `[${host}]` : host}:${port}/`;
   const allInterfaces = config.host === "0.0.0.0" || config.host === "::";
 
   console.log("");
   console.log("  terminal-web is running.");
   console.log(`  Listening: ${config.host}:${port}`);
-  console.log(`  Token: ${config.authToken}`);
-  console.log("  访问地址（打开后在登录页输入上面的 Token）：");
+  console.log(process.env.AUTH_TOKEN ? "  Token: configured through AUTH_TOKEN" : `  Token file: ${config.authTokenFile}`);
+  if (tlsCert) console.log(`  TLS SHA256: ${new crypto.X509Certificate(fs.readFileSync(tlsCert)).fingerprint256.replaceAll(":", "")}`);
+  console.log("  访问地址（打开后在登录页输入配置的 Token）：");
   if (allInterfaces || config.host === "127.0.0.1" || config.host === "localhost") {
     console.log(`  Local: ${accessUrl("127.0.0.1")}`);
   }

@@ -67,6 +67,7 @@ export function isAuthed(req: http.IncomingMessage, token: string): boolean {
 }
 
 function reqIsHttps(req: http.IncomingMessage): boolean {
+  if ((req.socket as import("node:tls").TLSSocket).encrypted) return true;
   const xf = req.headers["x-forwarded-proto"];
   const proto = (Array.isArray(xf) ? xf[0] : xf) ?? "";
   // Behind a tunnel/proxy the edge sets X-Forwarded-Proto; only then is it safe

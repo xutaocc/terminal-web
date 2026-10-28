@@ -6,15 +6,18 @@ export interface ControlClient {
   readOnly?(): boolean; valid(): boolean; send(value: unknown): void;
 }
 interface Owner { client: ControlClient; connected: boolean; seen: number }
-interface Room { clients: Map<string, ControlClient>; owner?: Owner; requests: Set<string>; revision: number; policy?: string; epoch: number; fenceOwner?: Owner; size?: { cols: number; rows: number } }
+interface Room { explicit?: boolean; clients: Map<string, ControlClient>; owner?: Owner; requests: Set<string>; revision: number; policy?: string; epoch: number; fenceOwner?: Owner; size?: { cols: number; rows: number } }
 /** One arbiter on the machine that owns the real tmux session, across all entry points. */
 export class TerminalControl {
   private rooms = new Map<string, Room>();
+  private explicit = new Set<string>();
+  setExplicit(key: string): void { this.explicit.add(key); }
   constructor(private readonly now = Date.now, readonly graceMs = 15000) {}
   join(key: string, input: Omit<ControlClient, 'id'>, size?: {cols: number; rows: number}, autoAcquire = false): ControlClient {
     const client = { ...input, id: randomUUID() };
     let room = this.rooms.get(key);
     if (!room) this.rooms.set(key, room = { clients: new Map(), requests: new Set(), revision: 0, epoch: 0 });
+    room.explicit = this.explicit.has(key);
     room.size ??= size;
     this.expire(room);
     room.clients.set(client.id, client);
@@ -47,7 +50,7 @@ export class TerminalControl {
     const mine = room.owner?.client === client && room.owner.connected;
     if (action === 'heartbeat') { if (mine) room.owner!.seen = this.now(); return; }
     if (action === 'interact' && mine) { room.owner!.seen = this.now(); return; }
-    if (action === 'interact' || (action === 'acquire' && !room.owner) || (action === 'takeover' && client.admin)) {
+    if ((action === 'interact' && !this.explicit.has(key)) || (action === 'acquire' && !room.owner) || (action === 'takeover' && client.admin)) {
       room.owner = { client, connected: true, seen: this.now() }; room.requests.delete(client.id);
     } else if (action === 'release' && mine) room.owner = undefined;
     else if (action === 'request' && room.owner && !mine) room.requests.add(client.id);
@@ -99,7 +102,7 @@ export class TerminalControl {
   }
   private send(room: Room, client: ControlClient) {
     const owner = room.owner;
-    client.send({ type: 'control', readOnly: !!client.readOnly?.(), size: room.size, revision: room.revision, mine: !!owner?.connected && owner.client === client,
+    client.send({ type: 'control', explicit: !!room.explicit, readOnly: !!client.readOnly?.(), size: room.size, revision: room.revision, mine: !!owner?.connected && owner.client === client,
       owner: owner ? { label: owner.client.label, connected: owner.connected } : null,
       requested: room.requests.has(client.id), canTakeover: client.admin,
       requests: owner?.client === client ? [...room.requests].flatMap(id => { const c = room.clients.get(id); return c?.valid() ? [{ id, label: c.label }] : []; }) : [] });

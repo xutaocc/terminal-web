@@ -1,5 +1,6 @@
 import './terminal-control.css';
 export interface ControlState {
+  explicit?: boolean; historyUrl?: string;
   type: 'control'; readOnly?: boolean; revision: number; mine: boolean; size?: {cols: number; rows: number};
   owner: {label: string; connected: boolean} | null;
   requested: boolean; canTakeover: boolean; requests: {id: string; label: string}[];
@@ -14,7 +15,7 @@ export const terminalClientId = (() => {
 export class ControlBar {
   readonly el = document.createElement('div');
   state: ControlState | null = null;
-  constructor(_send: (action: string, target?: string) => void) {
+  constructor(private send: (action: string, target?: string) => void, private historyPath: (path: string) => string = path => path) {
     this.el.className = 'terminal-control'; this.el.setAttribute('aria-label','终端操作权'); this.disconnected();
   }
   unsupported(): void { this.el.hidden=false; this.el.textContent='请升级此主机服务'; }
@@ -25,5 +26,19 @@ export class ControlBar {
     if (typeof state.readOnly !== 'boolean') { this.unsupported(); return; }
     this.el.hidden=true;
     this.el.textContent='';
+    if (state.explicit) {
+      this.el.hidden = false;
+      const label = document.createElement('span'); label.className = 'control-label';
+      label.textContent = state.mine ? '远程 Agent 会话 · 本机操作中' : `远程 Agent 会话 · ${state.owner?.label ?? '等待连接'}`;
+      this.el.append(label);
+      if (state.historyUrl?.startsWith('/api/agent-history?')) {
+        const history = document.createElement('a'); history.textContent = '操作记录'; history.href = this.historyPath(state.historyUrl);
+        history.target = '_blank'; history.rel = 'noopener'; this.el.append(history);
+      }
+      if (state.canTakeover) {
+        const button = document.createElement('button'); button.textContent = state.mine ? '交还操作权' : '接管';
+        button.onclick = () => this.send(state.mine ? 'release' : 'takeover'); this.el.append(button);
+      }
+    }
   }
 }
