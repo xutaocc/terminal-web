@@ -70,14 +70,13 @@ try {
   assert.deepEqual(await call('/input','POST',sent.body),sent.result);
   await assert.rejects(call('/input','POST',{...sent.body,text:'bad'}),/REQUEST_CONFLICT/);
   await assert.rejects(call('/input','POST',{...sent.body,requestId:randomUUID(),generation:randomUUID()}),/GENERATION_MISMATCH/);
-  // Cookie-authenticated browser watches the exact same psmux session, then explicitly takes control.
+  // Cookie-authenticated browsers only receive independent snapshots.
   browser=new WebSocket(host.url.replace(/^http/, 'ws')+`/ws?session=${session.name}`,{rejectUnauthorized:false,headers:{Cookie:`tw_auth=${token}`}});
-  let controls=[];browser.on('message',(data,binary)=>{if(!binary){try{const m=JSON.parse(data.toString());if(m.type==='control')controls.push(m);}catch{}}});
+  let controls=[], snapshots=[];browser.on('message',(data,binary)=>{if(!binary){try{const m=JSON.parse(data.toString());if(m.type==='control')controls.push(m);if(m.type==='agent-snapshot')snapshots.push(m);}catch{}}});
   await once(browser,'open');
   for(let i=0;i<50&&!controls.length;i++)await sleep(100);
   assert(controls.at(-1)?.explicit);assert.equal(controls.at(-1)?.mine,false);
-  // A watcher can browse server scrollback without acquiring control. Agent input
-  // must leave copy-mode again so that the next command reaches the original Shell.
+  // Reading history must never enter psmux copy-mode or acquire control.
   const mux = path.resolve('.psmux/tmux.exe');
   const paneMode = () => execFileSync(mux, ['display-message','-p','-t',`=${session.name}:`,'#{pane_mode}'], {encoding:'utf8'}).trim();
   const until = async (check, message) => { for(let i=0;i<50;i++){if(check())return;await sleep(100);}throw Error(message); };
@@ -85,23 +84,25 @@ try {
   await until(()=>execFileSync(mux,['capture-pane','-p','-t',`=${session.name}:`],{encoding:'utf8'}).includes('HISTORY_200'),'history output must finish');
   if(process.env.AGENT_BROWSER_TEST==='1') {
     const {verifyAgentViewer}=await import('./agent-browser-helper.mjs');
-    await verifyAgentViewer({base:host.url,token,session,mux,directory:dir});
+    await verifyAgentViewer({base:host.url,token,session,mux,directory:dir,write:input});
   }
-  browser.send(JSON.stringify({type:'view-scroll',ticks:8,col:40,row:15}));
-  await until(()=>paneMode()==='copy-mode','watcher wheel must enter scrollback');
-  assert.equal(controls.at(-1).mine,false,'scrolling must not acquire control');
-  browser.send(Buffer.from("$env:WATCHER_BAD='bad'\r"));await sleep(100);
+  assert.equal(controls.at(-1).agentReadOnly,true);
+  assert.equal(controls.at(-1).readOnly,true);
+  assert.equal(controls.at(-1).canTakeover,false);
+  await until(()=>snapshots.some(s=>s.text.includes('HISTORY_200')), 'snapshot contains history');
+  const dimensions = () => execFileSync(mux,['display-message','-p','-t',`=${session.name}:`,'#{pane_width}x#{pane_height}'],{encoding:'utf8'}).trim();
+  const size=dimensions(), originalMode=paneMode();
+  for(const message of [{type:'view-scroll',ticks:8,col:40,row:15},{type:'scroll',action:'top'},
+      {type:'control',action:'takeover'},{type:'resize',cols:42,rows:12},{type:'restart'}]) browser.send(JSON.stringify(message));
+  browser.send(Buffer.from("$env:WATCHER_BAD='bad'\r"));await sleep(1500);
+  assert.equal(paneMode(),originalMode);assert.equal(dimensions(),size);
+  assert.equal(controls.at(-1).mine,false);
+  const {default:http}=await import('node:http');
+  const killStatus=await new Promise((resolve,reject)=>{const r=(plain?http:https).request(host.url+'/api/sessions/kill',{method:'POST',rejectUnauthorized:false,headers:{Cookie:`tw_auth=${token}`,'Content-Type':'application/json'}},res=>{res.resume();resolve(res.statusCode);});r.on('error',reject);r.end(JSON.stringify({name:session.name}));});
+  assert.equal(killStatus,403);
   await input("Write-Output ('WATCHER_BLOCKED=' + [string]::IsNullOrEmpty($env:WATCHER_BAD))\r");
-  await readUntil('WATCHER_BLOCKED=True');assert.notEqual(paneMode(),'copy-mode');
-  browser.send(JSON.stringify({type:'scroll',action:'top'}));
-  await until(()=>paneMode()==='copy-mode','watcher history-top must enter scrollback');
-  browser.send(JSON.stringify({type:'scroll',action:'bottom'}));
-  await until(()=>paneMode()!=='copy-mode','watcher history-bottom must return to live screen');
-  browser.send(JSON.stringify({type:'control',action:'takeover'}));
-  for(let i=0;i<30&&!controls.at(-1)?.mine;i++)await sleep(100);
-  assert(controls.at(-1).mine);
-  await assert.rejects(call('/input','POST',{...sent.body,requestId:randomUUID()}),/CONTROL_LOST/);
-  browser.send(JSON.stringify({type:'control',action:'release'}));await sleep(200);browser.close();browser=undefined;
+  await readUntil('WATCHER_BLOCKED=True');
+  browser.close();browser=undefined;
   await call('/control','POST',{generation:session.generation,action:'release'});
   await input("Write-Output ('AFTER=' + $env:TW_AGENT_TEST)\r");await readUntil('AFTER=persist');
   const oldEpoch=epoch;
@@ -124,7 +125,7 @@ try {
   trap.listen(0,'127.0.0.1');await once(trap,'listening');
   await assert.rejects(request({...host,url:`https://127.0.0.1:${trap.address().port}`,pin:'00'.repeat(32)},'/info'),/fingerprint/);
   assert.equal(received,0);await new Promise(r=>trap.close(r));
-  console.log(`PASS ${plain ? 'HTTP + Token' : 'HTTPS + Token'}, CLI, authentication, persistence, dedupe, browser takeover, restart, close; TLS pin protection`);
+  console.log(`PASS ${plain ? 'HTTP + Token' : 'HTTPS + Token'}, CLI, authentication, persistence, dedupe, read-only browser isolation, restart, close; TLS pin protection`);
 } finally {
   browser?.terminate();
   if(session){try{execFileSync(path.resolve('.psmux/tmux.exe'),['kill-session','-t',`=${session.name}`],{stdio:'ignore'});}catch{}}

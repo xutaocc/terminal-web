@@ -1,6 +1,6 @@
 # 远程 Agent 操作 Windows：部署与使用
 
-本功能让 Ubuntu/macOS 上的 Codex、Claude Code 通过 `twssh` 操作 Windows 上持续运行的 PowerShell。浏览器能查看相同终端，并在需要时接管。当前协议为 HTTP + Token，HTTPS 可选；无需在 Windows 上安装被控制的 Codex。
+本功能让 Ubuntu/macOS 上的 Codex、Claude Code 通过 `twssh` 操作 Windows 上持续运行的 PowerShell。浏览器固定只读查看终端，滚动不会影响远端执行。当前协议为 HTTP + Token，HTTPS 可选；无需在 Windows 上安装被控制的 Codex。
 
 ## 1. 哪些机器需要更新
 
@@ -10,7 +10,7 @@
 | 打开聚合网页的 Mac/Linux 主机 | 同步更新本仓库、重新构建网页并重启；只做网页入口时不必启用 Agent API |
 | 发送命令的 Ubuntu/macOS Agent | 安装 `remote-agent/client` 客户端，让 Agent 阅读 `remote-agent/skills/terminal-web-remote/SKILL.md` |
 
-**浏览器加载哪个地址，就使用哪台主机提供的前端。** 在 Mac 的聚合页面打开 Windows 会话时，只升级 Windows 不够。旧页面可能缺少“接管”按钮，也无法发送新版观看滚动请求。更新提供网页的主机后，强制刷新浏览器。
+**浏览器加载哪个地址，就使用哪台主机提供的前端。** 在 Mac 的聚合页面打开 Windows 会话时，只升级 Windows 不够。旧页面不支持新的只读快照协议，可能没有终端画面。更新提供网页的主机后，强制刷新浏览器。
 
 功能分支：`winssh-f-fitshare-261028`。在已有仓库中更新：
 
@@ -117,16 +117,17 @@ twssh detach win-dev --session "$SID"
 
 更多命令、游标和限制见 [CLI 使用说明](client/README.md)。
 
-## 6. 网页观看、滚动与接管
+## 6. 网页只读查看
 
-- 创建会话后，Windows 会话列表出现 `🌐` 标签，显示客户端提供的名称。
-- 网页默认观看，可复制和滚动历史；滚动不要求接管。PageUp/PageDown、Ctrl+Home/End 用于翻页。
-- 编辑命令、粘贴和 Ctrl+C 需要点击“接管”；远端此时收到 `CONTROL_LOST`。点击“交还操作权”后远端可以继续。
-- “操作记录”显示通过 Agent API 收到的输入及请求状态；它不是防篡改审计，也不保证还原终端内所有应用操作。
-- 浏览的是共享 psmux 历史，滚动可能同步影响其他观看者。远端发送下一条键盘输入时自动退出历史模式并返回实时终端。
-- `detach` 或网络断开保留 Shell；`session close`、网页“关闭并结束”会终止 Shell。Windows 重启或 Shell 退出会丢失内存中的环境变量。
+- 创建会话后，会话列表出现 `🌐` 标签，顶部显示“远程 Agent 会话 · 只读”，不再提供接管或交还。
+- 鼠标滚轮、触屏、PageUp/PageDown、Ctrl+Home/End 在浏览器本地翻页；支持文本选择和复制。滚动及浏览器窗口大小变化不向终端发送输入，不改变远端操作权。
+- 浏览器读取 psmux 纯文本快照，约每秒更新一次，最多展示最近 2000 行（受 psmux 实际保留历史限制）。不保留 ANSI 颜色，不是完整归档，也不支持在页面内交互操作 TUI。
+- 上翻或选择文本时冻结当前画面；远端继续执行后显示“有新输出”，点击“回到实时”查看最新画面。
+- 页面禁止输入、粘贴、Ctrl+C、重启、分屏及关闭 Agent 终端；后端也拒绝浏览器接管和终止请求。普通终端保持原有行为。
+- “操作记录”显示 Agent API 输入及请求状态，不是防篡改审计，也不保证还原所有应用操作。
+- `detach` 或网络断开保留 Shell；需要结束时由远端运行 `twssh session close`。Windows 重启或 Shell 退出会丢失内存环境变量。
 
-没有“接管 / 操作记录”栏：优先确认提供当前网页的主机是否更新并重新构建，而不只是确认 Windows API 能访问。
+若没有只读画面，请同时更新 Windows 服务与提供当前网页的主机并重新构建、强制刷新；Mac 聚合页面也需要更新。远端 CLI 命令和 Token 配置不变。
 
 ## 7. 通过 Git 获取和更新
 
@@ -161,6 +162,6 @@ $env:AGENT_BROWSER_TEST = '1'
 node tests/agent-api.integration.mjs
 ```
 
-集成测试使用 Windows psmux、OpenSSL；浏览器测试默认使用本机 Chrome，可用 `BROWSER_BIN` 指定路径。它验证真实会话恢复、CLI、鉴权、去重、观看滚动、接管及滚动后继续执行。另有 HTTPS 路径，清除 `TW_AGENT_TEST_HTTP` 后运行。
+集成测试使用 Windows psmux、OpenSSL；浏览器测试默认使用本机 Chrome，可用 `BROWSER_BIN` 指定路径。它验证真实会话恢复、CLI、鉴权、去重、只读快照、本地滚动、浏览历史时远端继续执行及浏览器越权请求拒绝。另有 HTTPS 路径，清除 `TW_AGENT_TEST_HTTP` 后运行。
 
 已有 `tests/shares.integration.mjs` 仍使用旧 request/grant 转交协议，而基线服务端已切换分享规则，会在 handover request 处失败；本功能未恢复旧协议。尚未完成独立 Ubuntu 设备及 PowerShell 5.1 验收。

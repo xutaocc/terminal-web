@@ -2,6 +2,7 @@ import { mountMobileActions } from './mobile-actions.js';
 import { confirmAction } from './confirm-dialog.js';
 import { ViewerStateSync } from './viewer-state.js';
 import { openShareManager } from './share-manager.js';
+import { AgentViewer, type AgentSnapshot } from './agent-viewer.js';
 import { ControlBar, terminalClientId, type ControlState } from './terminal-control.js';
 import { newerStatus } from './read-cursors.js';
 import { isShare, shareBase, sharePage, shareUrl, shareStorage as localStorage, shareFetch as fetch, ShareWebSocket as WebSocket, ShareEventSource as EventSource } from './share-context.js';
@@ -663,6 +664,7 @@ function ipSuffix(host: string, full = false): HTMLElement {
 const lastUsedIn = new Map<string, string>();
 const sidebar = new ProjectSidebar({
   readOnly: isShare,
+  canClose: name => !sessions.find(s => s.name === name)?.agentReadOnly,
   recentEntries: () => recentVisitEntries(),
   recentLimit: () => recentVisitLimit,
   setRecentLimit: count => setRecentVisitLimit(count),
@@ -862,22 +864,34 @@ class Session {
 
   private readonly fitAddon = new FitAddon();
   private ws: WebSocket | null = null;
-  private readonly controlBar = new ControlBar((action, target) => this.controlAction(action, target), url => hostUrl(this.host, url));
+  private readonly controlBar = new ControlBar(url => hostUrl(this.host, url));
   private controlHeartbeat: ReturnType<typeof setInterval> | null = null;
-  get readOnly(): boolean { return this.controlBar.state?.readOnly === true; }
-  get canOperate(): boolean { return this.connected && this.controlBar.state?.mine === true; }
-  // Explicit Agent sessions remain watchers until the user clicks Take over.
+  private agentViewer: AgentViewer | null = null;
+  get agentReadOnly(): boolean { return this.controlBar.state?.agentReadOnly === true || /^agent_[a-f0-9]{32}$/.test(this.raw); }
+  private ensureAgentViewer(): AgentViewer {
+    if (!this.agentViewer) {
+      this.agentViewer = new AgentViewer(); this.el.classList.add('agent-readonly');
+      this.el.append(this.agentViewer.el);
+    }
+    this.agentViewer.el.style.setProperty('--agent-font-size', `${this.term.options.fontSize ?? 14}px`);
+    return this.agentViewer;
+  }
+  get readOnly(): boolean { return this.agentReadOnly || this.controlBar.state?.readOnly === true; }
+  get canOperate(): boolean { return !this.agentReadOnly && this.connected && this.controlBar.state?.mine === true; }
+  // Agent viewers keep local snapshots without taking terminal control.
   // Watching may browse history, but must not send keyboard/mouse input as an operator.
   get canViewHistory(): boolean { return this.connected && (this.readOnly || (this.controlBar.state?.explicit === true && !this.canOperate)); }
-  get canInteract(): boolean { return this.connected && this.controlBar.state?.readOnly === false && (this.controlBar.state?.explicit !== true || this.canOperate); }
+  get canInteract(): boolean { return !this.agentReadOnly && this.connected && this.controlBar.state?.readOnly === false && (this.controlBar.state?.explicit !== true || this.canOperate); }
   interact(): void { if (this.canInteract) this.controlAction('interact'); }
   releaseControl(): void { this.controlAction('release'); }
   private controlAction(action: string, target?: string): void {
+    if (this.agentReadOnly) return;
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({type:'control', action, target}));
   }
   private receiveControl(state: ControlState): void {
     const previouslyOwned = this.canOperate;
     this.controlBar.update(state);
+    if (state.agentReadOnly) this.ensureAgentViewer();
     this.tryPrefillCommand();
     this.term.options.disableStdin = !this.canInteract;
     for (const label of document.querySelectorAll<HTMLElement>('[data-control-session]')) {
@@ -1707,6 +1721,7 @@ class Session {
     this.el.addEventListener(
       'touchstart',
       (e: TouchEvent) => {
+        if (this.agentReadOnly) return;
         this.stopTouchScroll();
         motion.start(performance.now());
         // A touch that lands on a selection handle is that handle's to deal
@@ -1788,6 +1803,7 @@ class Session {
     this.el.addEventListener(
       'touchmove',
       (e: TouchEvent) => {
+        if (this.agentReadOnly) return;
         if (e.touches.length === 2 && pinch.active) {
           e.preventDefault();
           e.stopPropagation();
@@ -1855,6 +1871,7 @@ class Session {
     this.el.addEventListener(
       'touchend',
       (e: TouchEvent) => {
+        if (this.agentReadOnly) return;
         if (!pressFired) return;
         pressFired = false;
         e.preventDefault();
@@ -1915,6 +1932,7 @@ class Session {
 
   // Emit |ticks| SGR mouse-wheel events (Cb 64 = up, 65 = down; press-only).
   private sendWheel(ticks: number, col: number, row: number): void {
+    if (this.agentReadOnly) { this.ensureAgentViewer().wheel(ticks); return; }
     if (this.canViewHistory) {
       this.ws?.send(JSON.stringify({type:'view-scroll', ticks, col, row}));
       return;
@@ -1931,6 +1949,7 @@ class Session {
   stopTouchScroll: () => void = () => {};
 
   async scrollHistory(action: 'up' | 'down' | 'top' | 'bottom'): Promise<void> {
+    if (this.agentReadOnly) { this.ensureAgentViewer().scroll(action); return; }
     this.stopTouchScroll();
     if (action === 'bottom' && activeSession === this) pager.setPagedUp(false);
     if (!this.canInteract && !this.canViewHistory) {
@@ -1954,6 +1973,7 @@ class Session {
   // has no box — but they are all the same size, so the others take the number
   // from here instead of being left at whatever they started with.
   fit(): void {
+    if (this.agentReadOnly) { this.ensureAgentViewer(); return; }
     if (!this.canOperate && this.controlBar.state?.size) {
       const size = this.controlBar.state.size; this.term.resize(size.cols,size.rows); return;
     }
@@ -2043,6 +2063,7 @@ class Session {
 
   /** Show one of this tab's terminals, or both. */
   setView(mode: LayoutMode): void {
+    if (this.agentReadOnly && mode !== "one") return;
     if (isShare && mode !== 'one') return;
     if (this.isMate) return;
     this.view = mode;
@@ -2091,6 +2112,7 @@ class Session {
 
   focus(): void {
     if (fileBrowserOpen || document.querySelector('.session-note-editor')) return;
+    if (this.agentReadOnly) { this.ensureAgentViewer().viewport.focus({preventScroll:true}); return; }
     if (this.keyboardLock) this.keyboardLock.focus();
     else this.term.focus();
   }
@@ -2100,6 +2122,7 @@ class Session {
   }
 
   openKeyboard(): void {
+    if (this.agentReadOnly) return;
     this.stopTouchScroll();
     if (this.keyboardLock) this.keyboardLock.open();
     else this.term.focus();
@@ -2118,6 +2141,7 @@ class Session {
   // Ask the server to kill this tmux session for good (used on tab close).
   // Over HTTP, not this tab's socket: a tab that was never opened has none.
   kill(): void {
+    if (this.agentReadOnly) return;
     void fetch(hostUrl(this.host, '/api/sessions/kill'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2331,6 +2355,8 @@ class Session {
         try {
           const msg = JSON.parse(ev.data) as { type?: string };
           if (msg.type === 'control') { this.receiveControl(msg as ControlState); return; }
+          if (msg.type === 'agent-snapshot') { this.ensureAgentViewer().update(msg as unknown as AgentSnapshot); this.hasRenderedOutput = true; this.markOutputActivity(); return; }
+          if (msg.type === 'agent-snapshot-error') { this.ensureAgentViewer().error((msg as {message:string}).message); return; }
           if (msg.type === 'info') { flashStatus((msg as {message:string}).message, 2500); return; }
           // The session was closed (killed) here or on another device: drop the
           // tab and do NOT reconnect — reconnecting would recreate the session
@@ -2940,7 +2966,7 @@ function openTabMenu(s: Session, x: number, y: number): void {
   menu.append(title);
   if (s.readOnly) {
     const status = document.createElement('div'); status.className = 'ps-menu-title';
-    status.textContent = '已分享 · 只读，可滚动查看，不能输入'; menu.append(status);
+    status.textContent = s.agentReadOnly ? '远程 Agent · 只读，滚动不影响远程执行' : '已分享 · 只读，可滚动查看，不能输入'; menu.append(status);
   }
   const item = (text: string, onPick: () => void, cls = ''): void => {
     if (isShare && /编辑|新建|关闭|置顶/.test(text)) return;
@@ -2954,7 +2980,7 @@ function openTabMenu(s: Session, x: number, y: number): void {
   item(isPinned(s) ? '取消置顶' : '置顶到目录最前', () => pinSession(s.name, !isPinned(s)));
   item('编辑会话信息', () => void showSessionNote(s));
   item('复制目录绝对路径', () => void copyCurrentPath(s, false));
-  item('关闭会话', () => confirmCloseSession(s), 'danger');
+  if (!s.agentReadOnly) item('关闭会话', () => confirmCloseSession(s), 'danger');
   tabMenu = menu;
   dismissMobileTabMenu = mountMobileActions(menu, closeTabMenu, sidebar.actionContext(s.name));
   if (dismissMobileTabMenu) return;
@@ -3221,7 +3247,7 @@ function buildTab(s: Session): void {
   label.textContent = s.displayName;
   const close = document.createElement('span');
   close.className = 'tab-close';
-  if (isShare) close.style.display = 'none';
+  if (isShare || s.agentReadOnly) close.style.display = 'none';
   close.textContent = '×';
   close.title = '关闭标签并结束会话';
   // Shown only once there is a remote to tell apart from (CSS: .has-remotes).
@@ -3467,7 +3493,7 @@ function activateSession(s: Session): void {
 /** Ask, then close each of `list` (their tmux sessions end, and what runs in them). */
 function confirmCloseSession(list: Session | Session[]): void {
   if (isShare) return;
-  const many = Array.isArray(list) ? list : [list];
+  const many = (Array.isArray(list) ? list : [list]).filter(s => !s.agentReadOnly);
   if (!many.length || document.querySelector('.confirm-overlay')) return;
   const overlay = document.createElement('div');
   overlay.className = 'paste-overlay confirm-overlay';
@@ -3550,7 +3576,7 @@ function addFallbackTab(): void {
 
 function closeSessionBatch(list: readonly Session[]): void {
   if (isShare) return;
-  const closing = new Set(list.filter(s => sessions.includes(s)));
+  const closing = new Set(list.filter(s => sessions.includes(s) && !s.agentReadOnly));
   if (!closing.size) return;
   const previous = activeTab;
   const previousIndex = previous ? sessions.indexOf(previous) : 0;
@@ -6385,6 +6411,10 @@ bindIntentionalClick(sheetOverlay, (e) => {
 }, sheet);
 
 function openSheet(): void {
+  splitRow.style.display = isShare || activeSession?.agentReadOnly ? 'none' : '';
+  for (const row of sheet.querySelectorAll<HTMLElement>('.sheet-row')) {
+    if (row.textContent?.includes('重启当前会话')) row.style.display = activeSession?.agentReadOnly ? 'none' : '';
+  }
   queueMicrotask(refreshPager);
   refreshSettingsTarget();
   refreshStatusModeUI();

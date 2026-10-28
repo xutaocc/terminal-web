@@ -1,6 +1,7 @@
 import { TerminalControl, type ControlClient, type ControlAction } from './terminal-control.js';
 import http from "node:http";
 import https from "node:https";
+import { AgentViewerHub } from './agent-viewer.js';
 import { AgentApi } from "./agent-api.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -901,6 +902,7 @@ async function handleKillSession(
     return;
   }
   const name = sanitizeSession(obj.name);
+  if (agentApi.isAgent(name.replace(/__b$/, ""))) { sendJsonHttp(res, 403, {error: "AGENT_READ_ONLY"}); return; }
   // A tab is up to two sessions — its own and, if it was ever split, the one
   // named after it. Closing the tab closes both; nothing else is touched, and
   // the second name is derived here rather than taken from the request, so a
@@ -1882,6 +1884,14 @@ const agentApi = new AgentApi({
   },
 });
 agentApi.markRecovered();
+const agentViewerHub = new AgentViewerHub(name => new Promise((resolve, reject) => {
+  execFile(TMUX, ['capture-pane', '-p', '-S', '-2000', '-t', `=${name}:`],
+    {timeout: 3000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8'}, (error, stdout) => {
+      if (error) { reject(error); return; }
+      const lines = stdout.replace(/\r\n/g, '\n').split('\n');
+      resolve({text: lines.slice(-2000).join('\n'), truncated: lines.length > 2000, limit: 2000});
+    });
+}));
 const controlTimer = setInterval(() => terminalControl.sweep(), 500); controlTimer.unref();
 const controlMetadata = new WeakMap<WebSocket, { resume: string; principal: string; label: string; admin: boolean }>();
 const socketBrowsers = new WeakMap<WebSocket, string>();
@@ -1928,6 +1938,14 @@ wss.on("connection", (rawWs: WebSocket, req: http.IncomingMessage) => {
     requested = null;
   }
   const session = sanitizeSession(requested ?? config.defaultSession);
+  if (agentApi.isAgent(session.replace(/__b$/, ''))) {
+    if (shareScope || session.endsWith('__b')) { ws.close(1008, 'AGENT_READ_ONLY'); return; }
+    if (isClosed(session)) { sendJson(ws, {type:'closed'}); ws.close(1000); return; }
+    addSessionClient(session, ws);
+    ws.once('close', () => removeSessionClient(session, ws));
+    agentViewerHub.attach(ws, session);
+    return;
+  }
   const controlUrl = new URL(req.url ?? '/ws', 'http://localhost');
   const resume = /^[a-f0-9]{48}$/.test(controlUrl.searchParams.get('client') ?? '') ? controlUrl.searchParams.get('client')! : crypto.randomBytes(24).toString('hex');
   controlMetadata.set(ws, { resume, principal: shareScope ? `share:${shareScope.grant ?? shareScope.session.identity}` : 'admin',

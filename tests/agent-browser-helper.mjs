@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import WebSocket from 'ws';
 
-export async function verifyAgentViewer({ base, token, session, mux, directory }) {
+export async function verifyAgentViewer({ base, token, session, mux, directory, write }) {
   const listener = net.createServer().listen(0, '127.0.0.1'); await once(listener, 'listening');
   const port = listener.address().port; await new Promise(r => listener.close(r));
   const chrome = spawn(process.env.BROWSER_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -30,20 +30,29 @@ export async function verifyAgentViewer({ base, token, session, mux, directory }
     await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:1,mobile:false});
     await cdp('Page.navigate',{url:`${base}/?session=${session.name}`});
     await until(()=>evaluate("!!document.querySelector('.term-pane:not(.hidden) .terminal-control:not([hidden])')"),'Agent control bar visible');
-    const point=await evaluate("(()=>{const r=document.querySelector('.term-pane:not(.hidden) .xterm-screen').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+    const viewport = "document.querySelector('.term-pane:not(.hidden) .agent-viewer-viewport')";
+    await until(()=>evaluate(`${viewport}?.textContent.includes('HISTORY_200')`),'snapshot visible');
+    assert.equal(await evaluate("document.querySelector('.terminal-control button') === null"),true);
+    const before=await evaluate(`${viewport}.scrollTop`), originalMode=mode();
+    const point=await evaluate(`(()=>{const r=${viewport}.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:-400});
-    await until(()=>sent.some(m=>m.type==='view-scroll'),'wheel uses watcher scroll protocol');
-    await until(()=>mode()==='copy-mode','actual mouse wheel enters history');
-    assert(!sent.some(m=>m.type==='control'&&m.action==='takeover'));
-    await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:400});
-    await until(()=>sent.some(m=>m.type==='view-scroll'&&m.ticks<0),'downward wheel uses watcher scroll');
-    await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
-    await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});
+    await until(async()=>await evaluate(`${viewport}.scrollTop`)<before,'wheel scrolls local history');
+    await evaluate(`${viewport}.focus()`);
+    const wheelTop=await evaluate(`${viewport}.scrollTop`);
     await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'PageUp',code:'PageUp',windowsVirtualKeyCode:33});
     await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'PageUp',code:'PageUp',windowsVirtualKeyCode:33});
-    await until(()=>sent.some(m=>m.type==='scroll'&&m.action==='up'),'PageUp uses watcher history protocol');
+    await until(async()=>await evaluate(`${viewport}.scrollTop`)<wheelTop,'PageUp scrolls locally');
+    const frozen=await evaluate(`${viewport}.textContent`), top=await evaluate(`${viewport}.scrollTop`);
+    await write("Write-Output ('VIEWER_' + 'CONTINUES')\r");
+    await until(()=>evaluate("document.querySelector('.agent-viewer-tools').textContent.includes('有新输出')"),'new output while reading');
+    assert.equal(await evaluate(`${viewport}.textContent`),frozen);
+    assert.equal(await evaluate(`${viewport}.scrollTop`),top);
+    await evaluate("document.querySelector('.agent-viewer-tools button').click()");
+    await until(()=>evaluate(`${viewport}.textContent.includes('VIEWER_CONTINUES')`),'return live shows pending output');
+    assert.equal(mode(),originalMode);
+    assert(!sent.some(m=>['view-scroll','scroll','resize'].includes(m.type)||m.type==='control'&&m.action==='takeover'));
     const screenshot=await cdp('Page.captureScreenshot',{format:'png'});
     await fs.writeFile(path.join(directory,'agent-viewer.png'),Buffer.from(screenshot.data,'base64'));
-    console.log('PASS Chrome viewer wheel up/down and PageUp; screenshot: '+path.join(directory,'agent-viewer.png'));
+    console.log('PASS Chrome read-only snapshot, wheel/PageUp, frozen history, concurrent remote input and return live; screenshot: '+path.join(directory,'agent-viewer.png'));
   } finally {socket?.terminate();if(chrome.exitCode===null)chrome.kill();}
 }

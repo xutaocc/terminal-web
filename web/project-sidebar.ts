@@ -64,6 +64,7 @@ export interface SidebarHooks {
   /** Pin a session to the top of its directory card, or unpin it. */
   pinSession(name: string, pinned: boolean): void;
   /** Close these sessions (their tmux sessions end); the page asks first. */
+  canClose?(name: string): boolean;
   closeSessions(names: string[]): void;
   /** Copy the clicked session's current absolute directory without activating it. */
   copySessionDirectory(names: string[]): void;
@@ -1026,7 +1027,8 @@ export class ProjectSidebar {
     const sep2 = document.createElement('div');
     sep2.className = 'ps-menu-sep';
     menu.append(sep2);
-    item(pinned === undefined ? '关闭这个目录的全部会话' : '关闭会话', () => this.hooks.closeSessions(names), false, true);
+    const closable = names.filter(name => this.hooks.canClose?.(name) !== false);
+    if (closable.length) item(pinned === undefined ? '关闭目录中可操作的会话' : '关闭会话', () => this.hooks.closeSessions(closable), false, true);
     this.menu = menu;
     this.dismissMobileMenu = mountMobileActions(menu, () => this.closeMenu(), this.actionContext(names[0], names.length, pinned === undefined));
     if (this.dismissMobileMenu) return;
