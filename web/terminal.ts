@@ -670,7 +670,6 @@ const sidebar = new ProjectSidebar({
   readOnly: isShare,
   canClose: () => true,
   isRemoteAgent: name => !!sessions.find(s => s.name === name)?.agentReadOnly,
-  cleanupAgent: name => { const s = sessions.find(s => s.name === name); if (s) { closeDrawer(); void closeAgentSession(s, true); } },
   recentEntries: () => recentVisitEntries(),
   recentLimit: () => recentVisitLimit,
   setRecentLimit: count => setRecentVisitLimit(count),
@@ -3043,7 +3042,6 @@ function openTabMenu(s: Session, x: number, y: number): void {
   item('编辑会话信息', () => void showSessionNote(s));
   item('复制目录绝对路径', () => void copyCurrentPath(s, false));
   item(s.agentReadOnly ? '关闭远程会话' : '关闭会话', () => confirmCloseSession(s), 'danger');
-  if (s.agentReadOnly) item('清理失效记录', () => { void closeAgentSession(s, true); }, 'danger');
   tabMenu = menu;
   dismissMobileTabMenu = mountMobileActions(menu, closeTabMenu, sidebar.actionContext(s.name));
   if (dismissMobileTabMenu) return;
@@ -3555,24 +3553,24 @@ function activateSession(s: Session): void {
 // Ask before killing a session: closing a tab terminates its tmux session and
 // any programs running in it, so make the user confirm first.
 /** Ask, then close each of `list` (their tmux sessions end, and what runs in them). */
-async function closeAgentSession(s: Session, cleanup = false): Promise<void> {
+async function closeAgentSession(s: Session): Promise<void> {
   if (isShare) return;
   const identity = `${hostTitle(s.host)} · ${s.displayName}\n会话 ID：${agentSessionId(s.raw) ?? s.raw}`;
-  const title = cleanup ? '清理失效远程会话' : '关闭远程会话';
-  if (!await confirmAction(`${identity}\n${cleanup ? '仅在远程终端已不存在时清理标签，不终止运行中的终端。' : '这是远程控制会话，关闭会终止其终端，可能中断正在执行的任务。'}操作记录保留。`, title, cleanup ? '清理记录' : '关闭并结束')) return;
+  const title = '关闭远程会话';
+  if (!await confirmAction(`${identity}\n这是远程控制会话。如果终端仍在运行，关闭可能中断正在执行的任务；如果终端已不存在，将移除残留标签。已有操作历史保留。`, title, '确认关闭')) return;
   const send = (force: boolean) => fetch(hostUrl(s.host, '/api/sessions/close-agent'), {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: s.raw, force, cleanup}),
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: s.raw, force}),
   });
   try {
     let response = await send(false);
     let result = await response.json();
-    if (!response.ok && result.error === 'SESSION_BUSY' && !cleanup) {
+    if (!response.ok && result.error === 'SESSION_BUSY') {
       if (!await confirmAction(`${identity}\n该会话正在被控制，或正在关闭。强制关闭会撤销控制权并可能中断其他人的任务。确定强制关闭？`, '强制关闭远程会话', '强制关闭')) return;
       response = await send(true); result = await response.json();
     }
-    if (!response.ok) throw new Error(result.error === 'SESSION_STILL_RUNNING' ? '终端仍在运行，请使用关闭远程会话。' : result.error === 'SESSION_BUSY' ? '会话仍被占用或正在关闭，请稍后再试。' : '无法确认远端关闭成功，请检查连接后重试。');
+    if (!response.ok) throw new Error(result.error === 'SESSION_BUSY' ? '会话仍被占用或正在关闭，请稍后再试。' : '无法确认远端关闭成功，请检查连接后重试。');
     closeSessionBatch([s], true);
-    flashStatus(cleanup ? '失效记录已清理，历史保留' : '远程会话已关闭，历史保留', 4000);
+    flashStatus('远程会话标签已移除，已有操作历史保留', 4000);
   } catch (error) { flashStatus((error as Error).message, 6000); }
 }
 

@@ -67,7 +67,6 @@ export interface SidebarHooks {
   /** Close these sessions (their tmux sessions end); the page asks first. */
   canClose?(name: string): boolean;
   isRemoteAgent?(name: string): boolean;
-  cleanupAgent?(name: string): void;
   closeSessions(names: string[]): void;
   /** Copy the clicked session's current absolute directory without activating it. */
   copySessionDirectory(names: string[]): void;
@@ -1080,7 +1079,6 @@ export class ProjectSidebar {
     const closable = names.filter(name => this.hooks.canClose?.(name) !== false);
     if (names.length === 1 && this.hooks.isRemoteAgent?.(names[0])) {
       item('关闭远程会话', () => this.hooks.closeSessions(names), false, true);
-      item('清理失效记录', () => this.hooks.cleanupAgent?.(names[0]), false, true);
     } else if (closable.length) item(pinned === undefined ? '关闭目录中可操作的会话' : '关闭会话', () => this.hooks.closeSessions(closable), false, true);
     this.menu = menu;
     this.dismissMobileMenu = mountMobileActions(menu, () => this.closeMenu(), this.actionContext(names[0], names.length, pinned === undefined));
