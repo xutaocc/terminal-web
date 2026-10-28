@@ -1,3 +1,4 @@
+import { decodeCommandPreview, withCommandPreview } from './command-preview.js';
 import { AgentJournal } from './agent-journal.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,7 +91,7 @@ export class AgentApi {
   }
   history(name: string): unknown {
     const s = [...this.sessions.values()].find(s => s.name === name);
-    return s ? { label: s.label, records: Object.values(s.requests).map(r => r.result) } : null;
+    return s ? { label: s.label, records: Object.values(s.requests).map(r => withCommandPreview(r.result)) } : null;
   }
   private save(): void {
     fs.mkdirSync(path.dirname(this.backend.file), { recursive: true });
@@ -190,7 +191,7 @@ export class AgentApi {
     if (old) { if (old.hash !== hash) throw new ApiError(409, 'REQUEST_CONFLICT'); return old.result; }
     if (Object.keys(store).length >= 10000) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
     // Durable uncertainty BEFORE writing any terminal bytes. Never replay an ambiguous request.
-    if (Buffer.byteLength(JSON.stringify(store)) > 8 * 1024 * 1024) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
+    if (Buffer.byteLength(JSON.stringify(store, (key, value) => ['decodedInput', 'decodedEncoding', 'decodedScope'].includes(key) ? undefined : value)) > 8 * 1024 * 1024) throw new ApiError(429, 'REQUEST_HISTORY_FULL');
     store[body.requestId] = { hash, result: { ...metadata, state: 'unknown', requestId: body.requestId, time: new Date().toISOString(),
       ...(typeof body.text === 'string' ? { input: body.sensitive ? '[sensitive input]' : body.text } : {}) } }; this.save();
     const result = action(); store[body.requestId].result = result; this.save(); return result;
@@ -249,7 +250,7 @@ export class AgentApi {
         if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, 'INVALID_PAGINATION');
         const kind = url.searchParams.get('kind') ?? 'requests';
         if (!['requests', 'output'].includes(kind)) throw new ApiError(400, 'INVALID_HISTORY_KIND');
-        const records = Object.values(s.requests).map(r => r.result);
+        const records = Object.values(s.requests).map(r => withCommandPreview(r.result));
         const page: unknown[] = []; let bytes = 0;
         for (const record of records.slice(after, after + limit)) {
           const size = Buffer.byteLength(JSON.stringify(record));
@@ -310,12 +311,13 @@ export class AgentApi {
         if (!s.requests[body.requestId] && isKeyboardInput(body.text)) await this.backend.prepareInput(s.name, authorized);
         const directory = s.requests[body.requestId] ? null : await this.directory(s);
         if (!authorized()) throw new ApiError(409, 'CONTROL_LOST');
+        const preview = decodeCommandPreview(body.text, !!body.sensitive) ?? {};
         const result = this.request(s.requests, body, () => {
           s.lastActivityAt = new Date().toISOString();
           this.event(r, 'input', body.sensitive ? '[sensitive input]' : body.text);
           r.proc.write(body.text);
-          return { requestId: body.requestId, state: 'sent', completion: 'unknown', directoryBeforeInput: directory, time: new Date().toISOString(), input: body.sensitive ? '[sensitive input]' : body.text };
-        }, { directoryBeforeInput: directory }); reply(200, result); return true;
+          return { ...preview, requestId: body.requestId, state: 'sent', completion: 'unknown', directoryBeforeInput: directory, time: new Date().toISOString(), input: body.sensitive ? '[sensitive input]' : body.text };
+        }, { ...preview, directoryBeforeInput: directory }); reply(200, result); return true;
       }
       throw new ApiError(404, 'NOT_FOUND');
     } catch (e) { reply(e instanceof ApiError ? e.status : 500, { error: e instanceof ApiError ? e.message : 'INTERNAL_ERROR' }); }

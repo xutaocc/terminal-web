@@ -257,3 +257,9 @@ session history --session UUID --kind output --after 0 --limit 50
 ### Agent 会话类型标识
 
 标签栏、侧边栏和移动端标题的 🌐 是前端根据内部 Agent 身份生成的独立标识，提示“远程 Agent 会话”，不会写回显示名称或随改名消失。旧名称开头已有的 🌐 仅在展示时去重；其他位置的 emoji 和普通会话名称保持原样。锁图标仍表示只读/分享状态，与 Agent 类型标识分开。
+
+### Base64 操作记录预览
+
+后端对完整的 PowerShell `-EncodedCommand`（UTF-16LE）、`node -e "eval(Buffer.from(...,'base64').toString())"`（UTF-8）及常用 UTF-8 ScriptBlock 包装自动生成 `decodedInput`、`decodedEncoding`、`decodedScope: "wrapper-body"`。原始 input 保留，发送内容和请求去重哈希不变；这些字段只是展示数据，不执行、不递归解码。网页“操作记录”和 CLI history 都会返回字段；旧记录读取时临时补充，不批量改写历史文件。
+
+仅识别明确的完整包装，其他格式、非法 Base64/字符编码、二进制控制字符或超过 8192 字符的解码内容均跳过。没有预览字段不代表原命令不可执行。敏感输入继续只保存 `[sensitive input]`。可选预览不计入原有请求历史容量门槛，但会增加一定磁盘占用。不要为了得到预览而重复执行命令。
