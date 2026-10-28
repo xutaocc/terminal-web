@@ -31,6 +31,7 @@ export interface AgentBackend {
   prepareInput(name: string, authorized: () => boolean): Promise<void>;
   output?(name: string): void;
   register(name: string, label: string, cwd: string): void;
+  rename?(name: string, label: string): void;
   remove(name: string): Promise<void>;
 }
 
@@ -58,6 +59,18 @@ export class AgentApi {
     }, 5000); timer.unref();
   }
   isAgent(name: string): boolean { return [...this.sessions.values()].some(s => s.name === name); }
+  /** Update presentation only. Neither terminal identity nor control ownership changes. */
+  rename(name: string, label: string): boolean {
+    const s = [...this.sessions.values()].find(s => s.name === name);
+    if (!s) return false;
+    if (s.ended) throw new ApiError(410, 'SESSION_GONE');
+    if (typeof label !== 'string' || !label.trim() || label.trim().length > 64 || /[\x00-\x1f\x7f]/.test(label)) throw new ApiError(400, 'INVALID_LABEL');
+    const previous = s.label;
+    s.label = label.trim();
+    try { this.save(); } catch (error) { s.label = previous; throw error; }
+    this.backend.rename?.(s.name, s.label);
+    return true;
+  }
   history(name: string): unknown {
     const s = [...this.sessions.values()].find(s => s.name === name);
     return s ? { label: s.label, records: Object.values(s.requests).map(r => r.result) } : null;
@@ -213,6 +226,12 @@ export class AgentApi {
       const s = match && this.sessions.get(match[1]); if (!s) throw new ApiError(404, 'SESSION_NOT_FOUND');
       const action = match![2];
       if (!action && method === 'GET') { const {requests, ...info} = s; reply(200, info); return true; }
+      if (!action && method === 'PATCH') {
+        const body = await this.body(req);
+        if (body.generation !== s.generation) throw new ApiError(409, 'GENERATION_MISMATCH');
+        this.rename(s.name, body.label);
+        reply(200, { sessionId: s.id, name: s.name, label: s.label, generation: s.generation }); return true;
+      }
       if (action === 'requests' && method === 'GET') { const id = url.searchParams.get('id') ?? ''; reply(200, s.requests[id]?.result ?? { state: 'not_found' }); return true; }
       // A dead collector must not make an orphan session impossible to close.
       if (!action && method === 'DELETE') {

@@ -550,8 +550,10 @@ async function handleSessionNote(req: http.IncomingMessage, res: http.ServerResp
     sendJsonHttp(res, 409, { error: 'Could not save session note' }); return;
   }
   if (typeof body.displayName === 'string') {
-    sessionStore.update({ name, displayName: body.displayName.trim() });
-    setWebTabLabel(name, body.displayName.trim());
+    if (!agentApi.rename(name, body.displayName.trim())) {
+      sessionStore.update({ name, displayName: body.displayName.trim() });
+      setWebTabLabel(name, body.displayName.trim());
+    }
   }
   sendJsonHttp(res, 200, { ...note, displayName: body.displayName });
 }
@@ -809,6 +811,11 @@ async function handleRenameSession(
   const name = sanitizeSession(obj.name);
   const displayName =
     typeof obj.displayName === "string" ? obj.displayName : name;
+  if (agentApi.isAgent(name)) {
+    try { agentApi.rename(name, displayName); }
+    catch (error) { sendJsonHttp(res, 400, { error: (error as Error).message }); return; }
+    sendJsonHttp(res, 200, { ok: true }); return;
+  }
   if (!isClosed(name)) sessionStore.update({ name,
     displayName: displayName.replace(/[\x00-\x1f]/g, ' ').trim().slice(0, 64) || name });
   setWebTabLabel(name, displayName);
@@ -1873,6 +1880,10 @@ const agentApi = new AgentApi({
     await new Promise<void>((resolve, reject) => execFile(TMUX,
       ['if-shell', '-F', '-t', target, '#{==:#{pane_mode},copy-mode}', `send-keys -t ${target} -X cancel`],
       {timeout: 3000}, error => error ? reject(error) : resolve()));
+  },
+  rename(name, label) {
+    sessionStore.update({ name, displayName: label });
+    setWebTabLabel(name, label);
   },
   register(name, label, cwd) {
     sessionStore.update({name, displayName: label, cwd}); liveSessions.add(name);

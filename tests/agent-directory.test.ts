@@ -43,7 +43,7 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
     });
     return { status: response.status, body: await response.json() };
   };
-  return { dir, spawned, create };
+  return { dir, spawned, create, api, port };
 }
 test('explicit directories must exist; valid creates remain idempotent', async t => {
   const { dir, spawned, create } = await fixture(t);
@@ -68,4 +68,30 @@ test('Windows default scratch directory is provisioned on first use', { skip: pr
   assert.equal(result.status, 200);
   assert.equal(fs.statSync(cwd).isDirectory(), true);
   assert.deepEqual(spawned, [cwd]);
+});
+
+test('rename API and browser path preserve identity and persist across restart', async t => {
+  const { dir, spawned, create, api, port } = await fixture(t);
+  const created = (await create(dir)).body;
+  const url = `http://127.0.0.1:${port}/api/agent/v1/sessions/${created.sessionId}`;
+  const patch = (label: unknown, generation = created.generation, token = 'test-token') => fetch(url, {
+    method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, generation })
+  });
+  assert.equal((await patch('new', created.generation, 'wrong')).status, 401);
+  assert.equal((await patch('new', randomUUID())).status, 409);
+  for (const label of ['', '  ', 'x'.repeat(65), 'bad\nname']) assert.equal((await patch(label)).status, 400);
+  const renamed = await (await patch('电脑维护')).json();
+  assert.equal(renamed.sessionId, created.sessionId);
+  assert.equal(renamed.name, created.name);
+  assert.equal(renamed.label, '电脑维护');
+  assert.equal(api.rename(created.name, '浏览器标签'), true);
+  const stored = JSON.parse(fs.readFileSync(path.join(dir, 'sessions.json'), 'utf8')).sessions[0];
+  assert.equal(stored.label, '浏览器标签');
+  assert.equal(stored.id, created.sessionId);
+  assert.equal(spawned.length, 1);
+  const restored = new AgentApi({ enabled: true, token: 'test-token', file: path.join(dir, 'sessions.json'),
+    control: new TerminalControl(), spawn: async () => { throw Error('must not spawn'); },
+    register() {}, prepareInput: async () => {}, remove: async () => {} });
+  assert.equal((restored.history(created.name) as {label: string}).label, '浏览器标签');
 });

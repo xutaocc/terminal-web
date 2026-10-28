@@ -59,6 +59,10 @@ async function main() {
     state.lastRequestId = requestId; save(); if (action !== 'attach') process.stderr.write(`requestId=${requestId}\n`);
     return call('/input', 'POST', body);
   };
+  if (sessionCommand && action === 'rename') {
+    if (typeof options.name !== 'string' || !options.name.trim()) throw Error('--name is required');
+    output(await call('', 'PATCH', { generation: state.generation, label: options.name })); return;
+  }
   if (action === 'status') { output(await call('', 'GET')); return; }
   if (action === 'result') { output(await call('/requests?id=' + encodeURIComponent(options['request-id'] || state.lastRequestId || ''), 'GET')); return; }
   if (action === 'read') {
@@ -108,6 +112,6 @@ async function main() {
     if (typeof options.text !== 'string') throw Error('--text TEXT is required');
     output(await send(options.text + (options.enter ? '\r' : ''))); return;
   }
-  throw Error('Commands: doctor, session create/list/close, status, exec, input, interrupt, read, result, attach, detach');
+  throw Error('Commands: doctor, session create/list/rename/close, status, exec, input, interrupt, read, result, attach, detach');
 }
 main().catch(e => { process.stderr.write(String(e.message) + '\n'); process.exitCode = 1; });

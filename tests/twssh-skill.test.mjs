@@ -40,6 +40,7 @@ async function fixture(t) {
     else if (route.startsWith('/sessions/')) {
       value = sessions.get(route.split('/')[2]);
       if (!value) { res.statusCode = 404; value = { error: 'SESSION_NOT_FOUND' }; }
+      else if (req.method === 'PATCH') value.label = body.label;
     }
     res.end(JSON.stringify(value));
   });
@@ -134,4 +135,19 @@ test('bundled client matches canonical CLI', () => {
       normalizeEol(fs.readFileSync(new URL(`../remote-agent/client/${file}`, import.meta.url), 'utf8')),
       `${file}: bundled client must match canonical CLI apart from CRLF/LF line endings`);
   }
+});
+
+test('rename updates registered label and identity without terminal input', async t => {
+  const { dir, requests, script } = await fixture(t);
+  const created = JSON.parse((await run(script, ['session', 'create', '--name', 'before'], dir)).out);
+  const before = requests.length;
+  const renamed = await run(script, ['session', 'rename', '--session', created.sessionId, '--name', '电脑维护'], dir);
+  assert.equal(renamed.code, 0, renamed.err);
+  assert.equal(JSON.parse(renamed.out).label, '电脑维护');
+  assert.equal(requests.slice(before).some(r => /input|control/.test(r.url)), false);
+  const identity = await run(script, ['session', 'identity', '--session', created.sessionId], dir);
+  assert.equal(JSON.parse(identity.out).displayName, '电脑维护');
+  assert.equal(JSON.parse(identity.out).sessionId, created.sessionId);
+  const local = JSON.parse((await run(script, ['session', 'local'], dir)).out);
+  assert.equal(local.sessions[created.sessionId].name, '电脑维护');
 });

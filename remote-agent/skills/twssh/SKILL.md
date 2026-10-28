@@ -86,6 +86,10 @@ node "<skill>/scripts/install.mjs" dir /absolute/path/to/skills
 
 - 开始远程任务时，对已登记会话调用 `session identity --session SID`，核对服务端 label 和完整 sessionId。此查询不发送 Shell 输入。
 - 面向用户统一使用 `目标 → 显示名称 · #短ID`，结束时附完整 sessionId。短 ID 仅用于展示，所有操作仍传完整 ID。
-- `name` 是内部终端标识，不能用展示名称替换。API label 与网页 displayName 当前分别存储；发现不一致应说明，不自动改写任何一个。
+- `name` 是内部终端标识，不能用展示名称替换。新版服务将 API label 与网页 displayName 通过统一改名逻辑同步；不修改内部 name。
 - 常规命令 stderr 展示本地登记名称，可能过期；需要最新名称时使用 identity。禁止仅凭短 ID 选择会话。
 - PowerShell 命令通过多层 shell 时必须正确保留引号；复杂命令优先使用 UTF-8 文件或 EncodedCommand。命令返回 sent 不等于完成；读取并确认实际结果。
+
+## 修改会话标签
+
+用户要求改名时，先 identity 核对目标与完整 ID，再执行 `session rename --session SID --name "新名称"`，然后 identity 验证。名称为 1–64 个字符，不允许控制字符。只改显示名称，不创建终端、不发送 Shell 输入、不获取控制权。网页改名与此命令使用同一逻辑，名称持久化并在重连后保留。旧服务不支持 PATCH 时报告需升级服务，不直接修改状态文件。操作结果不明时先查询 identity，不盲目重试覆盖其他人的新名称。

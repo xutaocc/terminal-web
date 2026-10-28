@@ -126,6 +126,12 @@ else if (adopting) {
   if (info.ended) fail('该远程会话已关闭，不能恢复。');
   registry[sid] = { name: info.label, initialCwd: info.cwd, lastUsed: new Date().toISOString() };
   saveRegistry(); console.log(JSON.stringify(info));
+} else if (args[0] === 'session' && args[1] === 'rename') {
+  if (!sid) fail('session rename 需要 --session ID。');
+  const output = run(['session', 'rename', cfg.name, ...args.slice(2)], true);
+  const info = JSON.parse(output);
+  registry[sid].name = info.label;
+  saveRegistry(); process.stdout.write(output);
 } else if (args[0] === 'session' && args[1] === 'create') {
   const rest = args.slice(2);
   if (!rest.includes('--cwd')) rest.push('--cwd', cfg.cwd || DEFAULT_CWD);

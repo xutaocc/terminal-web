@@ -226,3 +226,11 @@ node tests/agent-api.integration.mjs
 集成测试使用 Windows psmux、OpenSSL；浏览器测试默认使用本机 Chrome，可用 `BROWSER_BIN` 指定路径。它验证真实会话恢复、CLI、鉴权、去重、只读快照、本地滚动、浏览历史时远端继续执行及浏览器越权请求拒绝。另有 HTTPS 路径，清除 `TW_AGENT_TEST_HTTP` 后运行。
 
 已有 `tests/shares.integration.mjs` 仍使用旧 request/grant 转交协议，而基线服务端已切换分享规则，会在 handover request 处失败；本功能未恢复旧协议。尚未完成独立 Ubuntu 设备及 PowerShell 5.1 验收。
+
+### 会话标签改名
+
+`twssh session rename HOST --session UUID --name "电脑维护"` 仅修改展示名称。项目级 Skill 使用 `node scripts/twssh.mjs --project PROJECT --target TARGET session rename --session UUID --name "电脑维护"`，随后 `session identity --session UUID` 核对。
+
+服务端提供 `PATCH /api/agent/v1/sessions/:id`，Bearer 认证，请求体 `{ "generation": "当前会话 generation", "label": "电脑维护" }`。名称 trim 后 1–64 字符，禁止控制字符；会话已关闭返回 410，generation 不匹配返回 409。接口不会启动 Shell 或获取终端控制权。重复设置相同名称是幂等的；并发改名按服务端接收顺序最后一次成功更新为准。
+
+浏览器改名、备注编辑中的名称修改与 Agent API 共用持久化逻辑，保持内部 name、UUID、目录、终端进程和历史关联不变。新标签由现有会话列表同步机制更新；必要时刷新浏览器。旧版服务需升级后使用此命令。已有不一致名称不会自动猜测迁移，升级后显式改名一次即可统一。
