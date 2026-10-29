@@ -1,3 +1,4 @@
+import { AgentTransfers } from '../remote-agent/transfer-service.mjs';
 import { AgentTasks, AgentFiles, WorkError } from './agent-work.js';
 import { decodeCommandPreview, withCommandPreview } from './command-preview.js';
 import { AgentJournal } from './agent-journal.js';
@@ -47,6 +48,7 @@ export class AgentApi {
   private journal: AgentJournal;
   private tasks: AgentTasks;
   private files: AgentFiles;
+  private transfers = new AgentTransfers();
   private sessions = new Map<string, Session>();
   private runtimes = new Map<string, Runtime>();
   private opening = new Map<string, Promise<Runtime>>();
@@ -270,14 +272,26 @@ export class AgentApi {
   }
   async http(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
     if (!url.pathname.startsWith(PREFIX + '/') && url.pathname !== PREFIX) return false;
-    const reply = (status: number, value: unknown) => { if (!res.destroyed) { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); } };
+    const reply = (status: number, value: unknown) => { if (!res.destroyed && !res.headersSent) { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); } };
     let counted = false;
     try {
       this.auth(req);
       if (this.active >= 64) throw new ApiError(429, 'CONNECTION_LIMIT');
       this.active++; counted = true;
       const route = url.pathname.slice(PREFIX.length), method = req.method;
-      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe', 'rename', 'history', 'cwd-observation', 'tasks-v1', 'files-v1'], completion: false }); return true; }
+      if (route === '/info' && method === 'GET') { reply(200, { version: 1, platform: process.platform, capabilities: ['raw', 'persistent-session', 'cursor', 'dedupe', 'rename', 'history', 'cwd-observation', 'tasks-v1', 'files-v1', 'transfers-v1'], completion: false }); return true; }
+      try {
+        if (route === '/transfers' && method === 'POST') { reply(200, await this.transfers.prepare(await this.body(req))); return true; }
+        const transfer = /^\/transfers\/([a-f0-9-]{36})(\/content)?$/.exec(route);
+        if (transfer) {
+          if (method === 'PUT' && transfer[2]) reply(200, await this.transfers.upload(transfer[1], req));
+          else if (method === 'GET' && transfer[2]) await this.transfers.download(transfer[1], res);
+          else if (method === 'GET') reply(200, this.transfers.status(this.transfers.get(transfer[1])));
+          else if (method === 'DELETE' && !transfer[2]) reply(200, await this.transfers.cleanup(transfer[1]));
+          else throw new WorkError(405, 'METHOD_NOT_ALLOWED');
+          return true;
+        }
+      } catch (error) { if (error instanceof WorkError || error instanceof ApiError) throw error; throw new WorkError(400, error instanceof Error ? error.message : 'Transfer failed'); }
       if (route === '/tasks' && method === 'GET') { reply(200,this.tasks.list()); return true; }
       if (route === '/tasks' && method === 'POST') { reply(200,this.tasks.create(await this.body(req))); return true; }
       const task = /^\/tasks\/([a-f0-9-]{36})(?:\/(logs|cancel))?$/.exec(route);

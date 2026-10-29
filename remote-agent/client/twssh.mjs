@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { request, closeConnections } from './transport.mjs';
 import { pathToFileURL } from 'node:url';
+import { transferCommand } from './transfer-command.mjs';
 import { workCommand } from './work-commands.mjs';
 import { collectEvents, readOptions } from './collect-events.mjs';
 
@@ -44,6 +45,9 @@ export async function runClient(args, runtime = {}) {
     const alias = positional[sessionCommand ? 2 : 1];
     const reading = readOptions(options, action); // Validate before control acquisition or input.
     const host = config.hosts[alias]; if (!host) throw Error('Unknown host. Use host add NAME --url http://HOST:PORT --token-file FILE [--pin SHA256:HEX]');
+    if (command === 'file' && ['push','pull','transfer-status','transfer-cleanup'].includes(action)) {
+      output(await transferCommand(action, options, host, config, alias, save)); return;
+    }
     if (command === 'task' || command === 'file') {
       output(await workCommand(command, action, options, (route, method, body) => request(host, route, method, body), config, alias, save)); return;
     }

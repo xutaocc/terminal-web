@@ -87,7 +87,7 @@ test('new HTTP routes retain auth and reject browser origin',async t=>{
  const server=http.createServer((req,res)=>void api.http(req,res,new URL(req.url!,'http://localhost')));
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise<void>(r=>server.close(()=>r())));
  const base=`http://127.0.0.1:${(server.address() as any).port}/api/agent/v1`;
- for(const route of ['/tasks','/files/search']){
+ for(const route of ['/tasks','/files/search','/transfers']){
   assert.equal((await fetch(base+route,{method:'POST',body:'{}'})).status,401);
   assert.equal((await fetch(base+route,{method:'POST',headers:{Authorization:'Bearer test',Origin:'https://elsewhere'},body:'{}'})).status,403);
  }
@@ -114,4 +114,20 @@ test('CLI task and file workflows operate through authenticated HTTP',async t=>{
  const edits=path.join(dir,'edits.json');fs.writeFileSync(edits,JSON.stringify([{oldText:'world',newText:'agent'}]));
  const patched=await cli(['file','patch','test','--root',dir,'--path','target.txt','--edits',edits,'--expected-hash',read.hash]);assert.equal(patched.state,'written');
  assert.equal(fs.readFileSync(path.join(dir,'target.txt'),'utf8'),'hello agent');
+});
+
+
+test('transfer CLI uses real Agent API auth, hash verification and safe cleanup',async t=>{
+ const {dir}=fixture(t);
+ const api=new AgentApi({enabled:true,token:'test',file:path.join(dir,'transfer-sessions.json'),control:new TerminalControl(),spawn:async()=>{throw Error('unused');},prepareInput:async()=>{},register(){},remove:async()=>{}});
+ const server=http.createServer((req,res)=>void api.http(req,res,new URL(req.url!,'http://localhost')));
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise<void>(r=>server.close(()=>r())));
+ const {runClient}=await import('../remote-agent/client/twssh.mjs');
+ const cli=async(args:string[])=>{let out='';await runClient(args,{home:path.join(dir,'client'),alias:'test',host:{url:`http://127.0.0.1:${(server.address() as any).port}`,token:'test'},write:(text:string)=>out+=text});return JSON.parse(out);};
+ const source=path.join(dir,'input.bin');fs.writeFileSync(source,crypto.randomBytes(8192));
+ const spec=path.join(dir,'transfer.json'),destination=path.join(dir,'remote.bin');fs.writeFileSync(spec,JSON.stringify({root:dir,paths:['input.bin'],destination}));
+ const pushed=await cli(['file','push','test','--spec',spec]);assert.equal(pushed.verified,true);assert.equal(pushed.cleanup.removed,true);assert.deepEqual(fs.readFileSync(destination),fs.readFileSync(source));
+ const status=await cli(['file','transfer-status','test','--transfer',pushed.transferId]);assert.equal(status.state,'complete');
+ fs.writeFileSync(spec,JSON.stringify({root:dir,paths:['remote.bin'],destination:path.join(dir,'returned.bin')}));
+ const pulled=await cli(['file','pull','test','--spec',spec]);assert.equal(pulled.verified,true);assert.deepEqual(fs.readFileSync(pulled.path),fs.readFileSync(source));
 });

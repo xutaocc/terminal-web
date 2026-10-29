@@ -283,3 +283,39 @@ CLI exec/result/history 默认 `--detail compact`，返回状态、目录和最�
 关闭成功但清理失败返回 closed=true、historyDeleted=false、cleanupError=HISTORY_CLEANUP_FAILED，页面明确提示到主机清理入口重试。删除标记持久化后阻止延迟回调和 flush 定时器重新生成历史。旧历史链接显示删除时间，不再提供被清理内容。
 
 侧栏每台电脑标题行的「⌫」按钮用于「清理已关闭会话记录」。先查询数量和估计空间、确认后按指定 ID 清理，每批最多 200 个；不会关闭正在运行的会话，不把采集器断线认定为已关闭。管理员接口 GET /api/sessions/closed-history 返回本批 sessions/count/bytes 与总数 total，POST 同路径提交 {ids:[完整会话ID]}，逐项返回 deleted/failed。批次预校验所有 ID 都已关闭，局部失败可重复重试。估计空间仅覆盖待删请求 JSON 和输出文件，不含保留元数据。
+
+### HTTP file transfers
+
+`file push/pull --spec spec.json` adds binary transfers without a terminal session.
+The Agent API advertises `transfers-v1`. A single file streams directly; directories
+and multiple files use UTF-8 ZIP (Deflate level 1 or store), with explicit exclusions.
+Both directions validate size/SHA-256 before no-clobber hard-link publication.
+The first release caps input/archive size at 1 GiB and ZIP entries at 60,000;
+there is no extraction, overwrite, resume, or incremental synchronization.
+See [transfer command examples and cleanup rules](skills/twssh/references/file-transfer.md).
+
+Temporary workspaces use `.twssh-transfer-<UUID>-<random>/owner.json`.
+Cleanup only uses live creation records, validates identities and modification
+metadata, and unlinks named members before an empty-directory rmdir. It never
+recursively removes a directory, sweeps a prefix, or reclaims orphan directories
+after restart. Unknown or changed contents are retained and reported. Status
+is process-local (200 recent records, cleaned records may be evicted), so a
+missing result never authorizes automatic replay of an uncertain upload.
+
+
+Windows TWSSH home is **`C:\twsshProjecTemp\`**, on either end of a transfer.
+Create it when missing. Both packing and receiving workspaces live directly under
+it as `.twssh-transfer-<UUID>-<random>/`; default final archive paths should be
+`C:\twsshProjecTemp\<project>.zip`. The home itself, final archives and project
+folders are NOT disposable caches. macOS/Linux retain platform-local paths.
+Windows receive targets must share its volume/drive; reject unsupported targets
+before sending payload, without silently moving staging to another location.
+
+For a request combining archive transfer and automatic extraction, the agent must
+present the complete host-specific source, packing, receiving, final archive,
+extraction staging and final project paths, plus exact cleanup/retention scope,
+and obtain explicit confirmation BEFORE transferring or extracting. A random-path
+template is not an exact path plan. Changed paths or deletion scope need renewed
+confirmation. Current push/pull do not implement extraction or extraction planning
+and reject extract/extractTo parameters; do not bypass this via terminal commands.
+See the skill reference for the required path checklist.
