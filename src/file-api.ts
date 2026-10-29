@@ -367,7 +367,7 @@ export async function handleFileApi(req: http.IncomingMessage, res: http.ServerR
           await new Promise<void>((resolve, reject) => {
             // Explicit manifest instead of recursive zip: exclusions and symlinks cannot expand the selection.
             const child = WINDOWS
-              ? spawn(WINDOWS_ZIP.shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WINDOWS_ZIP.script, plan.parent, manifest, temporary], { stdio: ['ignore', 'ignore', 'pipe'] })
+              ? spawn(WINDOWS_ZIP.shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WINDOWS_ZIP.script, plan.parent, manifest, temporary], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
               : spawn('zip', ['-y', '-q', temporary, '-@'], { cwd: plan.parent, stdio: ['pipe', 'ignore', 'pipe'] });
             current.cancel = () => child.kill('SIGTERM'); let stderr = '';
             const tool = WINDOWS ? 'PowerShell' : 'zip';

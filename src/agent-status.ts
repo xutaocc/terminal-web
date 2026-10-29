@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile } from './background-process.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { IS_PSMUX, TMUX } from './tmux.js';

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync } from "./background-process.js";
 import { fileURLToPath } from "node:url";
 import { loadAuthToken } from "./auth.js";
 import os from "node:os";

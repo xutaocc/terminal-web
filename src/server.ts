@@ -8,7 +8,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { execFile } from "node:child_process";
+import { execFile } from "./background-process.js";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 

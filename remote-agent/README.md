@@ -319,3 +319,12 @@ template is not an exact path plan. Changed paths or deletion scope need renewed
 confirmation. Current push/pull do not implement extraction or extraction planning
 and reject extract/extractTo parameters; do not bypass this via terminal commands.
 See the skill reference for the required path checklist.
+
+### Windows background command windows
+
+Non-interactive tmux/psmux commands (session/directory polling, screen capture,
+metadata, resize and control) use `src/background-process.ts`, which explicitly
+sets `windowsHide: true` while preserving arguments, output, timeout and errors.
+Do not import native execFile directly for these calls: a hidden parent process
+does not guarantee that child console windows stay hidden. PTY/ConPTY attach
+uses its existing path and must not be replaced by this background helper.

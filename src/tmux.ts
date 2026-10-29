@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "./background-process.js";
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { tmuxColorArgs } from './terminal-env.js';
