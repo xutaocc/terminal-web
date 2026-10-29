@@ -117,7 +117,7 @@ export async function checkSource(entry) {
 }
 const crcTable = Array.from({length:256}, (_, n) => { for(let k=0;k<8;k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; return n >>> 0; });
 // ZIP32, UTF-8 names, streaming data descriptors; explicit limits avoid malformed ZIP64 archives.
-export async function zip(entries, handle, compression = 'fast') {
+export async function zip(entries, handle, compression = 'store') {
   if (!['fast','store'].includes(compression)) throw Error('compression must be fast or store');
   let position = 0; const central = [];
   const write = async data => { if(position + data.length > MAX_BYTES) throw Error('Archive exceeds 1 GiB'); let off=0; while(off<data.length) off+=(await handle.write(data,off,data.length-off)).bytesWritten; position+=data.length; };

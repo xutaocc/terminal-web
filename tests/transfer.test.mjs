@@ -11,6 +11,18 @@ import {Readable} from 'node:stream';
 import {workspace,transferBase,selection,zip,receive,digest,publish} from '../remote-agent/client/transfer-core.mjs';
 import {AgentTransfers} from '../remote-agent/transfer-service.mjs';
 import {transferCommand} from '../remote-agent/client/transfer-command.mjs';
+function assertZipMethod(file, method) {
+ const data=fs.readFileSync(file);const end=data.length-22;assert.equal(data.readUInt32LE(end),0x06054b50);
+ let cursor=data.readUInt32LE(end+16), files=0;
+ for(let i=0;i<data.readUInt16LE(end+10);i++){
+  assert.equal(data.readUInt32LE(cursor),0x02014b50);
+  const nameLength=data.readUInt16LE(cursor+28),extra=data.readUInt16LE(cursor+30),comment=data.readUInt16LE(cursor+32);
+  const name=data.subarray(cursor+46,cursor+46+nameLength).toString('utf8');
+  if(!name.endsWith('/')){assert.equal(data.readUInt16LE(cursor+10),method);files++;}
+  cursor+=46+nameLength+extra+comment;
+ }
+ assert.ok(files>0);
+}
 async function fixture(t){const dir=await fsp.mkdtemp(path.join(os.tmpdir(),'twssh-transfer-test-'));t.after(()=>fsp.rm(dir,{recursive:true,force:true}));return dir;}
 function validateZip(file) {
  if(process.platform==='win32') execFileSync('pwsh',['-NoProfile','-NonInteractive','-Command','$file=$env:TWSSH_TEST_ZIP; Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead($file); try { foreach($e in $z.Entries) {$s=$e.Open(); try {$s.CopyTo([IO.Stream]::Null)} finally {$s.Dispose()}} } finally {$z.Dispose()}'],{env:{...process.env,TWSSH_TEST_ZIP:file}});
@@ -53,16 +65,16 @@ test('selection excludes explicit subtrees, refuses links and traversal, detects
 });
 test('ZIP fast and store: standard unzip validates Unicode, nested, empty and binary files',async t=>{
  const dir=await fixture(t),root=path.join(dir,'input');await fsp.mkdir(root);await fsp.mkdir(path.join(root,'空目录'));await fsp.mkdir(path.join(root,'folder'));await fsp.writeFile(path.join(root,'中文.txt'),'你好\n'.repeat(100));const binary=crypto.randomBytes(25000);await fsp.writeFile(path.join(root,'folder','data.bin'),binary);
- for(const compression of ['fast','store']){const w=await workspace(dir),h=await w.create('archive.zip');await zip(await selection(root,['.']),h,compression);await h.close();await w.seal('archive.zip');const file=path.join(w.dir,'archive.zip');validateZip(file);const out=path.join(dir,compression);extractZip(file,out);assert.deepEqual(await fsp.readFile(path.join(out,'folder','data.bin')),binary);assert.equal(await fsp.readFile(path.join(out,'中文.txt'),'utf8'),'你好\n'.repeat(100));assert.ok((await fsp.stat(path.join(out,'空目录'))).isDirectory());assert.equal((await w.cleanup()).removed,true);}
+ for(const compression of ['fast','store',undefined]){const w=await workspace(dir),h=await w.create('archive.zip');await zip(await selection(root,['.']),h,compression);await h.close();await w.seal('archive.zip');const file=path.join(w.dir,'archive.zip');validateZip(file);assertZipMethod(file,compression==='fast'?8:0);const out=path.join(dir,compression??'default');extractZip(file,out);assert.deepEqual(await fsp.readFile(path.join(out,'folder','data.bin')),binary);assert.equal(await fsp.readFile(path.join(out,'中文.txt'),'utf8'),'你好\n'.repeat(100));assert.ok((await fsp.stat(path.join(out,'空目录'))).isDirectory());assert.equal((await w.cleanup()).removed,true);}
 });
 test('HTTP push/pull binary and folder ZIP, receipts and no-clobber',async t=>{
  const dir=await fixture(t),local=path.join(dir,'local'),remote=path.join(dir,'remote');await fsp.mkdir(local);await fsp.mkdir(remote);await fsp.writeFile(path.join(local,'binary'),crypto.randomBytes(50000));
- const service=new AgentTransfers();const server=http.createServer(async(req,res)=>{try{assert.equal(req.headers.authorization,'Bearer test');const route=new URL(req.url,'http://test').pathname.replace('/api/agent/v1/transfers','');let result;if(!route){let text='';for await(const c of req)text+=c;result=await service.prepare(JSON.parse(text));}else{const [,id,content]=route.split('/');if(content&&req.method==='GET'){await service.download(id,res);return;}result=content?await service.upload(id,req):req.method==='DELETE'?await service.cleanup(id):service.status(service.get(id));}res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(result));}catch(e){if(!res.headersSent){res.writeHead(400);res.end(JSON.stringify({error:e.message}));}else res.destroy(e);}});
+ const service=new AgentTransfers();const server=http.createServer(async(req,res)=>{try{assert.equal(req.headers.authorization,'Bearer test');const route=new URL(req.url,'http://test').pathname.replace('/api/agent/v1/transfers','');let result;if(!route){let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(body.direction==='pull')assert.equal(body.compression,'store');result=await service.prepare(body);}else{const [,id,content]=route.split('/');if(content&&req.method==='GET'){await service.download(id,res);return;}result=content?await service.upload(id,req):req.method==='DELETE'?await service.cleanup(id):service.status(service.get(id));}res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(result));}catch(e){if(!res.headersSent){res.writeHead(400);res.end(JSON.stringify({error:e.message}));}else res.destroy(e);}});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});const host={url:`http://127.0.0.1:${server.address().port}`,token:'test'};const config={};
  async function run(action,spec){const file=path.join(dir,'spec.json');await fsp.writeFile(file,JSON.stringify(spec));return transferCommand(action,{spec:file},host,config,'test',()=>{});}
  const target=path.join(remote,'binary');const pushed=await run('push',{root:local,paths:['binary'],destination:target});assert.equal(pushed.verified,true);assert.equal(pushed.cleanup.removed,true);if(process.platform==='win32')assert.equal(path.dirname(pushed.tempPath).toLowerCase(),(await fsp.realpath('C:/twsshProjecTemp')).toLowerCase());assert.deepEqual(await digest(target),await digest(path.join(local,'binary')));
  await assert.rejects(run('push',{root:local,paths:['binary'],destination:target}),/already exists/);
  const downloaded=path.join(local,'back');const pulled=await run('pull',{root:remote,paths:['binary'],destination:downloaded});assert.equal(pulled.verified,true);assert.equal(pulled.localCleanup.removed,true);assert.deepEqual(await digest(downloaded),await digest(target));
- const packed=await run('push',{root:local,paths:['.'],exclude:['back'],destination:path.join(remote,'bundle.zip'),compression:'store'});assert.equal(packed.archive,true);validateZip(path.join(remote,'bundle.zip'));
- const got=await run('pull',{root:remote,paths:['.'],destination:path.join(local,'remote.zip')});assert.equal(got.archive,true);assert.equal(got.remoteCleanup.removed,true);validateZip(path.join(local,'remote.zip'));
+ const packed=await run('push',{root:local,paths:['.'],exclude:['back'],destination:path.join(remote,'bundle.zip')});assert.equal(packed.archive,true);validateZip(path.join(remote,'bundle.zip'));assertZipMethod(path.join(remote,'bundle.zip'),0);
+ const got=await run('pull',{root:remote,paths:['.'],destination:path.join(local,'remote.zip')});assert.equal(got.archive,true);assert.equal(got.remoteCleanup.removed,true);validateZip(path.join(local,'remote.zip'));assertZipMethod(path.join(local,'remote.zip'),0);
 });

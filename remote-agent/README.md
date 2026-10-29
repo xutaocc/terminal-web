@@ -288,7 +288,9 @@ CLI exec/result/history 默认 `--detail compact`，返回状态、目录和最�
 
 `file push/pull --spec spec.json` adds binary transfers without a terminal session.
 The Agent API advertises `transfers-v1`. A single file streams directly; directories
-and multiple files use UTF-8 ZIP (Deflate level 1 or store), with explicit exclusions.
+and multiple files default to UTF-8 ZIP store (no compression), with explicit exclusions.
+Deflate level 1 is available via explicit `compression: "fast"`. The client sends
+`store` explicitly for pulls, including when talking to an older transfer-capable server.
 Both directions validate size/SHA-256 before no-clobber hard-link publication.
 The first release caps input/archive size at 1 GiB and ZIP entries at 60,000;
 there is no extraction, overwrite, resume, or incremental synchronization.
@@ -328,3 +330,9 @@ sets `windowsHide: true` while preserving arguments, output, timeout and errors.
 Do not import native execFile directly for these calls: a hidden parent process
 does not guarantee that child console windows stay hidden. PTY/ConPTY attach
 uses its existing path and must not be replaced by this background helper.
+
+### escli 文件查询
+
+TWSSH 统一使用 `C:\twsshProjecTemp\escli.exe` 查询 Everything 索引。程序缺失时，skill 自动使用官方固定 ES 1.1.0.38 x64 包准备客户端；已有文件不覆盖。Everything 主程序缺失或查询实例不可访问时只提醒，不自动安装、启动或修改服务。
+
+安装流程、缓存保留规则及查询示例见 [escli 使用说明](skills/twssh/references/escli.md)。生成安装任务：`node remote-agent/skills/twssh/scripts/escli.mjs ensure /absolute/local/escli-task.json`，再通过 TWSSH task 执行。无需修改服务器或重启程序。

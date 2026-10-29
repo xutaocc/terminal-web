@@ -17,7 +17,7 @@ push.json 示例（root 在本地；destination 是远端完整文件名）：
   "paths": ["src", "package.json"],
   "exclude": ["src/cache"],
   "destination": "C:/twsshProjecTemp/project.zip",
-  "compression": "fast"
+  "compression": "store"
 }
 ```
 
@@ -29,12 +29,12 @@ pull.json 示例（root 在远端；destination 是本地完整文件名）：
   "paths": ["hello-python"],
   "exclude": ["hello-python/__pycache__"],
   "destination": "/absolute/local/hello-python.zip",
-  "compression": "fast"
+  "compression": "store"
 }
 ```
 
 - paths 为 root 下的相对路径数组，使用 `/`。`["."]` 表示整个目录。exclude 为明确的相对路径及其子树，不是 glob；没有隐式排除项。不要把 Token、连接状态等秘密文件打包给未授权目的地。
-- 单文件直接传输；多文件/目录自动 ZIP，目标名须以 `.zip` 结尾。单文件可用 `pack:true` 强制 ZIP。`compression:"fast"` 使用 Deflate level 1；图片/视频/已有压缩包可选 `"store"` 只打包。不会自动解压或执行内容。
+- 单文件直接传输；多文件/目录自动 ZIP，目标名须以 `.zip` 结尾。单文件可用 `pack:true` 强制 ZIP。默认 `compression:"store"`，只打包、不压缩；仅显式指定 `compression:"fast"` 时使用 Deflate level 1 轻度压缩。客户端拉取时会显式发送默认 store，因此已支持传输接口的旧服务无需重启即可按此方式打包。不会自动解压或执行内容。
 - 使用二进制 HTTP 流，SHA-256 与字节数验证成功后才发布目标。默认 Windows 主目录不存在时创建；其他目标父目录须存在，始终不覆盖。发布依赖同卷硬链接（如 APFS/NTFS）；不支持时保留临时文件并报错，不降级为覆盖复制。
 - 当前每次最多 1 GiB（选中文件总量和归档/传输体积均有限制）、60,000 个 ZIP 条目。不支持断点续传、增量同步、符号链接、特殊文件或完整权限还原。不要承诺大型备份能力。
 - 输出仅回执、路径、大小、哈希和清理结果，不把文件内容送入模型上下文。

@@ -162,6 +162,10 @@ Windows 上优先填写真实程序的绝对路径。ServBay 等工具提供的�
 
 ## 二进制文件与目录传输
 
-用户要求上传、下载、多文件或目录传输时，使用 `file push/pull --spec LOCAL_JSON`，先读 [文件传输说明](references/file-transfer.md)。单文件直传，多文件/目录 ZIP；使用 HTTP 二进制流和哈希校验，不通过终端/Base64 搬运，也不让文件内容进入 AI 上下文。默认不覆盖，不自动解压。临时前缀 `.twssh-transfer-` 仅用于识别，不能据此前缀批量删除；归属不明或文件发生变化就保留并报告。失败先按 transferId 查状态，清理失败不重传。
+用户要求上传、下载、多文件或目录传输时，使用 `file push/pull --spec LOCAL_JSON`，先读 [文件传输说明](references/file-transfer.md)。单文件直传，多文件/目录默认 ZIP store（只打包、不压缩）；仅用户要求或明确选择时使用 `compression:"fast"` 轻度压缩。使用 HTTP 二进制流和哈希校验，不通过终端/Base64 搬运，也不让文件内容进入 AI 上下文。默认不覆盖，不自动解压。临时前缀 `.twssh-transfer-` 仅用于识别，不能据此前缀批量删除；归属不明或文件发生变化就保留并报告。失败先按 transferId 查状态，清理失败不重传。
 
 压缩包传输若包含自动解压要求，**必须在传输前**按 [文件传输说明](references/file-transfer.md) 列出双端源文件、打包和接收临时路径、最终 ZIP、解压暂存和最终目录，以及删除/保留范围，获得用户对具体计划的明确确认后再执行。不能先传输再确认解压；路径或清理范围变化须重新确认。当前命令不支持自动解压和完整解压路径规划，不能承诺或静默绕过；普通传输也要清楚报告双端路径和实际清理结果。
+
+## escli 文件索引查询
+
+用户要求通过 TWSSH 使用 Everything 查询远端 Windows 文件时，统一称为 **escli**，默认程序为 **`C:\twsshProjecTemp\escli.exe`**。首次使用或程序缺失时按 [escli 使用说明](references/escli.md) 自动从指定官方包下载、提取并命名为 escli.exe；已有程序复用，不覆盖，不删除旧 es.exe。使用内置 `scripts/escli.mjs` 和 `scripts/escli.ps1` 准备客户端，不必临时编写安装脚本。Everything 主程序缺失时仅提醒，不自动安装或启动；查询失败须区分程序缺失与实例不可访问。已确认可用时直接做有限条数的查询，不重复安装探测。

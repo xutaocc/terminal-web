@@ -37,7 +37,7 @@ export class AgentTransfers {
         if(r.archive) {
           r.work=await workspace(await transferBase(),r.id);
           const h=await r.work.create('archive.zip');
-          try { await zip(entries,h,spec.compression??'fast'); } finally { await h.close(); }
+          try { await zip(entries,h,spec.compression??'store'); } finally { await h.close(); }
           await r.work.seal('archive.zip'); r.source=path.join(r.work.dir,'archive.zip');
         } else { r.entry=entries[0]; r.source=r.entry.absolute; }
         Object.assign(r,await digest(r.source)); if(r.entry) await checkSource(r.entry);

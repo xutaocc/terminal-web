@@ -53,7 +53,7 @@ export async function transferCommand(action,options,host,config,alias,save) {
       if(archive) {
         if(!spec.destination.toLowerCase().endsWith('.zip'))throw Error('Archive destination must end in .zip');
         work=await workspace(await transferBase(),id);process.stderr.write(`temporary=${work.dir}\n`);
-        const h=await work.create('archive.zip');try{await zip(entries,h,spec.compression??'fast');}finally{await h.close();}
+        const h=await work.create('archive.zip');try{await zip(entries,h,spec.compression??'store');}finally{await h.close();}
         await work.seal('archive.zip');source=path.join(work.dir,'archive.zip');
       } else { source=entries[0].absolute; }
       const info=await digest(source);if(!archive)await checkSource(entries[0]);
@@ -67,7 +67,7 @@ export async function transferCommand(action,options,host,config,alias,save) {
     await transferBase();
     const parent=await realDirectory(path.dirname(spec.destination));const destination=path.join(parent,path.basename(spec.destination));await vacant(destination);
     const stagingParent=await transferBase(parent);
-    const prepared=await conn.send('','POST',{...spec,requestId:id,direction:'pull'});
+    const prepared=await conn.send('','POST',{...spec,compression:spec.compression??'store',requestId:id,direction:'pull'});
     if(prepared.state!=='ready')throw Error(`Transfer state ${prepared.state}; inspect status instead of retransmitting`);
     if(prepared.archive&&!destination.toLowerCase().endsWith('.zip'))throw Error('Archive destination must end in .zip');
     work=await workspace(stagingParent,id);process.stderr.write(`temporary=${work.dir}\n`);
