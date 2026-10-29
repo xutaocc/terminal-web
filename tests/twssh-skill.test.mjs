@@ -9,10 +9,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../remote-agent/skills/twssh/', import.meta.url));
-function run(script, args, cwd) {
+function run(script, args, cwd, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, ...args], { cwd,
-      env: { ...process.env, TWSSH_HOME: path.join(cwd, 'ignored-global-config') } });
+      env: { ...process.env, HOME: path.join(cwd, 'test-home'), USERPROFILE: path.join(cwd, 'test-home'), TWSSH_HOME: path.join(cwd, 'ignored-global-config'), ...extraEnv } });
     let out = '', err = '';
     child.stdout.on('data', b => out += b);
     child.stderr.on('data', b => err += b);
@@ -223,4 +223,36 @@ test('project wrapper forwards task and file groups without converting them to s
   const create=await run(script,['task','create','--spec',spec],dir);
   assert.equal(create.code,0,create.err);assert.equal(requests.at(-1).url,'/api/agent/v1/tasks');
   assert.equal(requests.some(r=>r.url.startsWith('/api/agent/v1/sessions')),false);
+});
+
+test('global targets merge with project overrides without sharing sessions or leaking credentials', async t => {
+  const { dir, cfg, script, requests, set } = await fixture(t);
+  const home = path.join(dir, 'shared-home');
+  const env = { HOME: home, USERPROFILE: home };
+  fs.mkdirSync(path.join(home, '.config/twssh'), { recursive: true });
+  const globalFile = path.join(home, '.config/twssh/connections.json');
+  fs.writeFileSync(globalFile, JSON.stringify({ version: 1, connections: [cfg] }));
+  const child = path.join(dir, 'new-project'); fs.mkdirSync(child);
+  const exec = (args, cwd = child) => run(script, args, cwd, env);
+  const targets = JSON.parse((await exec(['config'])).out).targets;
+  assert.equal(targets[0].source, globalFile);
+  assert.equal((await exec(['doctor'])).code, 0);
+  assert.match(fs.readFileSync(path.join(child, '.twssh/.gitignore'), 'utf8'), /state\//);
+  const created = JSON.parse((await exec(['session', 'create'])).out);
+  set([{ ...cfg, name: 'win-dev', url: '' }]);
+  assert.equal((await exec(['--target', cfg.name, 'doctor'], dir)).code, 0);
+  assert.equal((await exec(['doctor'], dir)).code, 1); // never silently select across multiple targets
+  let count = requests.length;
+  assert.equal((await exec(['--target', cfg.name, 'exec', '--session', created.sessionId, '--command', 'echo wrong'], dir)).code, 1);
+  assert.equal(requests.length, count);
+  set([{ ...cfg, tokenFile: path.join(dir, 'override-token') }]);
+  fs.writeFileSync(path.join(dir, 'override-token'), 'override-secret');
+  assert.equal((await exec(['doctor'], dir)).code, 0);
+  assert.equal(requests.at(-1).auth, 'Bearer override-secret');
+  set([{ name: cfg.name, url: '' }]);
+  count = requests.length;
+  assert.equal((await exec(['doctor'], dir)).code, 1); // incomplete project override cannot fall back
+  assert.equal(requests.length, count);
+  fs.writeFileSync(globalFile, '{invalid');
+  assert.equal((await exec(['doctor'])).code, 1);
 });

@@ -28,40 +28,51 @@ for (let i = 0; i < input.length; i++) {
 try { project = fs.realpathSync(project); if (!fs.statSync(project).isDirectory()) throw Error(); }
 catch { fail('控制端工作目录不存在。请检查 --project。'); }
 const home = path.join(project, '.twssh');
-const settings = path.join(home, 'connections.json');
-if (args[0] === 'init') {
+const projectSettings = path.join(home, 'connections.json');
+const globalSettings = path.join(os.homedir(), '.config', 'twssh', 'connections.json');
+function protectState() {
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-  if (!fs.existsSync(settings)) fs.writeFileSync(settings, JSON.stringify({ version: 1, connections: [{
-    name: 'win-dev', description: '', url: '',
-    tokenFile: '~/.config/twssh/tokens/win-dev', cwd: DEFAULT_CWD, pin: ''
-  }] }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  // Credential-bearing client state and machine-local connection files must not enter Git.
   const ignore = path.join(home, '.gitignore');
   const existing = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
   const missing = ['connections.json', 'state/'].filter(line => !existing.split(/\r?\n/).includes(line));
   if (missing.length) fs.appendFileSync(ignore, `${existing && !existing.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`);
-  console.log(`连接配置：${settings}\n填写 connections 中的 name、url、tokenFile。默认远程目录：${DEFAULT_CWD}。\nToken 单独保存于控制端文件；不会读取旧全局配置。`);
+}
+if (args[0] === 'init') {
+  protectState();
+  if (!fs.existsSync(projectSettings)) fs.writeFileSync(projectSettings,
+    JSON.stringify({ version: 1, connections: [] }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  console.log(`项目配置：${projectSettings}\n全局配置：${globalSettings}\n同名目标由项目配置完整覆盖。默认远程目录：${DEFAULT_CWD}。Token 单独保存于控制端文件。`);
   process.exit(0);
 }
-if (!fs.existsSync(settings)) fail(`尚未配置。先在工作目录运行本脚本 init，然后编辑 ${settings}。不会回退到全局连接。`);
-let document;
-try { document = JSON.parse(fs.readFileSync(settings, 'utf8')); }
-catch { fail(`配置不是有效 JSON，请编辑 ${settings}`); }
-if (document?.version !== 1 || !Array.isArray(document.connections)) fail(`请在 ${settings} 设置 version: 1 和 connections 数组。`);
-const names = new Set();
-for (const connection of document.connections) {
-  if (!connection || typeof connection.name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(connection.name)) fail(`连接 name 必须为字母、数字、下划线或短横线：${settings}`);
-  if (names.has(connection.name)) fail(`连接名字重复：${connection.name}。请修改 ${settings}`);
-  names.add(connection.name);
+function readConnections(file) {
+  if (!fs.existsSync(file)) return [];
+  let document;
+  try { document = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch { fail(`配置不是有效 JSON，请编辑 ${file}`); }
+  if (document?.version !== 1 || !Array.isArray(document.connections)) fail(`请在 ${file} 设置 version: 1 和 connections 数组。`);
+  const names = new Set();
+  for (const connection of document.connections) {
+    if (!connection || typeof connection.name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(connection.name)) fail(`连接 name 必须为字母、数字、下划线或短横线：${file}`);
+    if (names.has(connection.name)) fail(`连接名字重复：${connection.name}。请修改 ${file}`);
+    names.add(connection.name);
+  }
+  return document.connections;
+}
+const merged = new Map();
+for (const file of [globalSettings, projectSettings]) {
+  for (const connection of readConnections(file)) merged.set(connection.name, { connection, file });
 }
 if (args[0] === 'config') {
-  console.log(JSON.stringify({ project, file: settings, targets: document.connections.map(c => ({ name: c.name, description: c.description || '' })) }));
+  console.log(JSON.stringify({ project, file: projectSettings, globalFile: globalSettings,
+    targets: [...merged.values()].map(({ connection: c, file }) => ({ name: c.name, description: c.description || '', source: file })) }));
   process.exit(0);
 }
-if (!document.connections.length) fail(`尚无连接，请编辑 ${settings}`);
-if (!target && document.connections.length !== 1) fail(`配置了多个远程，必须指定 --target NAME。可选：${[...names].join(', ')}。配置：${settings}`);
-const cfg = target ? document.connections.find(c => c.name === target) : document.connections[0];
-if (!cfg) fail(`目标不存在。可选：${[...names].join(', ')}。配置：${settings}`);
+const names = [...merged.keys()];
+if (!names.length) fail(`尚无连接，请编辑 ${globalSettings} 或 ${projectSettings}。`);
+if (!target && names.length !== 1) fail(`配置了多个远程，必须指定 --target NAME。可选：${names.join(', ')}。`);
+const selected = merged.get(target || names[0]);
+if (!selected) fail(`目标不存在。可选：${names.join(', ')}。`);
+const { connection: cfg, file: settings } = selected;
 let origin;
 try {
   const url = new URL(cfg.url);
@@ -70,6 +81,7 @@ try {
 } catch { fail(`请在 ${settings} 为 ${cfg.name} 设置 url，例如 http://192.168.1.20:8090`); }
 if (cfg.cwd != null && typeof cfg.cwd !== 'string') fail(`请在 ${settings} 将 cwd 设置为字符串。`);
 const endpoint = createHash('sha256').update(origin).digest('hex').slice(0, 16);
+protectState();
 const stateHome = path.join(home, 'state', `${cfg.name}-${endpoint}`);
 const registryFile = path.join(stateHome, 'sessions.json');
 let registry = {};
@@ -106,7 +118,7 @@ async function run(argv, capture = false) {
   }
   return result;
 }
-console.error(`工作目录：${project}；目标：${cfg.name}`);
+console.error(`工作目录：${project}；目标：${cfg.name}；配置：${settings}`);
 if (sid && registry[sid]) console.error(`会话：${cfg.name} → ${registry[sid].name || '未命名'} · #${sid.slice(0, 8)}（本地登记名称）；sessionId=${sid}`);
 if (args[0] === 'session' && args[1] === 'identity') {
   if (!sid) fail('session identity 需要 --session ID。');

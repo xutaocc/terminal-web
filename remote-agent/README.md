@@ -22,7 +22,7 @@ node remote-agent/skills/twssh/scripts/install.mjs claude
 - `/twssh 把连接地址改为 http://192.168.1.20:8090，默认目录 C:\project`。
 - `/twssh 在远程 Windows 的 C:\project 目录检查 Git 状态`。
 
-连接配置放在**调用时的本地工作目录**下 `.twssh/connections.json`，不搜索父目录、不回退旧全局配置。在实际项目目录运行安装后的 `scripts/twssh.mjs init`，或让 AI 使用 `--project /本地项目目录` 指定项目。初始化不覆盖已有设置，并生成 `.twssh/.gitignore` 忽略连接配置和状态。
+全局主机配置位于 `~/.config/twssh/connections.json`，供此电脑所有项目共用。项目可选配置为 `<project>/.twssh/connections.json`；按 name 合并，同名项目条目完整覆盖全局条目，错误不会静默回退。运行 `scripts/twssh.mjs --project /本地项目目录 config` 查看目标和来源。init 创建空项目配置及忽略规则，不覆盖已有设置；仅使用全局配置时也会忽略项目 state。会话状态仍按项目、目标和服务地址隔离，不搜索父目录或读取旧版单连接配置。全局文件仅保存 tokenFile 路径，不保存 Token 内容，macOS/Linux 权限设为 600。
 
 ```json
 {
@@ -113,7 +113,7 @@ HTTP 的 Token、输入和输出是明文，适用于可信内网或 VPN。持�
 
 ## 4. 独立 CLI 安装（兼容旧用法）
 
-下面是直接使用 CLI 的部署方式。使用上面的新 twssh skill 时，无需单独安装 CLI，也不使用本节的全局主机配置。
+下面是直接使用 CLI 的部署方式。使用上面的新 twssh skill 时，无需单独安装 CLI，本节底层 CLI 的主机配置与 skill 的 connections.json 格式不同，不混用。
 
 远端只需下面两部分及其文档：
 
