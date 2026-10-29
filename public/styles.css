@@ -2430,3 +2430,13 @@ section.ps-drop { background: color-mix(in srgb, #3b8eea 16%, transparent); bord
 @media (max-width: 640px), (hover: none) and (pointer: coarse) {
   .ps-chip-wrap > .ps-chip-close { display: none; }
 }
+
+/* Directory-scoped session selection. */
+.ps-selection-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.ps-selection-tools button { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--ui-border, #555); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.ps-selection-tools button:disabled { opacity: .4; cursor: default; }
+.ps-chip.ps-selected { outline: 2px solid #40a9ff; outline-offset: -2px; }
+.ps-selection-check { margin-right: 5px; color: #40a9ff; }
+.ps-chip:disabled { opacity: .45; cursor: default; }
+
+.ps-selecting .ps-chip-wrap > .ps-icon-btn { display: none; }

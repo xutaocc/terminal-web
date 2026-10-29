@@ -3537,6 +3537,9 @@ function activateSession(s: Session): void {
   // (e.g. after picking it from the drawer); scroll it back into view. inline/
   // block: 'nearest' only scrolls #tabs horizontally, never the page/terminal.
   s.tabEl?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  requestAnimationFrame(() => {
+    if (!mobileMQ.matches && activeTab === s) sidebar.reveal(s.name);
+  });
   hideSelectionBar(); // a selection belongs to the tab it was made in
   // On touch (phones / iOS PWA), don't auto-focus the terminal when a tab
   // becomes active: focusing xterm's hidden textarea pops up the soft keyboard,
@@ -3706,6 +3709,9 @@ function closeSessionBatch(list: readonly Session[], agentClosed = false): void 
   }
   if (!sessions.length) addFallbackTab();
   queueMicrotask(pruneRecentTabs);
+  requestAnimationFrame(() => {
+    if (!mobileMQ.matches && activeTab) sidebar.reveal(activeTab.name);
+  });
   refreshMobileUI();
   saveTabs();
 }

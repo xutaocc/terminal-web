@@ -145,6 +145,8 @@ function iconButton(icon: string, title: string, onClick: (e: MouseEvent) => voi
  * it is shown and which groups are folded are this device's own memory.
  */
 export class ProjectSidebar {
+  private selectionCard: string | null = null;
+  private selectedSessions = new Set<string>();
   readonly el = document.createElement('aside');
   private readonly list = document.createElement('div');
   private width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Number(readJson('tw.sidebar.width', DEFAULT_WIDTH)) || DEFAULT_WIDTH));
@@ -621,7 +623,7 @@ export class ProjectSidebar {
     }
     const chip = Array.from(this.list.querySelectorAll<HTMLElement>('.ps-chip .tab-dot'))
       .find(dot => dot.dataset.sessions === name)?.closest<HTMLElement>('.ps-chip');
-    const target = chip?.closest<HTMLElement>('.ps-card') ?? chip;
+    const target = chip;
     if (!target) return;
     target.scrollIntoView({ block: 'nearest' });
     target.classList.remove('flash');
@@ -722,9 +724,14 @@ export class ProjectSidebar {
     const dirs = orderCards(groupByDirectory(group.items, item => item.cwd), this.cardOrder[group.key]);
     for (const dir of dirs) {
       const names = dir.items.map(item => item.name);
+      const selectionKey = JSON.stringify([group.key, dir.cwd]);
+      const selecting = this.selectionCard === selectionKey;
+      const closableNames = names.filter(name => this.hooks.canClose?.(name) !== false);
+      if (selecting) this.selectedSessions = new Set(closableNames.filter(name => this.selectedSessions.has(name)));
       const card = document.createElement('div');
       card.className = 'ps-card';
       card.classList.toggle('active', !!active && names.includes(active));
+      card.classList.toggle('ps-selecting', selecting);
       card.title = dir.cwd || '目录未知';
       const row = document.createElement('div');
       row.className = 'ps-card-row';
@@ -760,6 +767,13 @@ export class ProjectSidebar {
       }
       row.append(iconButton('⋯', '目录操作', () => this.openMenuAt(row, names, group.key,
         label.textContent ?? '', dir.cwd ? { cwd: dir.cwd, name: given ?? '' } : undefined)));
+      if (!this.hooks.readOnly && closableNames.length) {
+        row.append(iconButton('☑', selecting ? '取消多选' : '多选会话', () => {
+          this.selectionCard = selecting ? null : selectionKey;
+          this.selectedSessions.clear();
+          this.rerender();
+        }));
+      }
       const sub = document.createElement('div');
       sub.className = 'ps-card-sub';
       sub.textContent = shortCwd(dir.cwd, home);
@@ -771,6 +785,15 @@ export class ProjectSidebar {
         chip.className = 'ps-chip';
         chip.classList.toggle('active', session.name === active);
         chip.classList.toggle('pinned', !!session.pinned);
+        if (selecting) {
+          chip.classList.toggle('ps-selected', this.selectedSessions.has(session.name));
+          chip.setAttribute('aria-pressed', String(this.selectedSessions.has(session.name)));
+          chip.disabled = this.hooks.canClose?.(session.name) === false;
+          const check = document.createElement('span');
+          check.className = 'ps-selection-check';
+          check.textContent = this.selectedSessions.has(session.name) ? '☑' : '☐';
+          chip.append(check);
+        }
         chip.title = `${session.displayName}${session.pinned ? '（已置顶）' : ''}${mobileActions() ? '（点击进入，更多操作请点右侧 ⋯）' : '（拖到同一目录的其他会话旁可调整顺序，拖到文件夹可移动；右键置顶或移动）'}`;
         const chipDot = document.createElement('span');
         chipDot.className = 'tab-dot';
@@ -799,11 +822,19 @@ export class ProjectSidebar {
         this.hooks.decorateChip(chip, session.name);
         bindIntentionalClick(chip, e => {
           e.stopPropagation();
+          if (selecting) {
+            if (this.hooks.canClose?.(session.name) === false) return;
+            if (!this.selectedSessions.delete(session.name)) this.selectedSessions.add(session.name);
+            this.rerender();
+            return;
+          }
           this.hooks.activate(session.name);
         }, this.list);
         const chipIn = `${group.key}\n${dir.cwd}`;
-        this.bindDrag(chip, [session.name], group.key, undefined, undefined, chipIn);
-        this.bindChipReorder(chip, session.name, chipIn);
+        if (!selecting) {
+          this.bindDrag(chip, [session.name], group.key, undefined, undefined, chipIn);
+          this.bindChipReorder(chip, session.name, chipIn);
+        }
         chip.addEventListener('contextmenu', e => {
           e.preventDefault();
           if (mobileActions()) { e.stopPropagation(); return; }
@@ -831,14 +862,34 @@ export class ProjectSidebar {
       }
       card.append(row);
       if (sub.textContent) card.append(sub);
+      if (selecting) {
+        const tools = document.createElement('div');
+        tools.className = 'ps-selection-tools';
+        const action = (text: string, run: () => void, disabled = false): void => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.textContent = text; button.disabled = disabled;
+          bindIntentionalClick(button, e => { e.stopPropagation(); run(); }, this.list);
+          tools.append(button);
+        };
+        action('全选', () => { this.selectedSessions = new Set(closableNames); this.rerender(); });
+        action('清空', () => { this.selectedSessions.clear(); this.rerender(); });
+        action(`关闭已选（${this.selectedSessions.size}）`, () => {
+          const selected = closableNames.filter(name => this.selectedSessions.has(name));
+          this.hooks.closeSessions(selected);
+        }, !this.selectedSessions.size);
+        action('完成', () => { this.selectionCard = null; this.selectedSessions.clear(); this.rerender(); });
+        card.append(tools);
+      }
       card.append(chips);
       bindIntentionalClick(card, () => {
-        if (!card.querySelector('.ps-rename')) this.hooks.activateDirectory(names);
+        if (!selecting && !card.querySelector('.ps-rename')) this.hooks.activateDirectory(names);
       }, this.list);
       // Only a name the user gave travels; a directory's own name is its own anywhere.
       const carry = dir.cwd && given ? { cwd: dir.cwd, name: given } : undefined;
-      this.bindDrag(card, names, group.key, carry, dir.cwd || undefined);
-      if (dir.cwd) this.bindReorder(card, group.key, dir.cwd, dirs.map(d => d.cwd).filter(Boolean));
+      if (!selecting) {
+        this.bindDrag(card, names, group.key, carry, dir.cwd || undefined);
+        if (dir.cwd) this.bindReorder(card, group.key, dir.cwd, dirs.map(d => d.cwd).filter(Boolean));
+      }
       card.addEventListener('contextmenu', e => {
         e.preventDefault();
         if (mobileActions()) { e.stopPropagation(); return; }
